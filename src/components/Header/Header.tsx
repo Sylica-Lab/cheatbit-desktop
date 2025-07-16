@@ -19,6 +19,7 @@ const LANGUAGES = [
   { value: 'go', label: 'Go' },
   { value: 'rust', label: 'Rust' },
   { value: 'typescript', label: 'TypeScript' },
+  { value: 'csharp', label: 'C#' },
 ];
 
 export function Header({ currentLanguage, setLanguage, onOpenSettings }: HeaderProps) {
