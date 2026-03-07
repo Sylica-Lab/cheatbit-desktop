@@ -28,3 +28,14 @@ npm run deploy
 ```
 
 The Worker config lives in `backend/wrangler.jsonc` and the Worker entrypoint is `backend/worker.mjs`.
+
+## Hosted Node deploys
+
+For Render and similar platforms, deploy the `backend/` directory with:
+
+```bash
+npm install
+npm run start
+```
+
+Set a real `DATABASE_URL`, `BACKEND_TOKEN_SECRET`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD`. Do not force `BACKEND_HOST=127.0.0.1` or `BACKEND_PORT=8787` on the platform; the server will bind to `0.0.0.0:$PORT` automatically when `PORT` is provided.

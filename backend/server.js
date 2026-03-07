@@ -25,12 +25,13 @@ const builtInStripeConfig = shouldUseBuiltInStripeConfig()
       publicUrl: "",
       billingReturnUrl: "",
     };
+const PLATFORM_PORT = normalizePort(process.env.PORT);
 
 const HOST =
-  process.env.BACKEND_HOST ||
-  process.env.HOST ||
-  (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
-const PORT = Number(process.env.BACKEND_PORT || process.env.PORT || 8787);
+  PLATFORM_PORT != null
+    ? "0.0.0.0"
+    : process.env.BACKEND_HOST || process.env.HOST || "127.0.0.1";
+const PORT = PLATFORM_PORT || normalizePort(process.env.BACKEND_PORT) || 8787;
 const PUBLIC_DIR = path.join(__dirname, "public");
 const SCHEMA_PATH = path.join(__dirname, "schema.sql");
 const MIGRATE_ONLY = process.argv.includes("--migrate-only");
@@ -71,6 +72,7 @@ const STRIPE_MONTHLY_PRICE_CENTS = Math.round(STRIPE_MONTHLY_PRICE_USD * 100);
 const BACKEND_PUBLIC_URL = (
   resolveConfiguredString(
     process.env.BACKEND_PUBLIC_URL,
+    process.env.RENDER_EXTERNAL_URL,
     builtInStripeConfig.publicUrl
   ) ||
   `http://${HOST}:${PORT}`
@@ -2021,6 +2023,15 @@ function normalizePositiveNumber(value, fallback) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     return fallback;
+  }
+
+  return parsed;
+}
+
+function normalizePort(value) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return null;
   }
 
   return parsed;
