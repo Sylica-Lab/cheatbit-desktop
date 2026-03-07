@@ -1,10 +1,20 @@
 console.log("Preload script starting...")
 import { contextBridge, ipcRenderer } from "electron"
+import type { ApiProvider, AppConfig } from "../shared/aiConfig"
+import type {
+  AuthState,
+  BillingSessionResponse,
+  UserDashboardData
+} from "../shared/backendAuth"
+import type {
+  TextFollowUpRequest,
+  TextFollowUpResponse
+} from "../shared/followUpChat"
 const { shell } = require("electron")
 
 export const PROCESSING_EVENTS = {
   //global states
-  UNAUTHORIZED: "procesing-unauthorized",
+  UNAUTHORIZED: "processing-unauthorized",
   NO_SCREENSHOTS: "processing-no-screenshots",
   OUT_OF_CREDITS: "out-of-credits",
   API_KEY_INVALID: "api-key-invalid",
@@ -26,6 +36,23 @@ export const PROCESSING_EVENTS = {
 console.log("Preload script is running")
 
 const electronAPI = {
+  getAuthState: () => ipcRenderer.invoke("auth:get-state") as Promise<AuthState>,
+  register: (payload: { name: string; email: string; password: string }) =>
+    ipcRenderer.invoke("auth:register", payload) as Promise<AuthState>,
+  login: (payload: { email: string; password: string }) =>
+    ipcRenderer.invoke("auth:login", payload) as Promise<AuthState>,
+  logout: () =>
+    ipcRenderer.invoke("auth:logout") as Promise<{ success: boolean }>,
+  getAccountDashboard: () =>
+    ipcRenderer.invoke("auth:get-dashboard") as Promise<UserDashboardData>,
+  createCheckoutSession: () =>
+    ipcRenderer.invoke("auth:create-checkout-session") as Promise<BillingSessionResponse>,
+  createBillingPortalSession: () =>
+    ipcRenderer.invoke("auth:create-billing-portal-session") as Promise<BillingSessionResponse>,
+  submitTextFollowUp: (payload: TextFollowUpRequest) =>
+    ipcRenderer.invoke("submit-text-follow-up", payload) as Promise<
+      { success: true; data: TextFollowUpResponse } | { success: false; error: string }
+    >,
   // Original methods
   openSubscriptionPortal: async (authData: { id: string; email: string }) => {
     return ipcRenderer.invoke("open-subscription-portal", authData)
@@ -203,9 +230,9 @@ const electronAPI = {
   },
   getPlatform: () => process.platform,
   
-  // New methods for OpenAI API integration
+  // Configuration methods
   getConfig: () => ipcRenderer.invoke("get-config"),
-  updateConfig: (config: { apiKey?: string; model?: string; language?: string; opacity?: number }) => 
+  updateConfig: (config: Partial<AppConfig>) => 
     ipcRenderer.invoke("update-config", config),
   onShowSettings: (callback: () => void) => {
     const subscription = () => callback()
@@ -214,9 +241,8 @@ const electronAPI = {
       ipcRenderer.removeListener("show-settings-dialog", subscription)
     }
   },
-  checkApiKey: () => ipcRenderer.invoke("check-api-key"),
-  validateApiKey: (apiKey: string) => 
-    ipcRenderer.invoke("validate-api-key", apiKey),
+  validateApiKey: (apiKey: string, provider?: ApiProvider) => 
+    ipcRenderer.invoke("validate-api-key", apiKey, provider),
   openExternal: (url: string) => 
     ipcRenderer.invoke("openExternal", url),
   onApiKeyInvalid: (callback: () => void) => {

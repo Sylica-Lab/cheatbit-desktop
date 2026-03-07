@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react"
+import { Keyboard, LayoutDashboard, Settings2 } from "lucide-react"
 import { useToast } from "../../contexts/toast"
 import { Screenshot } from "../../types/screenshots"
-import { supabase } from "../../lib/supabase"
 import { LanguageSelector } from "../shared/LanguageSelector"
 import { COMMAND_KEY } from "../../utils/platform"
 
@@ -17,13 +17,10 @@ export interface SolutionCommandsProps {
 
 const handleSignOut = async () => {
   try {
-    // Clear any local storage or electron-specific data first
-    localStorage.clear()
-    sessionStorage.clear()
-
-    // Then sign out from Supabase
-    const { error } = await supabase.auth.signOut()
-    if (error) throw error
+    await window.electronAPI.logout()
+    setTimeout(() => {
+      window.location.reload()
+    }, 150)
   } catch (err) {
     console.error("Error signing out:", err)
   }
@@ -57,6 +54,16 @@ const SolutionCommands: React.FC<SolutionCommandsProps> = ({
 
   const handleMouseLeave = () => {
     setIsTooltipVisible(false)
+  }
+
+  const openAccountDashboard = () => {
+    setIsTooltipVisible(false)
+    window.dispatchEvent(new CustomEvent("open-account-dashboard"))
+  }
+
+  const openSettings = () => {
+    setIsTooltipVisible(false)
+    void window.electronAPI.openSettingsPortal()
   }
 
   return (
@@ -100,7 +107,11 @@ const SolutionCommands: React.FC<SolutionCommandsProps> = ({
                     const result = await window.electronAPI.triggerScreenshot()
                     if (!result.success) {
                       console.error("Failed to take screenshot:", result.error)
-                      showToast("Error", "Failed to take screenshot", "error")
+                      showToast(
+                        "Error",
+                        result.error || "Failed to take screenshot",
+                        "error"
+                      )
                     }
                   } catch (error) {
                     console.error("Error taking screenshot:", error)
@@ -109,9 +120,7 @@ const SolutionCommands: React.FC<SolutionCommandsProps> = ({
                 }}
               >
                 <span className="text-[11px] leading-none truncate">
-                  {extraScreenshots.length === 0
-                    ? "Screenshot your code"
-                    : "Screenshot"}
+                  New Screenshot
                 </span>
                 <div className="flex gap-1">
                   <button className="bg-white/10 rounded-md px-1.5 py-1 text-[11px] leading-none text-white/70">
@@ -123,45 +132,6 @@ const SolutionCommands: React.FC<SolutionCommandsProps> = ({
                 </div>
               </div>
 
-              {extraScreenshots.length > 0 && (
-                <div
-                  className="flex items-center gap-2 cursor-pointer rounded px-2 py-1.5 hover:bg-white/10 transition-colors"
-                  onClick={async () => {
-                    try {
-                      const result =
-                        await window.electronAPI.triggerProcessScreenshots()
-                      if (!result.success) {
-                        console.error(
-                          "Failed to process screenshots:",
-                          result.error
-                        )
-                        showToast(
-                          "Error",
-                          "Failed to process screenshots",
-                          "error"
-                        )
-                      }
-                    } catch (error) {
-                      console.error("Error processing screenshots:", error)
-                      showToast(
-                        "Error",
-                        "Failed to process screenshots",
-                        "error"
-                      )
-                    }
-                  }}
-                >
-                  <span className="text-[11px] leading-none">Debug</span>
-                  <div className="flex gap-1">
-                    <button className="bg-white/10 rounded-md px-1.5 py-1 text-[11px] leading-none text-white/70">
-                      {COMMAND_KEY}
-                    </button>
-                    <button className="bg-white/10 rounded-md px-1.5 py-1 text-[11px] leading-none text-white/70">
-                      ↵
-                    </button>
-                  </div>
-                </div>
-              )}
             </>
           )}
 
@@ -195,28 +165,42 @@ const SolutionCommands: React.FC<SolutionCommandsProps> = ({
           {/* Separator */}
           <div className="mx-2 h-4 w-px bg-white/20" />
 
+          <button
+            type="button"
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-white/80 transition-colors hover:bg-white/10 hover:text-white"
+            onClick={openAccountDashboard}
+            aria-label="Dashboard"
+            title="Dashboard"
+          >
+            <LayoutDashboard className="h-3.5 w-3.5" />
+          </button>
+
+          <button
+            type="button"
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-white/80 transition-colors hover:bg-white/10 hover:text-white"
+            onClick={openSettings}
+            aria-label="Settings"
+            title="Settings"
+          >
+            <Settings2 className="h-3.5 w-3.5" />
+          </button>
+
+          <div className="mx-1 h-4 w-px bg-white/20" />
+
           {/* Settings with Tooltip */}
           <div
             className="relative inline-block"
             onMouseEnter={handleMouseEnter}
             onMouseLeave={handleMouseLeave}
           >
-            {/* Gear icon */}
-            <div className="w-4 h-4 flex items-center justify-center cursor-pointer text-white/70 hover:text-white/90 transition-colors">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="w-3.5 h-3.5"
-              >
-                <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
-                <circle cx="12" cy="12" r="3" />
-              </svg>
-            </div>
+            <button
+              type="button"
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-white/70 transition-colors hover:bg-white/10 hover:text-white/90"
+              aria-label="Shortcuts"
+              title="Shortcuts"
+            >
+              <Keyboard className="h-3.5 w-3.5" />
+            </button>
 
             {/* Tooltip Content */}
             {isTooltipVisible && (
@@ -293,7 +277,7 @@ const SolutionCommands: React.FC<SolutionCommandsProps> = ({
                                   )
                                   showToast(
                                     "Error",
-                                    "Failed to take screenshot",
+                                    result.error || "Failed to take screenshot",
                                     "error"
                                   )
                                 }
@@ -319,59 +303,10 @@ const SolutionCommands: React.FC<SolutionCommandsProps> = ({
                               </div>
                             </div>
                             <p className="text-[10px] leading-relaxed text-white/70 truncate mt-1">
-                              Capture additional parts of the question or your
-                              solution for debugging help.
+                              Capture a new screenshot to clear the current
+                              answer and start a fresh question immediately.
                             </p>
                           </div>
-
-                          {extraScreenshots.length > 0 && (
-                            <div
-                              className="cursor-pointer rounded px-2 py-1.5 hover:bg-white/10 transition-colors"
-                              onClick={async () => {
-                                try {
-                                  const result =
-                                    await window.electronAPI.triggerProcessScreenshots()
-                                  if (!result.success) {
-                                    console.error(
-                                      "Failed to process screenshots:",
-                                      result.error
-                                    )
-                                    showToast(
-                                      "Error",
-                                      "Failed to process screenshots",
-                                      "error"
-                                    )
-                                  }
-                                } catch (error) {
-                                  console.error(
-                                    "Error processing screenshots:",
-                                    error
-                                  )
-                                  showToast(
-                                    "Error",
-                                    "Failed to process screenshots",
-                                    "error"
-                                  )
-                                }
-                              }}
-                            >
-                              <div className="flex items-center justify-between">
-                                <span className="truncate">Debug</span>
-                                <div className="flex gap-1 flex-shrink-0">
-                                  <span className="bg-white/20 px-1.5 py-0.5 rounded text-[10px] leading-none">
-                                    {COMMAND_KEY}
-                                  </span>
-                                  <span className="bg-white/20 px-1.5 py-0.5 rounded text-[10px] leading-none">
-                                    ↵
-                                  </span>
-                                </div>
-                              </div>
-                              <p className="text-[10px] leading-relaxed text-white/70 truncate mt-1">
-                                Generate new solutions based on all previous and
-                                newly added screenshots.
-                              </p>
-                            </div>
-                          )}
                         </>
                       )}
 
@@ -415,19 +350,6 @@ const SolutionCommands: React.FC<SolutionCommandsProps> = ({
                         currentLanguage={currentLanguage}
                         setLanguage={setLanguage}
                       />
-
-                      {/* API Key Settings */}
-                      <div className="mb-3 px-2 space-y-1">
-                        <div className="flex items-center justify-between text-[13px] font-medium text-white/90">
-                          <span>OpenAI API Settings</span>
-                          <button
-                            className="bg-white/10 hover:bg-white/20 px-2 py-1 rounded text-[11px]"
-                            onClick={() => window.electronAPI.openSettingsPortal()}
-                          >
-                            Settings
-                          </button>
-                        </div>
-                      </div>
 
                       <button
                         onClick={handleSignOut}

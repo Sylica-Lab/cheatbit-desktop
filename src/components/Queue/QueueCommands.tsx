@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react"
 import { createRoot } from "react-dom/client"
+import { Keyboard, LayoutDashboard, Settings2 } from "lucide-react"
 
 import { useToast } from "../../contexts/toast"
 import { LanguageSelector } from "../shared/LanguageSelector"
@@ -84,15 +85,8 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
 
   const handleSignOut = async () => {
     try {
-      // Clear any local storage or electron-specific data
-      localStorage.clear();
-      sessionStorage.clear();
-      
-      // Clear the API key in the configuration
-      await window.electronAPI.updateConfig({
-        apiKey: '',
-      });
-      
+      await window.electronAPI.logout()
+
       showToast('Success', 'Logged out successfully', 'success');
       
       // Reload the app after a short delay
@@ -113,6 +107,16 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
     setIsTooltipVisible(false)
   }
 
+  const openAccountDashboard = () => {
+    setIsTooltipVisible(false)
+    window.dispatchEvent(new CustomEvent("open-account-dashboard"))
+  }
+
+  const openSettings = () => {
+    setIsTooltipVisible(false)
+    void window.electronAPI.openSettingsPortal()
+  }
+
   return (
     <div>
       <div className="pt-2 w-fit">
@@ -125,7 +129,11 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
                 const result = await window.electronAPI.triggerScreenshot()
                 if (!result.success) {
                   console.error("Failed to take screenshot:", result.error)
-                  showToast("Error", "Failed to take screenshot", "error")
+                  showToast(
+                    "Error",
+                    result.error || "Failed to take screenshot",
+                    "error"
+                  )
                 }
               } catch (error) {
                 console.error("Error taking screenshot:", error)
@@ -135,7 +143,7 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
           >
             <span className="text-[11px] leading-none truncate">
               {screenshotCount === 0
-                ? "Take first screenshot"
+                ? "Analyse Screen"
                 : screenshotCount === 1
                 ? "Take second screenshot"
                 : screenshotCount === 2
@@ -172,7 +180,11 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
                       "Failed to process screenshots:",
                       result.error
                     )
-                    showToast("Error", "Failed to process screenshots", "error")
+                    showToast(
+                      "Error",
+                      result.error || "Failed to process screenshots",
+                      "error"
+                    )
                   }
                 } catch (error) {
                   console.error("Error processing screenshots:", error)
@@ -197,28 +209,42 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
           {/* Separator */}
           <div className="mx-2 h-4 w-px bg-white/20" />
 
+          <button
+            type="button"
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-white/80 transition-colors hover:bg-white/10 hover:text-white"
+            onClick={openAccountDashboard}
+            aria-label="Dashboard"
+            title="Dashboard"
+          >
+            <LayoutDashboard className="h-3.5 w-3.5" />
+          </button>
+
+          <button
+            type="button"
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-white/80 transition-colors hover:bg-white/10 hover:text-white"
+            onClick={openSettings}
+            aria-label="Settings"
+            title="Settings"
+          >
+            <Settings2 className="h-3.5 w-3.5" />
+          </button>
+
+          <div className="mx-1 h-4 w-px bg-white/20" />
+
           {/* Settings with Tooltip */}
           <div
             className="relative inline-block"
             onMouseEnter={handleMouseEnter}
             onMouseLeave={handleMouseLeave}
           >
-            {/* Gear icon */}
-            <div className="w-4 h-4 flex items-center justify-center cursor-pointer text-white/70 hover:text-white/90 transition-colors">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="w-3.5 h-3.5"
-              >
-                <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l-.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
-                <circle cx="12" cy="12" r="3" />
-              </svg>
-            </div>
+            <button
+              type="button"
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-white/70 transition-colors hover:bg-white/10 hover:text-white/90"
+              aria-label="Shortcuts"
+              title="Shortcuts"
+            >
+              <Keyboard className="h-3.5 w-3.5" />
+            </button>
 
             {/* Tooltip Content */}
             {isTooltipVisible && (
@@ -453,19 +479,6 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
                               </svg>
                             </div>
                           </div>
-                        </div>
-                      </div>
-
-                      {/* API Key Settings */}
-                      <div className="mb-3 px-2 space-y-1">
-                        <div className="flex items-center justify-between text-[13px] font-medium text-white/90">
-                          <span>OpenAI API Settings</span>
-                          <button
-                            className="bg-white/10 hover:bg-white/20 px-2 py-1 rounded text-[11px]"
-                            onClick={() => window.electronAPI.openSettingsPortal()}
-                          >
-                            Settings
-                          </button>
                         </div>
                       </div>
 

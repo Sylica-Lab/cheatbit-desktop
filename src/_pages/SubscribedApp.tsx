@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react"
 import Queue from "../_pages/Queue"
 import Solutions from "../_pages/Solutions"
 import { useToast } from "../contexts/toast"
+import { updateWindowToElement } from "../utils/contentSize"
+import { FOLLOW_UP_CHAT_QUERY_KEY } from "../components/FollowUp/FollowUpChat"
 
 interface SubscribedAppProps {
   credits: number
@@ -36,6 +38,9 @@ const SubscribedApp: React.FC<SubscribedAppProps> = ({
       queryClient.invalidateQueries({
         queryKey: ["new_solution"]
       })
+      queryClient.removeQueries({
+        queryKey: FOLLOW_UP_CHAT_QUERY_KEY
+      })
       setView("queue")
     })
 
@@ -50,18 +55,11 @@ const SubscribedApp: React.FC<SubscribedAppProps> = ({
 
     const updateDimensions = () => {
       if (!containerRef.current) return
-      const height = containerRef.current.scrollHeight || 600
-      const width = containerRef.current.scrollWidth || 800
-      window.electronAPI?.updateContentDimensions({ width, height })
+      updateWindowToElement(containerRef.current)
     }
 
     // Force initial dimension update immediately
     updateDimensions()
-    
-    // Set a fallback timer to ensure dimensions are set even if content isn't fully loaded
-    const fallbackTimer = setTimeout(() => {
-      window.electronAPI?.updateContentDimensions({ width: 800, height: 600 })
-    }, 500)
 
     const resizeObserver = new ResizeObserver(updateDimensions)
     resizeObserver.observe(containerRef.current)
@@ -81,7 +79,6 @@ const SubscribedApp: React.FC<SubscribedAppProps> = ({
     return () => {
       resizeObserver.disconnect()
       mutationObserver.disconnect()
-      clearTimeout(fallbackTimer)
       clearTimeout(delayedUpdate)
     }
   }, [view])
@@ -102,6 +99,9 @@ const SubscribedApp: React.FC<SubscribedAppProps> = ({
         queryClient.removeQueries({
           queryKey: ["problem_statement"]
         })
+        queryClient.removeQueries({
+          queryKey: FOLLOW_UP_CHAT_QUERY_KEY
+        })
         setView("queue")
       }),
       window.electronAPI.onResetView(() => {
@@ -113,6 +113,9 @@ const SubscribedApp: React.FC<SubscribedAppProps> = ({
         })
         queryClient.removeQueries({
           queryKey: ["problem_statement"]
+        })
+        queryClient.removeQueries({
+          queryKey: FOLLOW_UP_CHAT_QUERY_KEY
         })
         setView("queue")
       }),
@@ -135,7 +138,11 @@ const SubscribedApp: React.FC<SubscribedAppProps> = ({
   }, [view])
 
   return (
-    <div ref={containerRef} className="min-h-0">
+    <div
+      ref={containerRef}
+      data-size-root="true"
+      className="inline-flex min-h-0 flex-col items-start bg-transparent"
+    >
       {view === "queue" ? (
         <Queue
           setView={setView}

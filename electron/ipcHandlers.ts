@@ -1,37 +1,213 @@
 // ipcHandlers.ts
 
 import { ipcMain, shell, dialog } from "electron"
-import { randomBytes } from "crypto"
 import { IIpcHandlerDeps } from "./main"
 import { configHelper } from "./ConfigHelper"
+import { backendClient } from "./BackendClient"
+import type { UsageAction } from "../shared/backendAuth"
+import type { FollowUpChatTurn } from "../shared/followUpChat"
 
 export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
   console.log("Initializing IPC handlers")
 
+  const getProcessingAction = (): UsageAction =>
+    deps.getView() === "queue" ? "solve" : "debug"
+
+  const hasPendingProcessingInputs = (): boolean =>
+    deps.getView() === "queue"
+      ? deps.getScreenshotQueue().length > 0
+      : deps.getExtraScreenshotQueue().length > 0
+
+  const notifyUnauthorized = () => {
+    const mainWindow = deps.getMainWindow()
+    if (mainWindow) {
+      mainWindow.webContents.send(deps.PROCESSING_EVENTS.UNAUTHORIZED)
+    }
+  }
+
+  const emitUsageError = (action: UsageAction, message: string) => {
+    const mainWindow = deps.getMainWindow()
+    if (!mainWindow) return
+
+    if (action === "debug") {
+      mainWindow.webContents.send(deps.PROCESSING_EVENTS.DEBUG_ERROR, message)
+      return
+    }
+
+    mainWindow.webContents.send(
+      deps.PROCESSING_EVENTS.INITIAL_SOLUTION_ERROR,
+      message
+    )
+  }
+
+  const ensureAuthenticatedScreenshot = async () => {
+    const result = await backendClient.consumeUsage("screenshot")
+    if (!result.allowed && !result.session) {
+      notifyUnauthorized()
+    }
+
+    return result
+  }
+
+  const ensureProcessingAllowed = async (action: UsageAction) => {
+    const result = await backendClient.consumeUsage(action)
+    if (!result.allowed) {
+      if (!result.session) {
+        notifyUnauthorized()
+      } else if (result.error) {
+        emitUsageError(action, result.error)
+      }
+    }
+
+    return result
+  }
+
+  const autoProcessAfterScreenshot = () => {
+    const action = getProcessingAction()
+
+    void ensureProcessingAllowed(action)
+      .then((usageDecision) => {
+        if (!usageDecision.allowed) {
+          return
+        }
+
+        return deps.processingHelper?.processScreenshots()
+      })
+      .catch((error) => {
+        console.error("Error auto-processing screenshots after capture:", error)
+      })
+  }
+
+  ipcMain.handle("auth:get-state", async () => {
+    return backendClient.getAuthState()
+  })
+
+  ipcMain.handle("auth:register", async (_event, payload) => {
+    const session = await backendClient.register(
+      String(payload?.name || ""),
+      String(payload?.email || ""),
+      String(payload?.password || "")
+    )
+    return {
+      authenticated: true,
+      session,
+    }
+  })
+
+  ipcMain.handle("auth:login", async (_event, payload) => {
+    const session = await backendClient.login(
+      String(payload?.email || ""),
+      String(payload?.password || "")
+    )
+    return {
+      authenticated: true,
+      session,
+    }
+  })
+
+  ipcMain.handle("auth:logout", () => {
+    backendClient.logout()
+    return { success: true }
+  })
+
+  ipcMain.handle("auth:get-dashboard", async () => {
+    return backendClient.getAccountDashboard()
+  })
+
+  ipcMain.handle("auth:create-checkout-session", async () => {
+    return backendClient.createCheckoutSession()
+  })
+
+  ipcMain.handle("auth:create-billing-portal-session", async () => {
+    return backendClient.createBillingPortalSession()
+  })
+
+  ipcMain.handle("submit-text-follow-up", async (_event, payload) => {
+    const message = String(payload?.message || "").trim()
+    const currentContext = String(payload?.currentContext || "").trim()
+    const chatHistory = Array.isArray(payload?.chatHistory)
+      ? payload.chatHistory
+          .filter(
+            (entry: any): entry is FollowUpChatTurn =>
+              entry &&
+              (entry.role === "user" || entry.role === "assistant") &&
+              typeof entry.content === "string"
+          )
+          .map((entry) => ({
+            role: entry.role,
+            content: entry.content.trim(),
+          }))
+          .filter((entry) => entry.content.length > 0)
+          .slice(-10)
+      : []
+
+    if (!message) {
+      return {
+        success: false as const,
+        error: "Enter a follow-up question first.",
+      }
+    }
+
+    const usageDecision = await backendClient.consumeUsage("debug")
+    if (!usageDecision.allowed) {
+      if (!usageDecision.session) {
+        notifyUnauthorized()
+      }
+
+      return {
+        success: false as const,
+        error:
+          usageDecision.error ||
+          "This account cannot send follow-up questions right now.",
+      }
+    }
+
+    const result = await deps.processingHelper?.processTextFollowUp({
+      message,
+      currentContext,
+      chatHistory,
+    })
+
+    if (!result) {
+      return {
+        success: false as const,
+        error: "Failed to generate a follow-up response.",
+      }
+    }
+
+    if (result.success === false) {
+      return {
+        success: false as const,
+        error: result.error || "Failed to generate a follow-up response.",
+      }
+    }
+
+    return {
+      success: true as const,
+      data: result.data,
+    }
+  })
+
   // Configuration handlers
   ipcMain.handle("get-config", () => {
-    return configHelper.loadConfig();
+    return configHelper.getPublicConfig();
   })
 
   ipcMain.handle("update-config", (_event, updates) => {
-    return configHelper.updateConfig(updates);
+    configHelper.updateConfig(updates);
+    return configHelper.getPublicConfig();
   })
 
-  ipcMain.handle("check-api-key", () => {
-    return configHelper.hasApiKey();
-  })
-  
-  ipcMain.handle("validate-api-key", async (_event, apiKey) => {
+  ipcMain.handle("validate-api-key", async (_event, apiKey, provider) => {
     // First check the format
-    if (!configHelper.isValidApiKeyFormat(apiKey)) {
+    if (!configHelper.isValidApiKeyFormat(apiKey, provider)) {
       return { 
         valid: false, 
-        error: "Invalid API key format. OpenAI API keys start with 'sk-'" 
+        error: "Invalid API key format for the selected provider." 
       };
     }
     
-    // Then test the API key with OpenAI
-    const result = await configHelper.testApiKey(apiKey);
+    const result = await configHelper.testApiKey(apiKey, provider);
     return result;
   })
 
@@ -99,6 +275,19 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
       }
       return;
     }
+
+    if (!hasPendingProcessingInputs()) {
+      const mainWindow = deps.getMainWindow()
+      if (mainWindow) {
+        mainWindow.webContents.send(deps.PROCESSING_EVENTS.NO_SCREENSHOTS)
+      }
+      return
+    }
+
+    const usageDecision = await ensureProcessingAllowed(getProcessingAction())
+    if (!usageDecision.allowed) {
+      return
+    }
     
     await deps.processingHelper?.processScreenshots()
   })
@@ -156,12 +345,21 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     const mainWindow = deps.getMainWindow()
     if (mainWindow) {
       try {
+        const authDecision = await ensureAuthenticatedScreenshot()
+        if (!authDecision.allowed) {
+          return {
+            success: false,
+            error: authDecision.error || "Please log in before using the app.",
+          }
+        }
+
         const screenshotPath = await deps.takeScreenshot()
         const preview = await deps.getImagePreview(screenshotPath)
         mainWindow.webContents.send("screenshot-taken", {
           path: screenshotPath,
           preview
         })
+        autoProcessAfterScreenshot()
         return { success: true }
       } catch (error) {
         console.error("Error triggering screenshot:", error)
@@ -173,6 +371,13 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
 
   ipcMain.handle("take-screenshot", async () => {
     try {
+      const authDecision = await ensureAuthenticatedScreenshot()
+      if (!authDecision.allowed) {
+        return {
+          error: authDecision.error || "Please log in before using the app.",
+        }
+      }
+
       const screenshotPath = await deps.takeScreenshot()
       const preview = await deps.getImagePreview(screenshotPath)
       return { path: screenshotPath, preview }
@@ -240,7 +445,26 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
         if (mainWindow) {
           mainWindow.webContents.send(deps.PROCESSING_EVENTS.API_KEY_INVALID);
         }
-        return { success: false, error: "API key required" };
+        return {
+          success: false,
+          error: "No built-in API key configured for the selected provider.",
+        };
+      }
+
+      if (!hasPendingProcessingInputs()) {
+        const mainWindow = deps.getMainWindow()
+        if (mainWindow) {
+          mainWindow.webContents.send(deps.PROCESSING_EVENTS.NO_SCREENSHOTS)
+        }
+        return { success: false, error: "No screenshots available to process." }
+      }
+
+      const usageDecision = await ensureProcessingAllowed(getProcessingAction())
+      if (!usageDecision.allowed) {
+        return {
+          success: false,
+          error: usageDecision.error || "Unable to process this request.",
+        }
       }
       
       await deps.processingHelper?.processScreenshots()

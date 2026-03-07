@@ -2,6 +2,22 @@
 @tailwind components;
 @tailwind utilities;
 
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+}
+
+body {
+  overflow: hidden;
+}
+
+#root {
+  display: inline-block;
+}
+
 /* Custom animations for UI elements */
 @keyframes fadeIn {
   from { opacity: 0; transform: translate(-50%, -48%); }

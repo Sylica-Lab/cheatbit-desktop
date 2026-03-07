@@ -25,14 +25,10 @@ export function Header({ currentLanguage, setLanguage, onOpenSettings }: HeaderP
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const { showToast } = useToast();
 
-  // Handle logout - clear API key and reload app
+  // Handle logout and reload app
   const handleLogout = async () => {
     try {
-      // Update config with empty API key
-      await window.electronAPI.updateConfig({
-        apiKey: '',
-      });
-      
+      await window.electronAPI.logout()
       showToast('Success', 'Logged out successfully', 'success');
       
       // Reload the app after a short delay

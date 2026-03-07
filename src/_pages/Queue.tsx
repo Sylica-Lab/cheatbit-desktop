@@ -5,6 +5,7 @@ import QueueCommands from "../components/Queue/QueueCommands"
 
 import { useToast } from "../contexts/toast"
 import { Screenshot } from "../types/screenshots"
+import { updateWindowToElement } from "../utils/contentSize"
 
 async function fetchScreenshots(): Promise<Screenshot[]> {
   try {
@@ -70,15 +71,10 @@ const Queue: React.FC<QueueProps> = ({
     // Height update logic
     const updateDimensions = () => {
       if (contentRef.current) {
-        let contentHeight = contentRef.current.scrollHeight
-        const contentWidth = contentRef.current.scrollWidth
-        if (isTooltipVisible) {
-          contentHeight += tooltipHeight
-        }
-        window.electronAPI.updateContentDimensions({
-          width: contentWidth,
-          height: contentHeight
-        })
+        updateWindowToElement(
+          contentRef.current,
+          { height: isTooltipVisible ? tooltipHeight : 0 }
+        )
       }
     }
 
@@ -137,9 +133,12 @@ const Queue: React.FC<QueueProps> = ({
   };
   
   return (
-    <div ref={contentRef} className={`bg-transparent w-1/2`}>
+    <div
+      ref={contentRef}
+      className="inline-flex flex-col items-start bg-transparent"
+    >
       <div className="px-4 py-3">
-        <div className="space-y-3 w-fit">
+        <div className="space-y-3">
           <ScreenshotQueue
             isLoading={false}
             screenshots={screenshots}

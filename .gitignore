@@ -4,6 +4,9 @@ release
 dist
 .env
 .env.*
+backend/data/
+backend-runtime.log
+backend-runtime.err.log
 **/.DS_Store
 **/.vscode
 **/.idea

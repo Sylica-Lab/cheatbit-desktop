@@ -1,11 +1,14 @@
 import Store from "electron-store"
+import type { AuthSession } from "../shared/backendAuth"
 
 interface StoreSchema {
-  // Empty for now, we can add other store items here later
+  authSession: AuthSession | null
 }
 
 const store = new Store<StoreSchema>({
-  defaults: {},
+  defaults: {
+    authSession: null,
+  },
   encryptionKey: "your-encryption-key"
 }) as Store<StoreSchema> & {
   store: StoreSchema

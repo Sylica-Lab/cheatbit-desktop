@@ -8,6 +8,11 @@ import SolutionCommands from "../components/Solutions/SolutionCommands"
 import { Screenshot } from "../types/screenshots"
 import { ComplexitySection, ContentSection } from "./Solutions"
 import { useToast } from "../contexts/toast"
+import { updateWindowToElement } from "../utils/contentSize"
+import {
+  FollowUpChat,
+  FOLLOW_UP_CHAT_QUERY_KEY
+} from "../components/FollowUp/FollowUpChat"
 
 const CodeSection = ({
   title,
@@ -31,20 +36,19 @@ const CodeSection = ({
         </div>
       </div>
     ) : (
-      <div className="w-full">
+      <div>
         <SyntaxHighlighter
           showLineNumbers
           language={currentLanguage == "golang" ? "go" : currentLanguage}
           style={dracula}
           customStyle={{
-            maxWidth: "100%",
             margin: 0,
             padding: "1rem",
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-all",
+            width: "fit-content",
+            minWidth: "100%",
+            overflowX: "auto",
             backgroundColor: "rgba(22, 27, 34, 0.5)"
           }}
-          wrapLongLines={true}
         >
           {code as string}
         </SyntaxHighlighter>
@@ -133,12 +137,12 @@ const Debug: React.FC<DebugProps> = ({
           // Pick first few sections as thoughts
           setThoughtsData(sections.slice(0, 3));
         } else {
-          setThoughtsData(["Debug analysis based on your screenshots"]);
+          setThoughtsData(["Analysis based on your screenshots"]);
         }
       } else {
         // Fallback to code or default
         setNewCode(newSolution.code || "// No analysis available");
-        setThoughtsData(newSolution.thoughts || ["Debug analysis based on your screenshots"]);
+        setThoughtsData(newSolution.thoughts || ["Analysis based on your screenshots"]);
       }
       setTimeComplexityData(newSolution.time_complexity || "N/A - Debug mode")
       setSpaceComplexityData(newSolution.space_complexity || "N/A - Debug mode")
@@ -177,15 +181,15 @@ const Debug: React.FC<DebugProps> = ({
             if (bulletPoints.length > 0) {
               setThoughtsData(bulletPoints.slice(0, 5));
             } else {
-              setThoughtsData(["Debug analysis based on your screenshots"]);
+              setThoughtsData(["Analysis based on your screenshots"]);
             }
           } else {
-            setThoughtsData(["Debug analysis based on your screenshots"]);
+            setThoughtsData(["Analysis based on your screenshots"]);
           }
         } else {
           // Fallback to code or default
           setNewCode(data.code || "// No analysis available");
-          setThoughtsData(data.thoughts || ["Debug analysis based on your screenshots"]);
+          setThoughtsData(data.thoughts || ["Analysis based on your screenshots"]);
           setDebugAnalysis(null);
         }
         setTimeComplexityData(data.time_complexity || "N/A - Debug mode");
@@ -195,12 +199,15 @@ const Debug: React.FC<DebugProps> = ({
       }),
       
       window.electronAPI.onDebugStart(() => {
+        queryClient.removeQueries({
+          queryKey: FOLLOW_UP_CHAT_QUERY_KEY
+        })
         setIsProcessing(true)
       }),
       window.electronAPI.onDebugError((error: string) => {
         showToast(
           "Processing Failed",
-          "There was an error debugging your code.",
+          "There was an error processing the new screenshots.",
           "error"
         )
         setIsProcessing(false)
@@ -211,15 +218,10 @@ const Debug: React.FC<DebugProps> = ({
     // Set up resize observer
     const updateDimensions = () => {
       if (contentRef.current) {
-        let contentHeight = contentRef.current.scrollHeight
-        const contentWidth = contentRef.current.scrollWidth
-        if (tooltipVisible) {
-          contentHeight += tooltipHeight
-        }
-        window.electronAPI.updateContentDimensions({
-          width: contentWidth,
-          height: contentHeight
-        })
+        updateWindowToElement(
+          contentRef.current,
+          { height: tooltipVisible ? tooltipHeight : 0 }
+        )
       }
     }
 
@@ -258,13 +260,33 @@ const Debug: React.FC<DebugProps> = ({
     }
   }
 
+  const followUpContext = [
+    thoughtsData && thoughtsData.length > 0
+      ? `What changed:\n- ${thoughtsData.join("\n- ")}`
+      : "",
+    newCode
+      ? `Current code in ${currentLanguage}:\n${newCode}`
+      : "",
+    debugAnalysis
+      ? `Debug analysis:\n${debugAnalysis}`
+      : "",
+    timeComplexityData && spaceComplexityData
+      ? `Complexity:\nTime: ${timeComplexityData}\nSpace: ${spaceComplexityData}`
+      : ""
+  ]
+    .filter(Boolean)
+    .join("\n\n")
+
   return (
-    <div ref={contentRef} className="relative">
+    <div
+      ref={contentRef}
+      className="relative inline-flex flex-col items-start bg-transparent"
+    >
       <div className="space-y-3 px-4 py-3">
       {/* Conditionally render the screenshot queue */}
       <div className="bg-transparent w-fit">
         <div className="pb-3">
-          <div className="space-y-3 w-fit">
+          <div className="space-y-3">
             <ScreenshotQueue
               screenshots={screenshots}
               onDeleteScreenshot={handleDeleteExtraScreenshot}
@@ -286,7 +308,7 @@ const Debug: React.FC<DebugProps> = ({
       />
 
       {/* Main Content */}
-      <div className="w-full text-sm text-black bg-black/60 rounded-md">
+      <div className="text-sm text-black bg-black/60 rounded-md">
         <div className="rounded-lg overflow-hidden">
           <div className="px-4 py-3 space-y-4">
             {/* Thoughts Section */}
@@ -329,7 +351,7 @@ const Debug: React.FC<DebugProps> = ({
                   </div>
                 </div>
               ) : (
-                <div className="w-full bg-black/30 rounded-md p-4 text-[13px] leading-[1.4] text-gray-100 whitespace-pre-wrap overflow-auto max-h-[600px]">
+                <div className="bg-black/30 rounded-md p-4 text-[13px] leading-[1.4] text-gray-100 whitespace-pre-wrap overflow-auto max-h-[600px]">
                   {/* Process the debug analysis text by sections and lines */}
                   {(() => {
                     // First identify key sections based on common patterns in the debug output
@@ -455,6 +477,8 @@ const Debug: React.FC<DebugProps> = ({
               spaceComplexity={spaceComplexityData}
               isLoading={!timeComplexityData || !spaceComplexityData}
             />
+
+            <FollowUpChat currentContext={followUpContext} />
           </div>
         </div>
       </div>

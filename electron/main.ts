@@ -74,6 +74,9 @@ export interface IProcessingHelperDeps {
 
 export interface IShortcutsHelperDeps {
   getMainWindow: () => BrowserWindow | null
+  getView: () => "queue" | "solutions" | "debug"
+  getScreenshotQueue: () => string[]
+  getExtraScreenshotQueue: () => string[]
   takeScreenshot: () => Promise<string>
   getImagePreview: (filepath: string) => Promise<string>
   processingHelper: ProcessingHelper | null
@@ -85,6 +88,7 @@ export interface IShortcutsHelperDeps {
   moveWindowRight: () => void
   moveWindowUp: () => void
   moveWindowDown: () => void
+  PROCESSING_EVENTS: typeof state.PROCESSING_EVENTS
 }
 
 export interface IIpcHandlerDeps {
@@ -131,6 +135,9 @@ function initializeHelpers() {
   } as IProcessingHelperDeps)
   state.shortcutsHelper = new ShortcutsHelper({
     getMainWindow,
+    getView,
+    getScreenshotQueue,
+    getExtraScreenshotQueue,
     takeScreenshot,
     getImagePreview,
     processingHelper: state.processingHelper,
@@ -150,7 +157,8 @@ function initializeHelpers() {
         )
       ),
     moveWindowUp: () => moveWindowVertical((y) => y - state.step),
-    moveWindowDown: () => moveWindowVertical((y) => y + state.step)
+    moveWindowDown: () => moveWindowVertical((y) => y + state.step),
+    PROCESSING_EVENTS: state.PROCESSING_EVENTS
   } as IShortcutsHelperDeps)
 }
 
@@ -207,13 +215,14 @@ async function createWindow(): Promise<void> {
   state.currentY = 50
 
   const windowSettings: Electron.BrowserWindowConstructorOptions = {
-    width: 800,
-    height: 600,
-    minWidth: 750,
-    minHeight: 550,
+    width: 320,
+    height: 120,
+    minWidth: 1,
+    minHeight: 1,
     x: state.currentX,
     y: 50,
     alwaysOnTop: true,
+    useContentSize: true,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -476,14 +485,25 @@ function setWindowDimensions(width: number, height: number): void {
     const [currentX, currentY] = state.mainWindow.getPosition()
     const primaryDisplay = screen.getPrimaryDisplay()
     const workArea = primaryDisplay.workAreaSize
-    const maxWidth = Math.floor(workArea.width * 0.5)
+    const clampedWidth = Math.max(1, Math.min(Math.ceil(width), workArea.width))
+    const clampedHeight = Math.max(
+      1,
+      Math.min(Math.ceil(height), workArea.height)
+    )
+    const nextX = Math.max(0, Math.min(currentX, workArea.width - clampedWidth))
+    const nextY = Math.max(
+      0,
+      Math.min(currentY, workArea.height - clampedHeight)
+    )
 
     state.mainWindow.setBounds({
-      x: Math.min(currentX, workArea.width - maxWidth),
-      y: currentY,
-      width: Math.min(width + 32, maxWidth),
-      height: Math.ceil(height)
+      x: nextX,
+      y: nextY,
+      width: clampedWidth,
+      height: clampedHeight
     })
+    state.currentX = nextX
+    state.currentY = nextY
   }
 }
 
@@ -527,7 +547,7 @@ async function initializeApp() {
     
     // Ensure a configuration file exists
     if (!configHelper.hasApiKey()) {
-      console.log("No API key found in configuration. User will need to set up.")
+      console.log("No built-in API key found. Add one in electron/builtInApiKeys.ts.")
     }
     
     initializeHelpers()
@@ -575,10 +595,48 @@ async function initializeApp() {
   }
 }
 
+function handleProtocolUrl(protocolUrl?: string): void {
+  if (!protocolUrl || !protocolUrl.startsWith("interview-coder://")) {
+    return
+  }
+
+  let parsed: URL
+  try {
+    parsed = new URL(protocolUrl)
+  } catch (error) {
+    console.error("Failed to parse protocol URL:", protocolUrl, error)
+    return
+  }
+
+  if (parsed.hostname !== "billing") {
+    return
+  }
+
+  const notifyRenderer = () => {
+    if (!state.mainWindow?.isDestroyed()) {
+      state.mainWindow.webContents.send("subscription-updated")
+    }
+  }
+
+  if (!state.mainWindow) {
+    void createWindow().then(() => {
+      notifyRenderer()
+    })
+    return
+  }
+
+  if (state.mainWindow.isMinimized()) {
+    state.mainWindow.restore()
+  }
+  state.mainWindow.focus()
+  notifyRenderer()
+}
+
 // Auth callback handling removed - no longer needed
 app.on("open-url", (event, url) => {
   console.log("open-url event received:", url)
   event.preventDefault()
+  handleProtocolUrl(url)
 })
 
 // Handle second instance (removed auth callback handling)
@@ -592,6 +650,11 @@ app.on("second-instance", (event, commandLine) => {
     if (state.mainWindow.isMinimized()) state.mainWindow.restore()
     state.mainWindow.focus()
   }
+
+  const protocolUrl = commandLine.find((arg) =>
+    arg.startsWith("interview-coder://")
+  )
+  handleProtocolUrl(protocolUrl)
 })
 
 // Prevent multiple instances of the app
@@ -654,6 +717,21 @@ function clearQueues(): void {
 
 async function takeScreenshot(): Promise<string> {
   if (!state.mainWindow) throw new Error("No main window available")
+
+  const shouldStartFreshQuestion =
+    state.view !== "queue" || state.problemInfo !== null || state.hasDebugged
+
+  if (shouldStartFreshQuestion) {
+    state.processingHelper?.cancelOngoingRequests(false)
+    clearQueues()
+    state.hasDebugged = false
+
+    if (!state.mainWindow.isDestroyed()) {
+      state.mainWindow.webContents.send("reset-view")
+      state.mainWindow.webContents.send("reset")
+    }
+  }
+
   return (
     state.screenshotHelper?.takeScreenshot(
       () => hideMainWindow(),

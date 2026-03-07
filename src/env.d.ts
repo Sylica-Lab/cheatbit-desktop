@@ -1,6 +1,15 @@
 /// <reference types="vite/client" />
 
-import { ToastMessage } from "./components/ui/toast"
+import type { ApiProvider, AppConfig } from "../shared/aiConfig"
+import type {
+  AuthState,
+  BillingSessionResponse,
+  UserDashboardData
+} from "../shared/backendAuth"
+import type {
+  TextFollowUpRequest,
+  TextFollowUpResponse
+} from "../shared/followUpChat"
 
 interface ImportMetaEnv {
   readonly VITE_SUPABASE_URL: string
@@ -13,6 +22,25 @@ interface ImportMeta {
 }
 
 interface ElectronAPI {
+  getAuthState: () => Promise<AuthState>
+  register: (payload: {
+    name: string
+    email: string
+    password: string
+  }) => Promise<AuthState>
+  login: (payload: {
+    email: string
+    password: string
+  }) => Promise<AuthState>
+  logout: () => Promise<{ success: boolean }>
+  getAccountDashboard: () => Promise<UserDashboardData>
+  createCheckoutSession: () => Promise<BillingSessionResponse>
+  createBillingPortalSession: () => Promise<BillingSessionResponse>
+  submitTextFollowUp: (
+    payload: TextFollowUpRequest
+  ) => Promise<
+    { success: true; data: TextFollowUpResponse } | { success: false; error: string }
+  >
   openSubscriptionPortal: (authData: {
     id: string
     email: string
@@ -59,6 +87,17 @@ interface ElectronAPI {
   installUpdate: () => void
   onUpdateAvailable: (callback: (info: any) => void) => () => void
   onUpdateDownloaded: (callback: (info: any) => void) => () => void
+  getConfig: () => Promise<AppConfig>
+  updateConfig: (config: Partial<AppConfig>) => Promise<AppConfig>
+  validateApiKey: (
+    apiKey: string,
+    provider?: ApiProvider
+  ) => Promise<{ valid: boolean; error?: string }>
+  openLink: (url: string) => void
+  openSettingsPortal: () => Promise<void>
+  onShowSettings: (callback: () => void) => () => void
+  onApiKeyInvalid: (callback: () => void) => () => void
+  removeListener: (eventName: string, callback: (...args: any[]) => void) => void
 }
 
 interface Window {

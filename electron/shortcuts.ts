@@ -1,6 +1,8 @@
 import { globalShortcut, app } from "electron"
 import { IShortcutsHelperDeps } from "./main"
 import { configHelper } from "./ConfigHelper"
+import { backendClient } from "./BackendClient"
+import type { UsageAction } from "../shared/backendAuth"
 
 export class ShortcutsHelper {
   private deps: IShortcutsHelperDeps
@@ -34,17 +36,82 @@ export class ShortcutsHelper {
     }
   }
 
+  private getProcessingAction(): UsageAction {
+    return this.deps.getView() === "queue" ? "solve" : "debug"
+  }
+
+  private emitUnauthorized(): void {
+    const mainWindow = this.deps.getMainWindow()
+    if (mainWindow) {
+      mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.UNAUTHORIZED)
+    }
+  }
+
+  private emitUsageError(action: UsageAction, message: string): void {
+    const mainWindow = this.deps.getMainWindow()
+    if (!mainWindow) return
+
+    if (action === "debug") {
+      mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.DEBUG_ERROR, message)
+      return
+    }
+
+    mainWindow.webContents.send(
+      this.deps.PROCESSING_EVENTS.INITIAL_SOLUTION_ERROR,
+      message
+    )
+  }
+
+  private hasPendingScreenshots(action: UsageAction): boolean {
+    if (action === "debug") {
+      return this.deps.getExtraScreenshotQueue().length > 0
+    }
+
+    return this.deps.getScreenshotQueue().length > 0
+  }
+
   public registerGlobalShortcuts(): void {
     globalShortcut.register("CommandOrControl+H", async () => {
       const mainWindow = this.deps.getMainWindow()
       if (mainWindow) {
         console.log("Taking screenshot...")
         try {
+          const authDecision = await backendClient.consumeUsage("screenshot")
+          if (!authDecision.allowed) {
+            if (!authDecision.session) {
+              this.emitUnauthorized()
+            }
+            return
+          }
+
           const screenshotPath = await this.deps.takeScreenshot()
           const preview = await this.deps.getImagePreview(screenshotPath)
           mainWindow.webContents.send("screenshot-taken", {
             path: screenshotPath,
             preview
+          })
+
+          if (!configHelper.hasApiKey()) {
+            mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.API_KEY_INVALID)
+            return
+          }
+
+          const action = this.getProcessingAction()
+          const usageDecision = await backendClient.consumeUsage(action)
+          if (!usageDecision.allowed) {
+            if (!usageDecision.session) {
+              this.emitUnauthorized()
+            } else if (usageDecision.error) {
+              this.emitUsageError(action, usageDecision.error)
+            }
+            return
+          }
+
+          void this.deps.processingHelper?.processScreenshots().catch((error) => {
+            console.error(
+              "Error auto-processing screenshots after shortcut capture:",
+              error
+            )
           })
         } catch (error) {
           console.error("Error capturing screenshot:", error)
@@ -53,6 +120,33 @@ export class ShortcutsHelper {
     })
 
     globalShortcut.register("CommandOrControl+Enter", async () => {
+      if (!configHelper.hasApiKey()) {
+        const mainWindow = this.deps.getMainWindow()
+        if (mainWindow) {
+          mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.API_KEY_INVALID)
+        }
+        return
+      }
+
+      const action = this.getProcessingAction()
+      if (!this.hasPendingScreenshots(action)) {
+        const mainWindow = this.deps.getMainWindow()
+        if (mainWindow) {
+          mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.NO_SCREENSHOTS)
+        }
+        return
+      }
+
+      const usageDecision = await backendClient.consumeUsage(action)
+      if (!usageDecision.allowed) {
+        if (!usageDecision.session) {
+          this.emitUnauthorized()
+        } else if (usageDecision.error) {
+          this.emitUsageError(action, usageDecision.error)
+        }
+        return
+      }
+
       await this.deps.processingHelper?.processScreenshots()
     })
 

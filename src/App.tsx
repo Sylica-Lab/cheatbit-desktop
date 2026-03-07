@@ -4,7 +4,7 @@ import {
   QueryClient,
   QueryClientProvider
 } from "@tanstack/react-query"
-import { useEffect, useState, useCallback } from "react"
+import { useEffect, useState, useCallback, useRef } from "react"
 import {
   Toast,
   ToastDescription,
@@ -13,8 +13,11 @@ import {
   ToastViewport
 } from "./components/ui/toast"
 import { ToastContext } from "./contexts/toast"
-import { WelcomeScreen } from "./components/WelcomeScreen"
+import { AccountDashboardDialog } from "./components/Account/AccountDashboardDialog"
+import { AuthScreen } from "./components/Auth/AuthScreen"
 import { SettingsDialog } from "./components/Settings/SettingsDialog"
+import type { AuthState } from "../shared/backendAuth"
+import { updateWindowToElement } from "./utils/contentSize"
 
 // Create a React Query client
 const queryClient = new QueryClient({
@@ -42,11 +45,15 @@ function App() {
   const [credits, setCredits] = useState<number>(999) // Unlimited credits
   const [currentLanguage, setCurrentLanguage] = useState<string>("python")
   const [isInitialized, setIsInitialized] = useState(false)
-  const [hasApiKey, setHasApiKey] = useState(false)
-  const [apiKeyDialogOpen, setApiKeyDialogOpen] = useState(false)
+  const [authState, setAuthState] = useState<AuthState>({
+    authenticated: false,
+    session: null
+  })
   // Note: Model selection is now handled via separate extraction/solution/debugging model settings
-
+	
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
+  const [isAccountDashboardOpen, setIsAccountDashboardOpen] = useState(false)
+  const appShellRef = useRef<HTMLDivElement>(null)
 
   // Set unlimited credits
   const updateCredits = useCallback(() => {
@@ -82,29 +89,6 @@ function App() {
     },
     []
   )
-
-  // Check for OpenAI API key and prompt if not found
-  useEffect(() => {
-    const checkApiKey = async () => {
-      try {
-        const hasKey = await window.electronAPI.checkApiKey()
-        setHasApiKey(hasKey)
-        
-        // If no API key is found, show the settings dialog after a short delay
-        if (!hasKey) {
-          setTimeout(() => {
-            setIsSettingsOpen(true)
-          }, 1000)
-        }
-      } catch (error) {
-        console.error("Failed to check API key:", error)
-      }
-    }
-    
-    if (isInitialized) {
-      checkApiKey()
-    }
-  }, [isInitialized])
 
   // Initialize dropdown handler
   useEffect(() => {
@@ -147,6 +131,37 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const handleOpenAccountDashboard = () => {
+      setIsAccountDashboardOpen(true)
+    }
+
+    window.addEventListener("open-account-dashboard", handleOpenAccountDashboard)
+    return () => {
+      window.removeEventListener(
+        "open-account-dashboard",
+        handleOpenAccountDashboard
+      )
+    }
+  }, [])
+
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.onSubscriptionUpdated(() => {
+      void window.electronAPI
+        .getAuthState()
+        .then((nextAuthState) => {
+          setAuthState(nextAuthState)
+        })
+        .catch((error) => {
+          console.error("Failed to refresh auth state after billing return:", error)
+        })
+    })
+
+    return () => {
+      unsubscribe()
+    }
+  }, [])
+
   // Initialize basic app state
   useEffect(() => {
     // Load config and set values
@@ -156,7 +171,10 @@ function App() {
         updateCredits()
         
         // Load config including language and model settings
-        const config = await window.electronAPI.getConfig()
+        const [config, nextAuthState] = await Promise.all([
+          window.electronAPI.getConfig(),
+          window.electronAPI.getAuthState()
+        ])
         
         // Load language preference
         if (config && config.language) {
@@ -164,6 +182,8 @@ function App() {
         } else {
           updateLanguage("python")
         }
+
+        setAuthState(nextAuthState)
         
         // Model settings are now managed through the settings dialog
         // and stored in config as extractionModel, solutionModel, and debuggingModel
@@ -173,6 +193,12 @@ function App() {
         console.error("Failed to initialize app:", error)
         // Fallback to defaults
         updateLanguage("python")
+        setAuthState({
+          authenticated: false,
+          session: null,
+          error:
+            error instanceof Error ? error.message : "Failed to initialize authentication."
+        })
         markInitialized()
       }
     }
@@ -182,15 +208,30 @@ function App() {
     // Event listeners for process events
     const onApiKeyInvalid = () => {
       showToast(
-        "API Key Invalid",
-        "Your OpenAI API key appears to be invalid or has insufficient credits",
+        "Provider Not Ready",
+        "The selected provider is not configured, the key is invalid, or it is out of credits.",
         "error"
       )
-      setApiKeyDialogOpen(true)
+      setIsSettingsOpen(true)
+    }
+
+    const onUnauthorized = () => {
+      setAuthState({
+        authenticated: false,
+        session: null,
+        error: "Please log in before using CheatBit."
+      })
+      setIsAccountDashboardOpen(false)
+      showToast("Login Required", "Please log in to continue.", "error")
     }
 
     // Setup API key invalid listener
-    window.electronAPI.onApiKeyInvalid(onApiKeyInvalid)
+    const unsubscribeApiKeyInvalid = window.electronAPI.onApiKeyInvalid(
+      onApiKeyInvalid
+    )
+    const unsubscribeUnauthorized = window.electronAPI.onUnauthorized(
+      onUnauthorized
+    )
 
     // Define a no-op handler for solution success
     const unsubscribeSolutionSuccess = window.electronAPI.onSolutionSuccess(
@@ -202,60 +243,92 @@ function App() {
 
     // Cleanup function
     return () => {
-      window.electronAPI.removeListener("API_KEY_INVALID", onApiKeyInvalid)
+      unsubscribeApiKeyInvalid()
+      unsubscribeUnauthorized()
       unsubscribeSolutionSuccess()
       window.__IS_INITIALIZED__ = false
       setIsInitialized(false)
     }
   }, [updateCredits, updateLanguage, markInitialized, showToast])
 
-  // API Key dialog management
-  const handleOpenSettings = useCallback(() => {
-    console.log('Opening settings dialog');
-    setIsSettingsOpen(true);
-  }, []);
-  
+  const handleAuthenticated = useCallback((nextAuthState: AuthState) => {
+    setAuthState(nextAuthState)
+  }, [])
+
   const handleCloseSettings = useCallback((open: boolean) => {
     console.log('Settings dialog state changed:', open);
     setIsSettingsOpen(open);
   }, []);
 
-  const handleApiKeySave = useCallback(async (apiKey: string) => {
-    try {
-      await window.electronAPI.updateConfig({ apiKey })
-      setHasApiKey(true)
-      showToast("Success", "API key saved successfully", "success")
-      
-      // Reload app after a short delay to reinitialize with the new API key
-      setTimeout(() => {
-        window.location.reload()
-      }, 1500)
-    } catch (error) {
-      console.error("Failed to save API key:", error)
-      showToast("Error", "Failed to save API key", "error")
+  const handleCloseAccountDashboard = useCallback((open: boolean) => {
+    setIsAccountDashboardOpen(open)
+  }, [])
+
+  useEffect(() => {
+    if (
+      !isInitialized ||
+      !authState.authenticated ||
+      !appShellRef.current
+    ) {
+      return
     }
-  }, [showToast])
+
+    const timer = window.setTimeout(() => {
+      if (!appShellRef.current) return
+      updateWindowToElement(appShellRef.current)
+    }, 60)
+
+    return () => window.clearTimeout(timer)
+  }, [
+    isInitialized,
+    authState.authenticated,
+    isSettingsOpen,
+    isAccountDashboardOpen
+  ])
 
   return (
     <QueryClientProvider client={queryClient}>
-      <ToastProvider>
+        <ToastProvider>
         <ToastContext.Provider value={{ showToast }}>
-          <div className="relative">
+          <div className="relative inline-block bg-transparent">
             {isInitialized ? (
-              hasApiKey ? (
-                <SubscribedApp
-                  credits={credits}
-                  currentLanguage={currentLanguage}
-                  setLanguage={updateLanguage}
-                />
+              authState.authenticated ? (
+                <div
+                  ref={appShellRef}
+                  data-app-shell="true"
+                  data-aux-open={
+                    isSettingsOpen || isAccountDashboardOpen ? "true" : "false"
+                  }
+                  className="inline-flex flex-col items-start bg-transparent"
+                >
+                  <SubscribedApp
+                    credits={credits}
+                    currentLanguage={currentLanguage}
+                    setLanguage={updateLanguage}
+                  />
+                  <SettingsDialog 
+                    open={isSettingsOpen} 
+                    onOpenChange={handleCloseSettings} 
+                  />
+                  <AccountDashboardDialog
+                    open={isAccountDashboardOpen}
+                    onOpenChange={handleCloseAccountDashboard}
+                  />
+                </div>
               ) : (
-                <WelcomeScreen onOpenSettings={handleOpenSettings} />
+                <AuthScreen
+                  initialError={authState.error}
+                  onAuthenticated={handleAuthenticated}
+                />
               )
             ) : (
-              <div className="min-h-screen bg-black flex items-center justify-center">
-                <div className="flex flex-col items-center gap-3">
+              <div
+                data-size-root="true"
+                className="inline-flex items-center justify-center bg-transparent p-4"
+              >
+                <div className="flex flex-col items-center gap-3 rounded-xl border border-white/10 bg-black/70 px-5 py-4 text-white shadow-lg">
                   <div className="w-6 h-6 border-2 border-white/20 border-t-white/80 rounded-full animate-spin"></div>
-                  <p className="text-white/60 text-sm">
+                  <p className="text-sm text-white/60">
                     Initializing...
                   </p>
                 </div>
@@ -263,12 +336,6 @@ function App() {
             )}
             <UpdateNotification />
           </div>
-          
-          {/* Settings Dialog */}
-          <SettingsDialog 
-            open={isSettingsOpen} 
-            onOpenChange={handleCloseSettings} 
-          />
           
           <Toast
             open={toastState.open}

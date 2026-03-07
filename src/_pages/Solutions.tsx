@@ -11,6 +11,11 @@ import SolutionCommands from "../components/Solutions/SolutionCommands"
 import Debug from "./Debug"
 import { useToast } from "../contexts/toast"
 import { COMMAND_KEY } from "../utils/platform"
+import { updateWindowToElement } from "../utils/contentSize"
+import {
+  FollowUpChat,
+  FOLLOW_UP_CHAT_QUERY_KEY,
+} from "../components/FollowUp/FollowUpChat"
 
 export const ContentSection = ({
   title,
@@ -28,11 +33,11 @@ export const ContentSection = ({
     {isLoading ? (
       <div className="mt-4 flex">
         <p className="text-xs bg-gradient-to-r from-gray-300 via-gray-100 to-gray-300 bg-clip-text text-transparent animate-pulse">
-          Extracting problem statement...
+          Analyzing the question...
         </p>
       </div>
     ) : (
-      <div className="text-[13px] leading-[1.4] text-gray-100 max-w-[600px]">
+      <div className="text-[13px] leading-[1.4] text-gray-100">
         {content}
       </div>
     )}
@@ -42,12 +47,14 @@ const SolutionSection = ({
   title,
   content,
   isLoading,
-  currentLanguage
+  currentLanguage,
+  isCodeResponse
 }: {
   title: string
   content: React.ReactNode
   isLoading: boolean
   currentLanguage: string
+  isCodeResponse: boolean
 }) => {
   const [copied, setCopied] = useState(false)
 
@@ -74,29 +81,34 @@ const SolutionSection = ({
           </div>
         </div>
       ) : (
-        <div className="w-full relative">
+        <div className="relative">
           <button
             onClick={copyToClipboard}
             className="absolute top-2 right-2 text-xs text-white bg-white/10 hover:bg-white/20 rounded px-2 py-1 transition"
           >
             {copied ? "Copied!" : "Copy"}
           </button>
-          <SyntaxHighlighter
-            showLineNumbers
-            language={currentLanguage == "golang" ? "go" : currentLanguage}
-            style={dracula}
-            customStyle={{
-              maxWidth: "100%",
-              margin: 0,
-              padding: "1rem",
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-all",
-              backgroundColor: "rgba(22, 27, 34, 0.5)"
-            }}
-            wrapLongLines={true}
-          >
-            {content as string}
-          </SyntaxHighlighter>
+          {isCodeResponse ? (
+            <SyntaxHighlighter
+              showLineNumbers
+              language={currentLanguage == "golang" ? "go" : currentLanguage}
+              style={dracula}
+              customStyle={{
+                margin: 0,
+                padding: "1rem",
+                width: "fit-content",
+                minWidth: "100%",
+                overflowX: "auto",
+                backgroundColor: "rgba(22, 27, 34, 0.5)"
+              }}
+            >
+              {content as string}
+            </SyntaxHighlighter>
+          ) : (
+            <div className="rounded-md bg-white/5 p-4 text-[13px] leading-[1.5] text-gray-100 whitespace-pre-wrap">
+              {content}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -184,6 +196,7 @@ const Solutions: React.FC<SolutionsProps> = ({
   const [problemStatementData, setProblemStatementData] =
     useState<ProblemStatementData | null>(null)
   const [solutionData, setSolutionData] = useState<string | null>(null)
+  const [isCodeResponse, setIsCodeResponse] = useState(true)
   const [thoughtsData, setThoughtsData] = useState<string[] | null>(null)
   const [timeComplexityData, setTimeComplexityData] = useState<string | null>(
     null
@@ -236,15 +249,10 @@ const Solutions: React.FC<SolutionsProps> = ({
     // Height update logic
     const updateDimensions = () => {
       if (contentRef.current) {
-        let contentHeight = contentRef.current.scrollHeight
-        const contentWidth = contentRef.current.scrollWidth
-        if (isTooltipVisible) {
-          contentHeight += tooltipHeight
-        }
-        window.electronAPI.updateContentDimensions({
-          width: contentWidth,
-          height: contentHeight
-        })
+        updateWindowToElement(
+          contentRef.current,
+          { height: isTooltipVisible ? tooltipHeight : 0 }
+        )
       }
     }
 
@@ -284,6 +292,9 @@ const Solutions: React.FC<SolutionsProps> = ({
         queryClient.removeQueries({
           queryKey: ["new_solution"]
         })
+        queryClient.removeQueries({
+          queryKey: FOLLOW_UP_CHAT_QUERY_KEY
+        })
 
         // Reset screenshots
         setExtraScreenshots([])
@@ -299,6 +310,9 @@ const Solutions: React.FC<SolutionsProps> = ({
         setThoughtsData(null)
         setTimeComplexityData(null)
         setSpaceComplexityData(null)
+        queryClient.removeQueries({
+          queryKey: FOLLOW_UP_CHAT_QUERY_KEY
+        })
       }),
       window.electronAPI.onProblemExtracted((data) => {
         queryClient.setQueryData(["problem_statement"], data)
@@ -309,14 +323,17 @@ const Solutions: React.FC<SolutionsProps> = ({
         // Reset solutions in the cache (even though this shouldn't ever happen) and complexities to previous states
         const solution = queryClient.getQueryData(["solution"]) as {
           code: string
+          answer?: string
           thoughts: string[]
           time_complexity: string
           space_complexity: string
+          is_code_response?: boolean
         } | null
         if (!solution) {
           setView("queue")
         }
-        setSolutionData(solution?.code || null)
+        setSolutionData(solution?.code || solution?.answer || null)
+        setIsCodeResponse(solution?.is_code_response ?? true)
         setThoughtsData(solution?.thoughts || null)
         setTimeComplexityData(solution?.time_complexity || null)
         setSpaceComplexityData(solution?.space_complexity || null)
@@ -331,13 +348,16 @@ const Solutions: React.FC<SolutionsProps> = ({
         console.log({ data })
         const solutionData = {
           code: data.code,
+          answer: data.answer,
           thoughts: data.thoughts,
           time_complexity: data.time_complexity,
-          space_complexity: data.space_complexity
+          space_complexity: data.space_complexity,
+          is_code_response: data.is_code_response
         }
 
         queryClient.setQueryData(["solution"], solutionData)
-        setSolutionData(solutionData.code || null)
+        setSolutionData(solutionData.code || solutionData.answer || null)
+        setIsCodeResponse(solutionData.is_code_response ?? true)
         setThoughtsData(solutionData.thoughts || null)
         setTimeComplexityData(solutionData.time_complexity || null)
         setSpaceComplexityData(solutionData.space_complexity || null)
@@ -367,6 +387,9 @@ const Solutions: React.FC<SolutionsProps> = ({
       //########################################################
       window.electronAPI.onDebugStart(() => {
         //we'll set the debug processing state to true and use that to render a little loader
+        queryClient.removeQueries({
+          queryKey: FOLLOW_UP_CHAT_QUERY_KEY
+        })
         setDebugProcessing(true)
       }),
       //the first time debugging works, we'll set the view to debug and populate the cache with the data
@@ -378,7 +401,7 @@ const Solutions: React.FC<SolutionsProps> = ({
       window.electronAPI.onDebugError(() => {
         showToast(
           "Processing Failed",
-          "There was an error debugging your code.",
+          "There was an error processing the new screenshots.",
           "error"
         )
         setDebugProcessing(false)
@@ -414,12 +437,15 @@ const Solutions: React.FC<SolutionsProps> = ({
       if (event?.query.queryKey[0] === "solution") {
         const solution = queryClient.getQueryData(["solution"]) as {
           code: string
+          answer?: string
           thoughts: string[]
           time_complexity: string
           space_complexity: string
+          is_code_response?: boolean
         } | null
 
-        setSolutionData(solution?.code ?? null)
+        setSolutionData(solution?.code ?? solution?.answer ?? null)
+        setIsCodeResponse(solution?.is_code_response ?? true)
         setThoughtsData(solution?.thoughts ?? null)
         setTimeComplexityData(solution?.time_complexity ?? null)
         setSpaceComplexityData(solution?.space_complexity ?? null)
@@ -463,6 +489,28 @@ const Solutions: React.FC<SolutionsProps> = ({
     }
   }
 
+  const followUpContext = [
+    problemStatementData?.problem_statement
+      ? `Original prompt:\n${problemStatementData.problem_statement}`
+      : "",
+    thoughtsData && thoughtsData.length > 0
+      ? `Reasoning / thoughts:\n- ${thoughtsData.join("\n- ")}`
+      : "",
+    solutionData
+      ? isCodeResponse
+        ? `Current solution in ${currentLanguage}:\n${solutionData}`
+        : `Current answer:\n${solutionData}`
+      : "",
+    timeComplexityData &&
+    spaceComplexityData &&
+    !timeComplexityData.startsWith("N/A") &&
+    !spaceComplexityData.startsWith("N/A")
+      ? `Complexity:\nTime: ${timeComplexityData}\nSpace: ${spaceComplexityData}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n")
+
   return (
     <>
       {!isResetting && queryClient.getQueryData(["new_solution"]) ? (
@@ -473,13 +521,16 @@ const Solutions: React.FC<SolutionsProps> = ({
           setLanguage={setLanguage}
         />
       ) : (
-        <div ref={contentRef} className="relative">
+        <div
+          ref={contentRef}
+          className="relative inline-flex flex-col items-start bg-transparent"
+        >
           <div className="space-y-3 px-4 py-3">
           {/* Conditionally render the screenshot queue if solutionData is available */}
           {solutionData && (
             <div className="bg-transparent w-fit">
               <div className="pb-3">
-                <div className="space-y-3 w-fit">
+                <div className="space-y-3">
                   <ScreenshotQueue
                     isLoading={debugProcessing}
                     screenshots={extraScreenshots}
@@ -501,20 +552,54 @@ const Solutions: React.FC<SolutionsProps> = ({
           />
 
           {/* Main Content - Modified width constraints */}
-          <div className="w-full text-sm text-black bg-black/60 rounded-md">
+          <div className="text-sm text-black bg-black/60 rounded-md">
             <div className="rounded-lg overflow-hidden">
               <div className="px-4 py-3 space-y-4 max-w-full">
                 {!solutionData && (
                   <>
                     <ContentSection
-                      title="Problem Statement"
-                      content={problemStatementData?.problem_statement}
+                      title={
+                        problemStatementData?.sub_questions &&
+                        problemStatementData.sub_questions.length > 1
+                          ? "Questions / Prompt"
+                          : "Question / Prompt"
+                      }
+                      content={
+                        problemStatementData && (
+                          <div className="space-y-3">
+                            <div>{problemStatementData.problem_statement}</div>
+                            {problemStatementData.sub_questions &&
+                              problemStatementData.sub_questions.length > 1 && (
+                                <div className="rounded-md bg-white/5 p-3">
+                                  <div className="mb-2 text-[12px] font-medium uppercase tracking-wide text-white/70">
+                                    Detected Questions
+                                  </div>
+                                  <div className="space-y-2">
+                                    {problemStatementData.sub_questions.map(
+                                      (question, index) => (
+                                        <div
+                                          key={`${index}-${question}`}
+                                          className="flex items-start gap-2"
+                                        >
+                                          <div className="w-5 shrink-0 text-white/50">
+                                            {index + 1}.
+                                          </div>
+                                          <div>{question}</div>
+                                        </div>
+                                      )
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+                          </div>
+                        )
+                      }
                       isLoading={!problemStatementData}
                     />
                     {problemStatementData && (
                       <div className="mt-4 flex">
                         <p className="text-xs bg-gradient-to-r from-gray-300 via-gray-100 to-gray-300 bg-clip-text text-transparent animate-pulse">
-                          Generating solutions...
+                          Generating the answer...
                         </p>
                       </div>
                     )}
@@ -546,17 +631,27 @@ const Solutions: React.FC<SolutionsProps> = ({
                     />
 
                     <SolutionSection
-                      title="Solution"
+                      title={isCodeResponse ? "Solution" : "Answer"}
                       content={solutionData}
                       isLoading={!solutionData}
                       currentLanguage={currentLanguage}
+                      isCodeResponse={isCodeResponse}
                     />
 
-                    <ComplexitySection
-                      timeComplexity={timeComplexityData}
-                      spaceComplexity={spaceComplexityData}
-                      isLoading={!timeComplexityData || !spaceComplexityData}
-                    />
+                    {(
+                      timeComplexityData &&
+                      spaceComplexityData &&
+                      !timeComplexityData.startsWith("N/A") &&
+                      !spaceComplexityData.startsWith("N/A")
+                    ) && (
+                      <ComplexitySection
+                        timeComplexity={timeComplexityData}
+                        spaceComplexity={spaceComplexityData}
+                        isLoading={!timeComplexityData || !spaceComplexityData}
+                      />
+                    )}
+
+                    <FollowUpChat currentContext={followUpContext} />
                   </>
                 )}
               </div>

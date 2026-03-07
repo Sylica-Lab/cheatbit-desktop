@@ -4,10 +4,13 @@
   "main": "./dist-electron/main.js",
   "scripts": {
     "clean": "npx rimraf dist dist-electron",
-    "dev": "cross-env NODE_ENV=development npm run clean && concurrently \"tsc -w -p tsconfig.electron.json\" \"vite\" \"wait-on -t 30000 http://localhost:54321 && electron ./dist-electron/main.js\"",
+    "backend:start": "node backend/server.js",
+    "backend:dev": "node --watch backend/server.js",
+    "backend:migrate": "node backend/server.js --migrate-only",
+    "dev": "cross-env NODE_ENV=development npm run clean && concurrently \"npm run backend:dev\" \"tsc -w -p tsconfig.electron.json\" \"vite\" \"wait-on -t 30000 tcp:127.0.0.1:8787 http://localhost:54321 && electron ./dist-electron/main.js\"",
     "test": "echo \"No tests defined. Please contribute if you like\" && exit 0",
     "lint": "npx eslint .",
-    "start": "cross-env NODE_ENV=development concurrently \"tsc -p tsconfig.electron.json\" \"vite\" \"wait-on -t 30000 http://localhost:54321 && electron ./dist-electron/main.js\"",
+    "start": "cross-env NODE_ENV=development concurrently \"npm run backend:start\" \"tsc -p tsconfig.electron.json\" \"vite\" \"wait-on -t 30000 tcp:127.0.0.1:8787 http://localhost:54321 && electron ./dist-electron/main.js\"",
     "build": "cross-env NODE_ENV=production npm run clean && vite build && tsc -p tsconfig.electron.json",
     "run-prod": "cross-env NODE_ENV=production electron ./dist-electron/main.js",
     "package": "npm run build && electron-builder build",
@@ -16,7 +19,7 @@
   },
   "build": {
     "appId": "com.chunginlee.interviewcoder",
-    "productName": "Interview Coder",
+    "productName": "CheatBit",
     "files": [
       "dist/**/*",
       "dist-electron/**/*",
@@ -48,7 +51,7 @@
           ]
         }
       ],
-      "artifactName": "Interview-Coder-${arch}.${ext}",
+      "artifactName": "CheatBit-${arch}.${ext}",
       "icon": "assets/icons/mac/icon.icns",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
@@ -143,12 +146,14 @@
     "form-data": "^4.0.1",
     "lucide-react": "^0.460.0",
     "openai": "^4.28.4",
+    "pg": "^8.20.0",
     "react": "^18.2.0",
     "react-code-blocks": "^0.1.6",
     "react-dom": "^18.2.0",
     "react-router-dom": "^6.28.1",
     "react-syntax-highlighter": "^15.6.1",
     "screenshot-desktop": "^1.15.0",
+    "stripe": "^18.5.0",
     "tailwind-merge": "^2.5.5",
     "uuid": "^11.0.3"
   },

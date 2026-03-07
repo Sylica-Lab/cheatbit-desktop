@@ -16,7 +16,7 @@
 
 > ## 🔑 API KEY INFORMATION - UPDATED
 >
-> We have tested and confirmed that **both Gemini and OpenAI APIs work properly** with the current version. If you are experiencing issues with your API keys:
+> We have tested and confirmed that **Gemini, OpenAI, Anthropic, and Together AI** APIs work with the current version. If you are experiencing issues with your API keys:
 >
 > - Try deleting your API key entry from the config file located in your user data directory
 > - Log out and log back in to the application
@@ -27,7 +27,7 @@
 
 ## Free, Open-Source AI-Powered Interview Preparation Tool
 
-This project provides a powerful alternative to premium coding interview platforms. It delivers the core functionality of paid interview preparation tools but in a free, open-source package. Using your own OpenAI API key, you get access to advanced features like AI-powered problem analysis, solution generation, and debugging assistance - all running locally on your machine.
+This project provides a powerful alternative to premium coding interview platforms. It delivers the core functionality of paid interview preparation tools but in a free, open-source package. Using your own API key, you get access to advanced features like AI-powered problem analysis, solution generation, and debugging assistance - all running locally on your machine.
 
 ### Why This Exists
 
@@ -42,7 +42,7 @@ The best coding interview tools are often behind expensive paywalls, making them
 
 The codebase is designed to be adaptable:
 
-- **AI Models**: Though currently using OpenAI's models, you can modify the code to integrate with other providers like Claude, Deepseek, Llama, or any model with an API. All integration code is in `electron/ProcessingHelper.ts` and UI settings are in `src/components/Settings/SettingsDialog.tsx`.
+- **AI Models**: The app now supports OpenAI, Gemini, Anthropic, and Together AI. Together can be used with Qwen vision for screenshot stages and Qwen coder/text models for solution generation. All integration code is in `electron/ProcessingHelper.ts` and UI settings are in `src/components/Settings/SettingsDialog.tsx`.
 - **Languages**: Add support for additional programming languages
 - **Features**: Extend the functionality with new capabilities 
 - **UI**: Customize the interface to your preferences
@@ -53,12 +53,12 @@ All it takes is modest JavaScript/TypeScript knowledge and understanding of the 
 
 - 🎯 99% Invisibility: Undetectable window that bypasses most screen capture methods
 - 📸 Smart Screenshot Capture: Capture both question text and code separately for better analysis
-- 🤖 AI-Powered Analysis: Automatically extracts and analyzes coding problems using GPT-4o
+- 🤖 AI-Powered Analysis: Automatically extracts and analyzes coding problems using your selected provider, including Qwen vision via Together AI
 - 💡 Solution Generation: Get detailed explanations and solutions with time/space complexity analysis
 - 🔧 Real-time Debugging: Debug your code with AI assistance and structured feedback
 - 🎨 Advanced Window Management: Freely move, resize, change opacity, and zoom the window
-- 🔄 Model Selection: Choose between GPT-4o and GPT-4o-mini for different processing stages
-- 🔒 Privacy-Focused: Your API key and data never leave your computer except for OpenAI API calls
+- 🔄 Model Selection: Choose provider-specific models for extraction, solution generation, and debugging
+- 🔒 Privacy-Focused: Your API key and data never leave your computer except for direct API calls to the provider you select
 
 ## Global Commands
 
@@ -96,7 +96,7 @@ Note: The application is **NOT** invisible to:
 
 - Node.js (v16 or higher)
 - npm or bun package manager
-- OpenAI API Key
+- An API key for OpenAI, Gemini, Anthropic, or Together AI
 - Screen Recording Permission for Terminal/IDE
   - On macOS:
     1. Go to System Preferences > Security & Privacy > Privacy > Screen Recording
@@ -180,7 +180,7 @@ The packaged applications will be available in the `release` directory.
 
 - **Window Manager Compatibility**: Some window management tools (like Rectangle Pro on macOS) may interfere with the app's window movement. Consider disabling them temporarily.
 
-- **API Usage**: Be mindful of your OpenAI API key's rate limits and credit usage. Vision API calls are more expensive than text-only calls.
+- **API Usage**: Be mindful of your provider's rate limits and credit usage. Vision API calls are more expensive than text-only calls.
 
 - **LLM Customization**: You can easily customize the app to include LLMs like Claude, Deepseek, or Grok by modifying the API calls in `ProcessingHelper.ts` and related UI components.
 
@@ -216,12 +216,13 @@ The packaged applications will be available in the `release` directory.
 - Tailwind CSS
 - Radix UI Components
 - OpenAI API
+- Together AI API
 
 ## How It Works
 
 1. **Initial Setup**
    - Launch the invisible window
-   - Enter your OpenAI API key in the settings
+   - Enter your preferred provider API key in the settings
    - Choose your preferred model for extraction, solution generation, and debugging
 
 2. **Capturing Problem**
@@ -231,9 +232,9 @@ The packaged applications will be available in the `release` directory.
 
 3. **Processing**
    - Press [Control or Cmd + Enter] to analyze the screenshots
-   - AI extracts problem requirements from the screenshots using GPT-4 Vision API
+   - AI extracts problem requirements from the screenshots using the selected vision-capable model
    - The model generates an optimal solution based on the extracted information
-   - All analysis is done using your personal OpenAI API key
+   - All analysis is done using your personal provider API key
 
 4. **Solution & Debugging**
    - View the generated solutions with detailed explanations
@@ -257,7 +258,7 @@ The packaged applications will be available in the `release` directory.
 
 ## Adding More AI Models
 
-This application is built with extensibility in mind. You can easily add support for additional LLMs alongside the existing OpenAI integration:
+This application is built with extensibility in mind. You can easily add support for additional LLMs alongside the existing provider integrations:
 
 - You can add Claude, Deepseek, Grok, or any other AI model as alternative options
 - The application architecture allows for multiple LLM backends to coexist
@@ -267,8 +268,8 @@ To add new models, simply extend the API integration in `electron/ProcessingHelp
 
 ## Configuration
 
-- **OpenAI API Key**: Your personal API key is stored locally and only used for API calls to OpenAI
-- **Model Selection**: You can choose between GPT-4o and GPT-4o-mini for each stage of processing:
+- **API Key**: Your personal API key is stored locally and only used for API calls to the provider you select
+- **Model Selection**: You can choose provider-specific models for each stage of processing:
   - Problem Extraction: Analyzes screenshots to understand the coding problem
   - Solution Generation: Creates optimized solutions with explanations
   - Debugging: Provides detailed analysis of errors and improvement suggestions

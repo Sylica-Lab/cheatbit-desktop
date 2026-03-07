@@ -1,4 +1,34 @@
+import type { ApiProvider, AppConfig } from "../../shared/aiConfig"
+import type {
+  AuthState,
+  BillingSessionResponse,
+  UserDashboardData
+} from "../../shared/backendAuth"
+import type {
+  TextFollowUpRequest,
+  TextFollowUpResponse
+} from "../../shared/followUpChat"
+
 export interface ElectronAPI {
+  getAuthState: () => Promise<AuthState>
+  register: (payload: {
+    name: string
+    email: string
+    password: string
+  }) => Promise<AuthState>
+  login: (payload: {
+    email: string
+    password: string
+  }) => Promise<AuthState>
+  logout: () => Promise<{ success: boolean }>
+  getAccountDashboard: () => Promise<UserDashboardData>
+  createCheckoutSession: () => Promise<BillingSessionResponse>
+  createBillingPortalSession: () => Promise<BillingSessionResponse>
+  submitTextFollowUp: (
+    payload: TextFollowUpRequest
+  ) => Promise<
+    { success: true; data: TextFollowUpResponse } | { success: false; error: string }
+  >
   // Original methods
   openSubscriptionPortal: (authData: {
     id: string
@@ -53,12 +83,15 @@ export interface ElectronAPI {
   openSettingsPortal: () => Promise<void>
   getPlatform: () => string
   
-  // New methods for OpenAI integration
-  getConfig: () => Promise<{ apiKey: string; model: string }>
-  updateConfig: (config: { apiKey?: string; model?: string }) => Promise<boolean>
-  checkApiKey: () => Promise<boolean>
-  validateApiKey: (apiKey: string) => Promise<{ valid: boolean; error?: string }>
+  // Configuration methods
+  getConfig: () => Promise<AppConfig>
+  updateConfig: (config: Partial<AppConfig>) => Promise<AppConfig>
+  validateApiKey: (
+    apiKey: string,
+    provider?: ApiProvider
+  ) => Promise<{ valid: boolean; error?: string }>
   openLink: (url: string) => void
+  onShowSettings: (callback: () => void) => () => void
   onApiKeyInvalid: (callback: () => void) => () => void
   removeListener: (eventName: string, callback: (...args: any[]) => void) => void
 }
