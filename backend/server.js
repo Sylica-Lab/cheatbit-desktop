@@ -12,8 +12,11 @@ loadEnvVariables();
 
 const builtInStripeConfig = getBuiltInStripeConfig();
 
-const HOST = process.env.BACKEND_HOST || "127.0.0.1";
-const PORT = Number(process.env.BACKEND_PORT || 8787);
+const HOST =
+  process.env.BACKEND_HOST ||
+  process.env.HOST ||
+  (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
+const PORT = Number(process.env.BACKEND_PORT || process.env.PORT || 8787);
 const PUBLIC_DIR = path.join(__dirname, "public");
 const SCHEMA_PATH = path.join(__dirname, "schema.sql");
 const MIGRATE_ONLY = process.argv.includes("--migrate-only");
@@ -526,6 +529,8 @@ async function initializeDatabase() {
 function loadEnvVariables() {
   const candidatePaths = [
     path.join(process.cwd(), ".env"),
+    path.join(__dirname, ".env"),
+    path.join(__dirname, "..", ".env"),
     typeof process.resourcesPath === "string"
       ? path.join(process.resourcesPath, ".env")
       : null,
