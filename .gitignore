@@ -1,9 +1,15 @@
 node_modules
+backend/node_modules
 dist-electron
 release
 dist
 .env
 .env.*
+!.env.example
+!backend/.env.example
+backend/.wrangler
+backend/.dev.vars
+backend/.dev.vars.*
 backend/data/
 backend-runtime.log
 backend-runtime.err.log

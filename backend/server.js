@@ -4,13 +4,27 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { URL } = require("node:url");
 const dotenv = require("dotenv");
-const { Pool } = require("pg");
+const { Client } = require("pg");
 const Stripe = require("stripe");
 const { getBuiltInStripeConfig } = require("./builtInBillingConfig");
 
 loadEnvVariables();
 
-const builtInStripeConfig = getBuiltInStripeConfig();
+const WORKER_RUNTIME = process.env.CLOUDFLARE_WORKER === "true";
+const AUTO_INITIALIZE_DATABASE =
+  process.env.RUN_DB_MIGRATIONS_ON_START === "true";
+const builtInStripeConfig = shouldUseBuiltInStripeConfig()
+  ? getBuiltInStripeConfig()
+  : {
+      publishableKey: "",
+      secretKey: "",
+      webhookSecret: "",
+      priceId: "",
+      productName: "",
+      monthlyPriceUsd: null,
+      publicUrl: "",
+      billingReturnUrl: "",
+    };
 
 const HOST =
   process.env.BACKEND_HOST ||
@@ -76,15 +90,9 @@ const PLAN_LIMITS = {
 };
 const stripe = STRIPE_SECRET_KEY ? Stripe(STRIPE_SECRET_KEY) : null;
 const stripeWebhookConfigured = Boolean(stripe && STRIPE_WEBHOOK_SECRET);
-
-const pool = new Pool({
-  connectionString: DATABASE_URL,
-  ssl: USE_SSL ? { rejectUnauthorized: false } : undefined,
-});
-
-pool.on("error", (error) => {
-  console.error("Unexpected PostgreSQL pool error:", error);
-});
+let databaseInitialized = false;
+let workerInitializationPromise = null;
+let nodeStartupPromise = null;
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -490,40 +498,77 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-initializeDatabase()
-  .then(async () => {
-    if (MIGRATE_ONLY) {
-      console.log(`CheatBit PostgreSQL migration complete: ${describeDatabaseTarget()}`);
-      await pool.end();
-      return;
-    }
-
-    server.listen(PORT, HOST, () => {
-      console.log(
-        `CheatBit backend listening on http://${HOST}:${PORT} (dashboard at /admin)`
-      );
-      console.log(`PostgreSQL: ${describeDatabaseTarget()}`);
-      console.log(`Admin login: ${ADMIN_EMAIL}`);
-      if (stripe) {
-        console.log(
-          `Stripe billing: checkout enabled${stripeWebhookConfigured ? " with webhook sync" : " without webhook sync"}`
-        );
-      } else {
-        console.warn(
-          "Stripe billing disabled. Set a secret key in backend/builtInBillingConfig.js or STRIPE_SECRET_KEY in .env."
-        );
-      }
-    });
-  })
-  .catch((error) => {
+if (require.main === module) {
+  startNodeServer().catch((error) => {
     console.error("Failed to initialize PostgreSQL backend:", error);
     process.exit(1);
   });
+}
 
 async function initializeDatabase() {
   const schemaSql = fs.readFileSync(SCHEMA_PATH, "utf8");
   await query(schemaSql);
   await seedAdmin();
+  databaseInitialized = true;
+}
+
+async function prepareWorkerRuntime() {
+  if (!AUTO_INITIALIZE_DATABASE || databaseInitialized) {
+    return;
+  }
+
+  if (!workerInitializationPromise) {
+    workerInitializationPromise = initializeDatabase().finally(() => {
+      if (!databaseInitialized) {
+        workerInitializationPromise = null;
+      }
+    });
+  }
+
+  await workerInitializationPromise;
+}
+
+async function startNodeServer() {
+  if (nodeStartupPromise) {
+    return nodeStartupPromise;
+  }
+
+  nodeStartupPromise = (async () => {
+    await initializeDatabase();
+
+    if (MIGRATE_ONLY) {
+      console.log(
+        `CheatBit PostgreSQL migration complete: ${describeDatabaseTarget()}`
+      );
+      return;
+    }
+
+    if (!server.listening) {
+      await new Promise((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(PORT, HOST, () => {
+          server.removeListener("error", reject);
+          console.log(
+            `CheatBit backend listening on http://${HOST}:${PORT} (dashboard at /admin)`
+          );
+          console.log(`PostgreSQL: ${describeDatabaseTarget()}`);
+          console.log(`Admin login: ${ADMIN_EMAIL}`);
+          if (stripe) {
+            console.log(
+              `Stripe billing: checkout enabled${stripeWebhookConfigured ? " with webhook sync" : " without webhook sync"}`
+            );
+          } else {
+            console.warn(
+              "Stripe billing disabled. Set STRIPE_SECRET_KEY in .env."
+            );
+          }
+          resolve();
+        });
+      });
+    }
+  })();
+
+  return nodeStartupPromise;
 }
 
 function loadEnvVariables() {
@@ -552,6 +597,14 @@ function describeDatabaseTarget() {
   } catch (_error) {
     return DATABASE_URL;
   }
+}
+
+function shouldUseBuiltInStripeConfig() {
+  if (WORKER_RUNTIME) {
+    return false;
+  }
+
+  return process.env.ALLOW_BUILT_IN_STRIPE_CONFIG !== "false";
 }
 
 async function seedAdmin() {
@@ -1033,7 +1086,48 @@ function extractStripeId(value) {
 }
 
 async function query(text, params = []) {
-  return pool.query(text, params);
+  assertDatabaseConfiguration();
+
+  const client = new Client({
+    connectionString: DATABASE_URL,
+    ssl: USE_SSL ? { rejectUnauthorized: false } : undefined,
+  });
+
+  await client.connect();
+  try {
+    return await client.query(text, params);
+  } finally {
+    await client.end();
+  }
+}
+
+function assertDatabaseConfiguration() {
+  if (!WORKER_RUNTIME) {
+    return;
+  }
+
+  const configuredUrl = String(DATABASE_URL || "").trim();
+  if (!configuredUrl) {
+    throw new Error(
+      "DATABASE_URL is required when deploying the backend to Cloudflare."
+    );
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(configuredUrl);
+  } catch (_error) {
+    throw new Error(
+      "DATABASE_URL must be a valid PostgreSQL connection string when deploying to Cloudflare."
+    );
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  if (host === "127.0.0.1" || host === "localhost" || host === "::1") {
+    throw new Error(
+      "DATABASE_URL cannot point to localhost when deploying the backend to Cloudflare. Use a public Postgres URL or Hyperdrive."
+    );
+  }
 }
 
 async function getAdminByEmail(email) {
@@ -1958,3 +2052,9 @@ function toIso(value) {
   const date = toDate(value);
   return date ? date.toISOString() : null;
 }
+
+module.exports = {
+  prepareWorkerRuntime,
+  server,
+  startNodeServer,
+};

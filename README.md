@@ -122,15 +122,25 @@ cd interview-coder-withoupaywall-opensource
 
 ```bash
 npm install
+npm run backend:install
 ```
 
-3. **RECOMMENDED**: Clean any previous builds:
+3. Configure environment files:
+
+```bash
+cp .env.example .env
+cp backend/.env.example backend/.env
+```
+
+`./.env` is for the desktop app and currently just points it at the backend URL. `./backend/.env` is for the backend service itself.
+
+4. **RECOMMENDED**: Clean any previous builds:
 
 ```bash
 npm run clean
 ```
 
-4. Run the appropriate script for your platform:
+5. Run the appropriate script for your platform:
 
 **For Windows:**
 ```bash
