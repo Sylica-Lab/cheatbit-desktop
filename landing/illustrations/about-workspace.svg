@@ -1,0 +1,37 @@
+<svg width="1200" height="760" viewBox="0 0 1200 760" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="760" rx="40" fill="#F4F8FB"/>
+  <circle cx="176" cy="128" r="124" fill="#E6F0F7"/>
+  <circle cx="1036" cy="630" r="162" fill="#DDF7EC"/>
+  <rect x="70" y="52" width="1060" height="656" rx="40" fill="#FFFFFF" stroke="#D7E1E8"/>
+  <rect x="214" y="134" width="772" height="436" rx="34" fill="#101820"/>
+  <rect x="242" y="162" width="716" height="378" rx="24" fill="#F7FAFD"/>
+  <rect x="272" y="192" width="190" height="16" rx="8" fill="#DEE7EE"/>
+  <rect x="272" y="224" width="154" height="10" rx="5" fill="#E6EDF4"/>
+  <rect x="272" y="244" width="208" height="10" rx="5" fill="#E6EDF4"/>
+  <rect x="272" y="286" width="238" height="126" rx="26" fill="#FFFFFF" stroke="#D9E3EB"/>
+  <rect x="536" y="192" width="382" height="136" rx="28" fill="#FFFFFF" stroke="#D9E3EB"/>
+  <rect x="562" y="216" width="132" height="16" rx="8" fill="#DEE7EE"/>
+  <rect x="562" y="248" width="280" height="10" rx="5" fill="#E6EDF4"/>
+  <rect x="562" y="268" width="210" height="10" rx="5" fill="#E6EDF4"/>
+  <rect x="536" y="350" width="382" height="120" rx="28" fill="#FFFFFF" stroke="#D9E3EB"/>
+  <rect x="560" y="376" width="98" height="16" rx="8" fill="#DFF7EC"/>
+  <rect x="560" y="408" width="206" height="10" rx="5" fill="#E6EDF4"/>
+  <rect x="744" y="396" width="146" height="44" rx="22" fill="#7DF9C7"/>
+  <text x="780" y="422" fill="#173427" font-size="15" font-family="Arial, sans-serif">Send follow-up</text>
+  <rect x="434" y="510" width="330" height="28" rx="14" fill="#101820"/>
+  <rect x="94" y="210" width="170" height="122" rx="26" fill="#FFFFFF" stroke="#D9E3EB"/>
+  <rect x="118" y="238" width="74" height="14" rx="7" fill="#DFF7EC"/>
+  <rect x="118" y="266" width="106" height="10" rx="5" fill="#E6EDF4"/>
+  <rect x="936" y="118" width="174" height="134" rx="26" fill="#FFFFFF" stroke="#D9E3EB"/>
+  <rect x="960" y="146" width="96" height="14" rx="7" fill="#E2EAF1"/>
+  <circle cx="976" cy="198" r="10" fill="#7DF9C7"/>
+  <circle cx="1008" cy="198" r="10" fill="#B8FF6A"/>
+  <circle cx="1040" cy="198" r="10" fill="#F2C66D"/>
+  <rect x="292" y="486" width="300" height="52" rx="18" fill="#11191F"/>
+  <circle cx="318" cy="512" r="10" fill="#7DF9C7"/>
+  <rect x="336" y="502" width="88" height="20" rx="10" fill="#1A252D"/>
+  <rect x="432" y="500" width="96" height="24" rx="12" fill="#FFFFFF"/>
+  <text x="450" y="515" fill="#0F171E" font-size="11" font-family="Arial, sans-serif">Analyze Screen</text>
+  <rect x="536" y="500" width="80" height="24" rx="12" fill="#1A252D"/>
+  <text x="553" y="515" fill="#F0F5F9" font-size="11" font-family="Arial, sans-serif">Chat</text>
+</svg>

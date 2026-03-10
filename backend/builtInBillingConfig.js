@@ -5,7 +5,7 @@ const BUILT_IN_STRIPE_CONFIG = {
     "sk_test_51T8OU123aLW8QJ0LSruDVZTZ8IyoC1gPqwzEIPVTgUUgDmTNWgDUsZiDrMjsATElrO6RYQmGKJhRIGj9CJe2yA0g00pKkHGrqx",
   webhookSecret: "",
   priceId: "",
-  productName: "CheatBit Unlimited",
+  productName: "Sylica AI Unlimited",
   monthlyPriceUsd: 20,
   publicUrl: "",
   billingReturnUrl: "",

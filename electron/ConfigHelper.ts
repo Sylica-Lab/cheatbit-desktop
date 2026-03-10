@@ -32,13 +32,43 @@ export class ConfigHelper extends EventEmitter {
 
   constructor() {
     super();
-    // Use the app's user data directory to store the config
+
+    const getSylicaAiDataDirectory = () => {
+      try {
+        const targetDirectory = path.join(app.getPath("appData"), "sylica-ai");
+        const legacyDirectory = path.join(app.getPath("appData"), "cheatbit");
+        if (!fs.existsSync(targetDirectory) && fs.existsSync(legacyDirectory)) {
+          try {
+            fs.renameSync(legacyDirectory, targetDirectory);
+          } catch (error) {
+            fs.cpSync(legacyDirectory, targetDirectory, { recursive: true });
+          }
+        }
+        return targetDirectory;
+      } catch (error) {
+        const targetDirectory = path.join(process.cwd(), ".sylica-ai");
+        const legacyDirectory = path.join(process.cwd(), ".cheatbit");
+        if (!fs.existsSync(targetDirectory) && fs.existsSync(legacyDirectory)) {
+          try {
+            fs.renameSync(legacyDirectory, targetDirectory);
+          } catch (renameError) {
+            fs.cpSync(legacyDirectory, targetDirectory, { recursive: true });
+          }
+        }
+        return targetDirectory;
+      }
+    };
+
     try {
-      this.configPath = path.join(app.getPath('userData'), 'config.json');
+      const configDirectory = getSylicaAiDataDirectory();
+      if (!fs.existsSync(configDirectory)) {
+        fs.mkdirSync(configDirectory, { recursive: true });
+      }
+      this.configPath = path.join(configDirectory, "app-config.json");
       console.log('Config path:', this.configPath);
     } catch (err) {
       console.warn('Could not access user data path, using fallback');
-      this.configPath = path.join(process.cwd(), 'config.json');
+      this.configPath = path.join(process.cwd(), "app-config.json");
     }
     
     // Ensure the initial config file exists
@@ -110,13 +140,52 @@ export class ConfigHelper extends EventEmitter {
     };
   }
 
+  private resetCorruptedConfig(rawConfig: string, error: unknown): AppConfig {
+    console.error("Error loading config:", error);
+
+    try {
+      if (rawConfig.trim().length > 0 && fs.existsSync(this.configPath)) {
+        const backupPath = `${this.configPath}.corrupt-${Date.now()}.bak`;
+        fs.copyFileSync(this.configPath, backupPath);
+        console.warn(`Backed up corrupted config to: ${backupPath}`);
+      }
+    } catch (backupError) {
+      console.warn("Failed to back up corrupted config:", backupError);
+    }
+
+    this.saveConfig(this.defaultConfig);
+    return this.defaultConfig;
+  }
+
   public loadConfig(): AppConfig {
     try {
       if (fs.existsSync(this.configPath)) {
         const configData = fs.readFileSync(this.configPath, 'utf8');
-        const parsedConfig = JSON.parse(configData) as Partial<AppConfig> & {
+        const normalizedConfigData = configData.replace(/^\uFEFF/, "").trim();
+
+        if (!normalizedConfigData) {
+          this.saveConfig(this.defaultConfig);
+          return this.defaultConfig;
+        }
+
+        let parsedConfig: (Partial<AppConfig> & {
           apiProvider?: string;
-        };
+        }) | null = null;
+
+        try {
+          const candidate = JSON.parse(normalizedConfigData) as
+            | (Partial<AppConfig> & { apiProvider?: string })
+            | null;
+
+          if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+            throw new Error("Config file must contain a JSON object.");
+          }
+
+          parsedConfig = candidate;
+        } catch (parseError) {
+          return this.resetCorruptedConfig(configData, parseError);
+        }
+
         const provider = isValidProvider(parsedConfig.apiProvider || "")
           ? parsedConfig.apiProvider
           : DEFAULT_PROVIDER;
@@ -132,8 +201,7 @@ export class ConfigHelper extends EventEmitter {
       this.saveConfig(this.defaultConfig);
       return this.defaultConfig;
     } catch (err) {
-      console.error("Error loading config:", err);
-      return this.defaultConfig;
+      return this.resetCorruptedConfig("", err);
     }
   }
 
@@ -283,8 +351,8 @@ export class ConfigHelper extends EventEmitter {
    * Set the window opacity value
    */
   public setOpacity(opacity: number): void {
-    // Ensure opacity is between 0.1 and 1.0
-    const validOpacity = Math.min(1.0, Math.max(0.1, opacity));
+    // Keep the visible window readable instead of allowing near-transparent values.
+    const validOpacity = Math.min(1.0, Math.max(0.9, opacity));
     this.updateConfig({ opacity: validOpacity });
   }  
   

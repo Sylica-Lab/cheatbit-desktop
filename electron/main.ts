@@ -1,16 +1,115 @@
-import { app, BrowserWindow, screen, shell, ipcMain } from "electron"
+import { app, BrowserWindow, screen, shell, ipcMain, systemPreferences, desktopCapturer } from "electron"
 import path from "path"
 import fs from "fs"
+import { execFileSync } from "child_process"
 import { initializeIpcHandlers } from "./ipcHandlers"
 import { ProcessingHelper } from "./ProcessingHelper"
 import { ScreenshotHelper } from "./ScreenshotHelper"
 import { ShortcutsHelper } from "./shortcuts"
 import { initAutoUpdater } from "./autoUpdater"
 import { configHelper } from "./ConfigHelper"
+import { selectScreenRegion } from "./RegionSelectionOverlay"
+import { LiveInterviewHelper } from "./LiveInterviewHelper"
+import { BrowserAgentController } from "./BrowserAgentController"
 import * as dotenv from "dotenv"
 
 // Constants
 const isDev = process.env.NODE_ENV === "development"
+const APP_NAME = "Sylica AI"
+const APP_ID = "com.sylicaai.desktop"
+const APP_PROTOCOL = "sylica-ai"
+const LEGACY_APP_PROTOCOL = "cheatbit"
+const APP_DATA_DIRECTORY = "sylica-ai"
+const LEGACY_APP_DATA_DIRECTORY = "cheatbit"
+const SHOW_UNINSTALL_OFFBOARDING_EVENT = "show-uninstall-offboarding"
+
+function detectWindowsOpaqueFallback(): boolean {
+  if (process.platform !== "win32") {
+    return false
+  }
+
+  try {
+    const output = execFileSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-Command",
+        "(Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name) -join \"`n\"",
+      ],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 3000,
+        windowsHide: true,
+      }
+    ).toLowerCase()
+
+    const fallbackPatterns = [
+      "microsoft basic render",
+      "microsoft basic display",
+      "virtualbox",
+      "vmware",
+      "parallels",
+      "remote display",
+      "hyper-v",
+      "citrix",
+      "virtio",
+      "qxl",
+    ]
+
+    return fallbackPatterns.some((pattern) => output.includes(pattern))
+  } catch {
+    return false
+  }
+}
+
+const shouldUseWindowsOpaqueFallback = detectWindowsOpaqueFallback()
+
+app.setName(APP_NAME)
+if (process.platform === "win32") {
+  app.setAppUserModelId(APP_ID)
+  if (shouldUseWindowsOpaqueFallback) {
+    app.disableHardwareAcceleration()
+    app.commandLine.appendSwitch("disable-gpu-compositing")
+  }
+}
+
+function configureAppPaths(): void {
+  const appDataPath = path.join(app.getPath("appData"), APP_DATA_DIRECTORY)
+  migrateLegacyAppDataDirectory(appDataPath)
+
+  const sessionPath = path.join(appDataPath, "session")
+  const tempPath = path.join(appDataPath, "temp")
+  const cachePath = path.join(appDataPath, "cache")
+  const diskCachePath = path.join(cachePath, "disk")
+  const mediaCachePath = path.join(cachePath, "media")
+
+  for (const dir of [
+    appDataPath,
+    sessionPath,
+    tempPath,
+    cachePath,
+    diskCachePath,
+    mediaCachePath,
+  ]) {
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true })
+    }
+  }
+
+  app.setPath("userData", appDataPath)
+  app.setPath("sessionData", sessionPath)
+  app.setPath("temp", tempPath)
+  app.setPath("cache", cachePath)
+  app.commandLine.appendSwitch("disk-cache-dir", diskCachePath)
+  app.commandLine.appendSwitch("media-cache-dir", mediaCachePath)
+
+  if (process.platform === "win32") {
+    app.commandLine.appendSwitch("disable-gpu-shader-disk-cache")
+  }
+}
+
+configureAppPaths()
 
 // Application State
 const state = {
@@ -29,6 +128,9 @@ const state = {
   screenshotHelper: null as ScreenshotHelper | null,
   shortcutsHelper: null as ShortcutsHelper | null,
   processingHelper: null as ProcessingHelper | null,
+  liveInterviewHelper: null as LiveInterviewHelper | null,
+  browserAgentController: null as BrowserAgentController | null,
+  pendingUninstallOffboarding: false,
 
   // View and state management
   view: "queue" as "queue" | "solutions" | "debug",
@@ -55,6 +157,8 @@ const state = {
 export interface IProcessingHelperDeps {
   getScreenshotHelper: () => ScreenshotHelper | null
   getMainWindow: () => BrowserWindow | null
+  hideMainWindow: () => void
+  showMainWindow: () => void
   getView: () => "queue" | "solutions" | "debug"
   setView: (view: "queue" | "solutions" | "debug") => void
   getProblemInfo: () => any
@@ -94,6 +198,11 @@ export interface IShortcutsHelperDeps {
 export interface IIpcHandlerDeps {
   getMainWindow: () => BrowserWindow | null
   setWindowDimensions: (width: number, height: number) => void
+  requestMicrophoneAccess: () => Promise<{
+    granted: boolean
+    status: string
+    error?: string
+  }>
   getScreenshotQueue: () => string[]
   getExtraScreenshotQueue: () => string[]
   deleteScreenshot: (
@@ -101,8 +210,11 @@ export interface IIpcHandlerDeps {
   ) => Promise<{ success: boolean; error?: string }>
   getImagePreview: (filepath: string) => Promise<string>
   processingHelper: ProcessingHelper | null
+  liveInterviewHelper: LiveInterviewHelper | null
+  browserAgentController: BrowserAgentController | null
   PROCESSING_EVENTS: typeof state.PROCESSING_EVENTS
   takeScreenshot: () => Promise<string>
+  takeRegionScreenshot: () => Promise<string>
   getView: () => "queue" | "solutions" | "debug"
   toggleMainWindow: () => void
   clearQueues: () => void
@@ -119,6 +231,8 @@ function initializeHelpers() {
   state.processingHelper = new ProcessingHelper({
     getScreenshotHelper,
     getMainWindow,
+    hideMainWindow,
+    showMainWindow,
     getView,
     setView,
     getProblemInfo,
@@ -160,22 +274,274 @@ function initializeHelpers() {
     moveWindowDown: () => moveWindowVertical((y) => y + state.step),
     PROCESSING_EVENTS: state.PROCESSING_EVENTS
   } as IShortcutsHelperDeps)
+  state.liveInterviewHelper = new LiveInterviewHelper({
+    getMainWindow,
+    getProcessingHelper: () => state.processingHelper,
+  })
+  state.browserAgentController = new BrowserAgentController({
+    getMainWindow,
+  })
+}
+
+function getConfiguredVisibleOpacity(): number {
+  const savedOpacity = configHelper.getOpacity()
+
+  if (!Number.isFinite(savedOpacity)) {
+    return 1
+  }
+
+  return Math.max(0.9, Math.min(savedOpacity, 1))
+}
+
+function resolveWindowIconPath(): string | undefined {
+  if (process.platform !== "win32") {
+    return undefined
+  }
+
+  const candidates = [
+    path.join(process.resourcesPath, "icon.ico"),
+    path.join(process.cwd(), "assets", "icons", "win", "icon.ico"),
+    path.join(__dirname, "..", "assets", "icons", "win", "icon.ico"),
+  ]
+
+  return candidates.find((candidate) => fs.existsSync(candidate))
+}
+
+function migrateLegacyAppDataDirectory(targetDirectory: string): void {
+  const legacyDirectory = path.join(app.getPath("appData"), LEGACY_APP_DATA_DIRECTORY)
+
+  if (!fs.existsSync(legacyDirectory) || fs.existsSync(targetDirectory)) {
+    return
+  }
+
+  try {
+    fs.renameSync(legacyDirectory, targetDirectory)
+    console.log(`Migrated app data directory to ${targetDirectory}`)
+  } catch (error) {
+    try {
+      fs.cpSync(legacyDirectory, targetDirectory, { recursive: true })
+      console.log(`Copied legacy app data directory to ${targetDirectory}`)
+    } catch (copyError) {
+      console.warn("Failed to migrate legacy app data directory:", copyError)
+    }
+  }
+}
+
+function configureMediaPermissions(window: BrowserWindow): void {
+  const windowSession = window.webContents.session
+
+  windowSession.setPermissionCheckHandler((webContents, permission) => {
+    if (webContents?.id !== window.webContents.id) {
+      return false
+    }
+
+    return permission === "media"
+  })
+
+  windowSession.setPermissionRequestHandler(
+    (webContents, permission, callback) => {
+      if (webContents.id !== window.webContents.id) {
+        callback(false)
+        return
+      }
+
+      callback(permission === "media" || permission === "display-capture")
+    }
+  )
+
+  windowSession.setDisplayMediaRequestHandler(async (_request, callback) => {
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ["screen"],
+        thumbnailSize: { width: 0, height: 0 },
+      })
+
+      if (sources.length === 0) {
+        callback({})
+        return
+      }
+
+      callback({
+        video: sources[0],
+        audio: process.platform === "win32" ? "loopback" : undefined,
+      })
+    } catch (error) {
+      console.error("Failed to provide display media source:", error)
+      callback({})
+    }
+  })
+}
+
+function buildMicrophoneAccessError(status: string): string {
+  if (process.platform === "win32") {
+    return "Microphone access is blocked. Turn it on in Windows Settings > Privacy & security > Microphone."
+  }
+
+  if (process.platform === "darwin") {
+    return "Microphone access is blocked. Turn it on in System Settings > Privacy & Security > Microphone."
+  }
+
+  return `Microphone access is unavailable right now (${status}).`
+}
+
+async function requestMicrophoneAccess(): Promise<{
+  granted: boolean
+  status: string
+  error?: string
+}> {
+  try {
+    const status = systemPreferences.getMediaAccessStatus("microphone")
+
+    if (status === "granted") {
+      return {
+        granted: true,
+        status,
+      }
+    }
+
+    if (process.platform === "darwin" && status === "not-determined") {
+      const granted = await systemPreferences.askForMediaAccess("microphone")
+      return {
+        granted,
+        status: granted ? "granted" : "denied",
+        error: granted ? undefined : buildMicrophoneAccessError("denied"),
+      }
+    }
+
+    if (status === "denied" || status === "restricted") {
+      return {
+        granted: false,
+        status,
+        error: buildMicrophoneAccessError(status),
+      }
+    }
+
+    return {
+      granted: true,
+      status,
+    }
+  } catch (error) {
+    return {
+      granted: false,
+      status: "unknown",
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to check microphone access.",
+    }
+  }
+}
+
+function isAppProtocolUrl(protocolUrl?: string): boolean {
+  return Boolean(
+    protocolUrl &&
+      (protocolUrl.startsWith(`${APP_PROTOCOL}://`) ||
+        protocolUrl.startsWith(`${LEGACY_APP_PROTOCOL}://`))
+  )
+}
+
+function getPrimaryWorkAreaBounds(): Electron.Rectangle {
+  return screen.getPrimaryDisplay().workArea
+}
+
+function getDefaultWindowBounds(): Electron.Rectangle {
+  const workArea = getPrimaryWorkAreaBounds()
+  const width = 320
+  const height = 64
+
+  return {
+    x: workArea.x + Math.max(0, Math.floor((workArea.width - width) / 2)),
+    y: workArea.y + 50,
+    width,
+    height,
+  }
+}
+
+function clampWindowBounds(
+  bounds: Pick<Electron.Rectangle, "x" | "y" | "width" | "height">
+): Electron.Rectangle {
+  const workArea = getPrimaryWorkAreaBounds()
+  const width = Math.max(320, Math.min(bounds.width, workArea.width))
+  const height = Math.max(56, Math.min(bounds.height, workArea.height))
+
+  return {
+    x: Math.max(
+      workArea.x,
+      Math.min(bounds.x, workArea.x + workArea.width - width)
+    ),
+    y: Math.max(
+      workArea.y,
+      Math.min(bounds.y, workArea.y + workArea.height - height)
+    ),
+    width,
+    height,
+  }
+}
+
+function shouldUseTransparentWindow(): boolean {
+  return !(process.platform === "win32" && shouldUseWindowsOpaqueFallback)
+}
+
+function revealMainWindow(reason: string): void {
+  if (!state.mainWindow?.isDestroyed()) {
+    const nextBounds = clampWindowBounds(
+      state.windowPosition && state.windowSize
+        ? {
+            ...state.windowPosition,
+            ...state.windowSize,
+          }
+        : state.mainWindow.getBounds()
+    )
+
+    state.mainWindow.setBounds(nextBounds)
+    state.currentX = nextBounds.x
+    state.currentY = nextBounds.y
+    state.windowPosition = { x: nextBounds.x, y: nextBounds.y }
+    state.windowSize = { width: nextBounds.width, height: nextBounds.height }
+    state.mainWindow.setIgnoreMouseEvents(false)
+    state.mainWindow.showInactive()
+
+    const rawSavedOpacity = configHelper.getOpacity()
+    const savedOpacity = getConfiguredVisibleOpacity()
+    if (rawSavedOpacity <= 0.1) {
+      state.mainWindow.setOpacity(0)
+      state.isWindowVisible = false
+      console.log(`[${reason}] Window kept hidden due to saved opacity 0`)
+      return
+    }
+
+    state.mainWindow.setOpacity(savedOpacity)
+    state.isWindowVisible = true
+    console.log(
+      `[${reason}] Window forced visible at ${nextBounds.width}x${nextBounds.height}, opacity ${savedOpacity}`
+    )
+  }
+}
+
+function showUninstallOffboarding(): void {
+  state.pendingUninstallOffboarding = true
+  revealMainWindow("uninstall-offboarding")
+
+  if (!state.mainWindow?.isDestroyed()) {
+    state.mainWindow.webContents.send(SHOW_UNINSTALL_OFFBOARDING_EVENT)
+    state.pendingUninstallOffboarding = false
+  }
 }
 
 // Auth callback handler
 
-// Register the interview-coder protocol
+// Register the Sylica AI protocol
 if (process.platform === "darwin") {
-  app.setAsDefaultProtocolClient("interview-coder")
+  app.setAsDefaultProtocolClient(APP_PROTOCOL)
 } else {
-  app.setAsDefaultProtocolClient("interview-coder", process.execPath, [
+  app.setAsDefaultProtocolClient(APP_PROTOCOL, process.execPath, [
     path.resolve(process.argv[1] || "")
   ])
 }
 
 // Handle the protocol. In this case, we choose to show an Error Box.
 if (process.defaultApp && process.argv.length >= 2) {
-  app.setAsDefaultProtocolClient("interview-coder", process.execPath, [
+  app.setAsDefaultProtocolClient(APP_PROTOCOL, process.execPath, [
     path.resolve(process.argv[1])
   ])
 }
@@ -194,6 +560,10 @@ if (!gotTheLock) {
 
       // Protocol handler removed - no longer using auth callbacks
     }
+
+    if (commandLine.includes("--uninstall-flow")) {
+      showUninstallOffboarding()
+    }
   })
 }
 
@@ -208,19 +578,22 @@ async function createWindow(): Promise<void> {
   }
 
   const primaryDisplay = screen.getPrimaryDisplay()
-  const workArea = primaryDisplay.workAreaSize
+  const workArea = primaryDisplay.workArea
   state.screenWidth = workArea.width
   state.screenHeight = workArea.height
   state.step = 60
-  state.currentY = 50
+  const defaultBounds = getDefaultWindowBounds()
+  const useTransparentWindow = shouldUseTransparentWindow()
+  state.currentX = defaultBounds.x
+  state.currentY = defaultBounds.y
 
   const windowSettings: Electron.BrowserWindowConstructorOptions = {
-    width: 320,
-    height: 120,
-    minWidth: 1,
-    minHeight: 1,
-    x: state.currentX,
-    y: 50,
+    width: defaultBounds.width,
+    height: defaultBounds.height,
+    minWidth: 320,
+    minHeight: 56,
+    x: defaultBounds.x,
+    y: defaultBounds.y,
     alwaysOnTop: true,
     useContentSize: true,
     webPreferences: {
@@ -231,27 +604,45 @@ async function createWindow(): Promise<void> {
         : path.join(__dirname, "preload.js"),
       scrollBounce: true
     },
-    show: true,
+    show: false,
     frame: false,
-    transparent: true,
+    transparent: useTransparentWindow,
     fullscreenable: false,
     hasShadow: false,
     opacity: 1.0,  // Start with full opacity
-    backgroundColor: "#00000000",
+    backgroundColor: useTransparentWindow ? "#00000000" : "#101315",
     focusable: true,
     skipTaskbar: true,
-    type: "panel",
     paintWhenInitiallyHidden: true,
     titleBarStyle: "hidden",
     enableLargerThanScreen: true,
-    movable: true
+    movable: true,
+    icon: resolveWindowIconPath()
+  }
+
+  if (process.platform === "darwin") {
+    windowSettings.type = "panel"
   }
 
   state.mainWindow = new BrowserWindow(windowSettings)
+  configureMediaPermissions(state.mainWindow)
 
   // Add more detailed logging for window events
   state.mainWindow.webContents.on("did-finish-load", () => {
     console.log("Window finished loading")
+    revealMainWindow("did-finish-load")
+    if (state.pendingUninstallOffboarding) {
+      state.mainWindow?.webContents.send(SHOW_UNINSTALL_OFFBOARDING_EVENT)
+      state.pendingUninstallOffboarding = false
+    }
+  })
+  state.mainWindow.webContents.on("did-start-loading", () => {
+    if (state.liveInterviewHelper?.hasActiveSession()) {
+      void state.liveInterviewHelper.stopSession()
+    }
+    if (state.browserAgentController?.hasActiveSession()) {
+      void state.browserAgentController.stopTask()
+    }
   })
   state.mainWindow.webContents.on(
     "did-fail-load",
@@ -349,7 +740,8 @@ async function createWindow(): Promise<void> {
   state.mainWindow.on("closed", handleWindowClosed)
 
   // Initialize window state
-  const bounds = state.mainWindow.getBounds()
+  const bounds = clampWindowBounds(state.mainWindow.getBounds())
+  state.mainWindow.setBounds(bounds)
   state.windowPosition = { x: bounds.x, y: bounds.y }
   state.windowSize = { width: bounds.width, height: bounds.height }
   state.currentX = bounds.x
@@ -358,21 +750,27 @@ async function createWindow(): Promise<void> {
   
   // Set opacity based on user preferences or hide initially
   // Ensure the window is visible for the first launch or if opacity > 0.1
-  const savedOpacity = configHelper.getOpacity();
+  const rawSavedOpacity = configHelper.getOpacity();
+  const savedOpacity = getConfiguredVisibleOpacity();
   console.log(`Initial opacity from config: ${savedOpacity}`);
   
-  // Always make sure window is shown first
-  state.mainWindow.showInactive(); // Use showInactive for consistency
-  
-  if (savedOpacity <= 0.1) {
-    console.log('Initial opacity too low, setting to 0 and hiding window');
+  if (rawSavedOpacity <= 0.1) {
+    console.log('Initial opacity too low, keeping startup window hidden until toggled');
     state.mainWindow.setOpacity(0);
     state.isWindowVisible = false;
   } else {
-    console.log(`Setting initial opacity to ${savedOpacity}`);
+    console.log(`Preparing startup opacity ${savedOpacity}`);
     state.mainWindow.setOpacity(savedOpacity);
     state.isWindowVisible = true;
   }
+
+  state.mainWindow.once("ready-to-show", () => {
+    revealMainWindow("ready-to-show")
+  })
+
+  setTimeout(() => {
+    revealMainWindow("startup-fallback")
+  }, 1500)
 }
 
 function handleWindowMove(): void {
@@ -390,6 +788,8 @@ function handleWindowResize(): void {
 }
 
 function handleWindowClosed(): void {
+  state.liveInterviewHelper?.shutdown()
+  state.browserAgentController?.shutdown()
   state.mainWindow = null
   state.isWindowVisible = false
   state.windowPosition = null
@@ -411,12 +811,15 @@ function hideMainWindow(): void {
 
 function showMainWindow(): void {
   if (!state.mainWindow?.isDestroyed()) {
-    if (state.windowPosition && state.windowSize) {
-      state.mainWindow.setBounds({
-        ...state.windowPosition,
-        ...state.windowSize
-      });
-    }
+    const nextBounds = clampWindowBounds(
+      state.windowPosition && state.windowSize
+        ? {
+            ...state.windowPosition,
+            ...state.windowSize,
+          }
+        : state.mainWindow.getBounds()
+    )
+    state.mainWindow.setBounds(nextBounds)
     state.mainWindow.setIgnoreMouseEvents(false);
     state.mainWindow.setAlwaysOnTop(true, "screen-saver", 1);
     state.mainWindow.setVisibleOnAllWorkspaces(true, {
@@ -425,9 +828,12 @@ function showMainWindow(): void {
     state.mainWindow.setContentProtection(true);
     state.mainWindow.setOpacity(0); // Set opacity to 0 before showing
     state.mainWindow.showInactive(); // Use showInactive instead of show+focus
-    state.mainWindow.setOpacity(1); // Then set opacity to 1 after showing
+    const visibleOpacity = getConfiguredVisibleOpacity();
+    state.mainWindow.setOpacity(visibleOpacity);
     state.isWindowVisible = true;
-    console.log('Window shown with showInactive(), opacity set to 1');
+    console.log(
+      `Window shown with showInactive(), opacity set to ${visibleOpacity}`
+    );
   }
 }
 
@@ -525,24 +931,6 @@ function loadEnvVariables() {
 // Initialize application
 async function initializeApp() {
   try {
-    // Set custom cache directory to prevent permission issues
-    const appDataPath = path.join(app.getPath('appData'), 'interview-coder-v1')
-    const sessionPath = path.join(appDataPath, 'session')
-    const tempPath = path.join(appDataPath, 'temp')
-    const cachePath = path.join(appDataPath, 'cache')
-    
-    // Create directories if they don't exist
-    for (const dir of [appDataPath, sessionPath, tempPath, cachePath]) {
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true })
-      }
-    }
-    
-    app.setPath('userData', appDataPath)
-    app.setPath('sessionData', sessionPath)      
-    app.setPath('temp', tempPath)
-    app.setPath('cache', cachePath)
-      
     loadEnvVariables()
     
     // Ensure a configuration file exists
@@ -554,13 +942,17 @@ async function initializeApp() {
     initializeIpcHandlers({
       getMainWindow,
       setWindowDimensions,
+      requestMicrophoneAccess,
       getScreenshotQueue,
       getExtraScreenshotQueue,
       deleteScreenshot,
       getImagePreview,
       processingHelper: state.processingHelper,
+      liveInterviewHelper: state.liveInterviewHelper,
+      browserAgentController: state.browserAgentController,
       PROCESSING_EVENTS: state.PROCESSING_EVENTS,
       takeScreenshot,
+      takeRegionScreenshot,
       getView,
       toggleMainWindow,
       clearQueues,
@@ -589,6 +981,10 @@ async function initializeApp() {
       isDev ? "development" : "production",
       "mode"
     )
+
+    if (process.argv.includes("--uninstall-flow")) {
+      showUninstallOffboarding()
+    }
   } catch (error) {
     console.error("Failed to initialize application:", error)
     app.quit()
@@ -596,7 +992,7 @@ async function initializeApp() {
 }
 
 function handleProtocolUrl(protocolUrl?: string): void {
-  if (!protocolUrl || !protocolUrl.startsWith("interview-coder://")) {
+  if (!isAppProtocolUrl(protocolUrl)) {
     return
   }
 
@@ -651,17 +1047,21 @@ app.on("second-instance", (event, commandLine) => {
     state.mainWindow.focus()
   }
 
-  const protocolUrl = commandLine.find((arg) =>
-    arg.startsWith("interview-coder://")
-  )
+  const protocolUrl = commandLine.find((arg) => isAppProtocolUrl(arg))
   handleProtocolUrl(protocolUrl)
+
+  if (commandLine.includes("--uninstall-flow")) {
+    showUninstallOffboarding()
+  }
 })
 
 // Prevent multiple instances of the app
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
-  app.on("window-all-closed", () => {
+app.on("window-all-closed", () => {
+    state.liveInterviewHelper?.shutdown()
+    state.browserAgentController?.shutdown()
     if (process.platform !== "darwin") {
       app.quit()
       state.mainWindow = null
@@ -673,6 +1073,11 @@ app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) {
     createWindow()
   }
+})
+
+app.on("before-quit", () => {
+  state.liveInterviewHelper?.shutdown()
+  state.browserAgentController?.shutdown()
 })
 
 // State getter/setter functions
@@ -740,6 +1145,45 @@ async function takeScreenshot(): Promise<string> {
   )
 }
 
+async function takeRegionScreenshot(): Promise<string> {
+  if (!state.mainWindow) throw new Error("No main window available")
+
+  hideMainWindow()
+  await new Promise((resolve) => setTimeout(resolve, 120))
+
+  let selection = null
+  try {
+    selection = await selectScreenRegion(state.mainWindow)
+  } catch (error) {
+    showMainWindow()
+    throw error
+  }
+
+  if (!selection) {
+    showMainWindow()
+    return ""
+  }
+
+  const shouldStartFreshQuestion =
+    state.view !== "queue" || state.problemInfo !== null || state.hasDebugged
+
+  if (shouldStartFreshQuestion) {
+    state.processingHelper?.cancelOngoingRequests(false)
+    clearQueues()
+    state.hasDebugged = false
+
+    if (!state.mainWindow.isDestroyed()) {
+      state.mainWindow.webContents.send("reset-view")
+      state.mainWindow.webContents.send("reset")
+    }
+  }
+
+  return (
+    state.screenshotHelper?.takeRegionScreenshot(selection, () => showMainWindow()) ||
+    ""
+  )
+}
+
 async function getImagePreview(filepath: string): Promise<string> {
   return state.screenshotHelper?.getImagePreview(filepath) || ""
 }
@@ -783,6 +1227,7 @@ export {
   getExtraScreenshotQueue,
   clearQueues,
   takeScreenshot,
+  takeRegionScreenshot,
   getImagePreview,
   deleteScreenshot,
   setHasDebugged,

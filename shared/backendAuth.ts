@@ -7,7 +7,12 @@ export type SubscriptionStatus =
   | "cancelled"
   | "suspended";
 
-export type UsageAction = "solve" | "debug" | "screenshot";
+export type UsageAction =
+  | "solve"
+  | "debug"
+  | "screenshot"
+  | "live_interview"
+  | "computer_use";
 
 export interface UsageRateLimits {
   solveDaily: number;
@@ -19,7 +24,9 @@ export interface UsageSnapshot {
   solvesToday: number;
   debugToday: number;
   screenshotsToday: number;
+  requestsToday: number;
   requestsThisHour: number;
+  remainingRequestsToday: number;
   remainingSolveDaily: number;
   remainingDebugDaily: number;
   remainingRequestsThisHour: number;
@@ -37,7 +44,7 @@ export interface AuthenticatedUser {
   role: "user";
   subscriptionPlan: SubscriptionPlan;
   subscriptionStatus: SubscriptionStatus;
-  subscriptionSource: "manual" | "stripe";
+  subscriptionSource: "manual" | "stripe" | "dodo";
   cancelAtPeriodEnd: boolean;
   rateLimits: UsageRateLimits;
   createdAt: string;
@@ -48,7 +55,7 @@ export interface AuthenticatedUser {
 }
 
 export interface BillingSummary {
-  provider: "manual" | "stripe";
+  provider: "manual" | "stripe" | "dodo";
   pricePerMonthUsd: number;
   unlimited: boolean;
   checkoutEnabled: boolean;

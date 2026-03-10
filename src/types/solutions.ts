@@ -14,6 +14,7 @@ export interface SolutionsResponse {
 
 export interface ProblemStatementData {
   problem_statement: string
+  content_summary?: string
   question_type?: "coding" | "mcq" | "academic" | "general"
   sub_questions?: string[]
   constraints?: string

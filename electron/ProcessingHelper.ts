@@ -1,10 +1,11 @@
 // ProcessingHelper.ts
+import crypto from "node:crypto"
 import fs from "node:fs"
 import { ScreenshotHelper } from "./ScreenshotHelper"
 import { IProcessingHelperDeps } from "./main"
 import * as axios from "axios"
 import { BrowserWindow } from "electron"
-import { OpenAI } from "openai"
+import { OpenAI, toFile } from "openai"
 import { configHelper } from "./ConfigHelper"
 import Anthropic from '@anthropic-ai/sdk';
 import {
@@ -14,6 +15,7 @@ import {
   TOGETHER_BASE_URL,
 } from "../shared/aiConfig"
 import type {
+  AssistantChatMode,
   TextFollowUpRequest,
   TextFollowUpResponse,
 } from "../shared/followUpChat"
@@ -44,6 +46,7 @@ interface GeminiResponse {
 interface ExtractedQuestionInfo {
   question_type?: "coding" | "mcq" | "academic" | "general";
   problem_statement: string;
+  content_summary?: string;
   sub_questions?: string[];
   constraints?: string;
   example_input?: string;
@@ -65,16 +68,50 @@ interface StructuredSolutionResponse {
   space_complexity?: string;
 }
 
+export interface LiveInterviewTurnRequest {
+  instructions: string[];
+  lastAnswer: string;
+  lastScreenHash?: string | null;
+  lastContentHash?: string | null;
+  lastInstructionHash?: string | null;
+}
+
+export interface LiveAudioInterviewTurnRequest {
+  transcript: string;
+  instructions: string[];
+  lastAnswer: string;
+  lastTranscriptHash?: string | null;
+  lastInstructionHash?: string | null;
+}
+
+export interface LiveInterviewTurnResult {
+  success: boolean;
+  updated: boolean;
+  answer: string;
+  screenHash: string | null;
+  contentHash: string | null;
+  instructionHash: string;
+  lastUpdatedAt: string | null;
+  error?: string;
+}
+
+const LIVE_AUDIO_TRANSCRIPTION_MODEL = "openai/whisper-large-v3"
+const LIVE_INTERVIEW_MAX_TOKENS = 520
+const LIVE_AUDIO_INTERVIEW_MAX_TOKENS = 420
+
 export class ProcessingHelper {
   private deps: IProcessingHelperDeps
   private screenshotHelper: ScreenshotHelper
   private openaiClient: OpenAI | null = null
   private geminiApiKey: string | null = null
   private anthropicClient: Anthropic | null = null
+  private liveAudioTranscriptionClient: OpenAI | null = null
+  private liveAudioTranscriptionApiKey: string | null = null
 
   // AbortControllers for API requests
   private currentProcessingAbortController: AbortController | null = null
   private currentExtraProcessingAbortController: AbortController | null = null
+  private currentLiveProcessingAbortController: AbortController | null = null
 
   constructor(deps: IProcessingHelperDeps) {
     this.deps = deps
@@ -97,6 +134,45 @@ export class ProcessingHelper {
     return PROVIDER_DISPLAY_NAMES[provider];
   }
 
+  private getLiveAudioTranscriptionClient(): OpenAI {
+    const apiKey = configHelper.getConfiguredApiKey("together")
+    if (!apiKey) {
+      throw new Error("Together AI key not configured for live audio transcription.")
+    }
+
+    if (
+      !this.liveAudioTranscriptionClient ||
+      this.liveAudioTranscriptionApiKey !== apiKey
+    ) {
+      this.liveAudioTranscriptionClient = new OpenAI({
+        apiKey,
+        baseURL: TOGETHER_BASE_URL,
+        timeout: 60000,
+        maxRetries: 2,
+      })
+      this.liveAudioTranscriptionApiKey = apiKey
+    }
+
+    return this.liveAudioTranscriptionClient
+  }
+
+  private getAudioExtension(mimeType: string): string {
+    const normalizedMimeType = mimeType.toLowerCase()
+    if (normalizedMimeType.includes("mp4") || normalizedMimeType.includes("m4a")) {
+      return "m4a"
+    }
+    if (normalizedMimeType.includes("mpeg") || normalizedMimeType.includes("mp3")) {
+      return "mp3"
+    }
+    if (normalizedMimeType.includes("wav")) {
+      return "wav"
+    }
+    if (normalizedMimeType.includes("flac")) {
+      return "flac"
+    }
+    return "webm"
+  }
+
   private getDefaultModelForStage(
     provider: ApiProvider,
     stage: "extractionModel" | "solutionModel" | "debuggingModel"
@@ -117,7 +193,8 @@ export class ProcessingHelper {
 
 Return only valid JSON with these fields:
 - question_type: one of "coding", "mcq", "academic", or "general"
-- problem_statement: the full combined prompt/question text in plain text, covering ALL visible questions, sub-questions, and requested tasks in top-to-bottom order
+- problem_statement: the full combined prompt/question text in plain text, covering ALL visible questions, sub-questions, and requested tasks in top-to-bottom order. If there is no explicit question, use this field for a concise summary of the visible content.
+- content_summary: concise summary of the visible content when there is no explicit question, otherwise empty string
 - sub_questions: array of strings listing every distinct visible question, sub-question, or requested task in order
 - constraints: string
 - example_input: string
@@ -133,7 +210,9 @@ Rules:
 - If a field is missing, use an empty string or [].
 - If multiple questions or sub-parts are visible, include all of them. Never return only the first one.
 - Do not collapse numbered or lettered sub-parts into a single shortened summary.
-- If the screenshots show code, keep the question_type as "coding".
+- If there is no explicit question to answer, do not refuse and do not leave problem_statement empty. Set question_type to "general", set answer_format to "summary", and summarize the visible content instead.
+- If the screenshots mostly show notes, code, UI, chat, slides, or an article without a direct question, treat them as content to summarize and explain.
+- If the screenshots show code and an explicit coding task, keep question_type as "coding". If they show code but no direct task, you may still use question_type "general" with answer_format "summary".
 - Preferred coding language for coding tasks is ${language}.
 - Return JSON only with no markdown or extra commentary.`;
   }
@@ -142,11 +221,15 @@ Rules:
     problemInfo: ExtractedQuestionInfo,
     language: string
   ): string {
+    const isSummaryMode =
+      (problemInfo.answer_format || "").trim().toLowerCase() === "summary";
     const subQuestions =
       problemInfo.sub_questions && problemInfo.sub_questions.length > 0
         ? problemInfo.sub_questions
             .map((question, index) => `${index + 1}. ${question}`)
             .join("\n")
+        : isSummaryMode
+        ? "1. Summarize the visible content and highlight the key points."
         : "1. Treat the visible prompt as a single question.";
     const answerChoices =
       problemInfo.answer_choices && problemInfo.answer_choices.length > 0
@@ -157,13 +240,14 @@ Rules:
         ? problemInfo.key_details.join("\n- ")
         : "None";
 
-    return `Solve the following prompt. It may be a coding problem, academic question, MCQ, or general reasoning task.
+    return `Analyze the following screenshot content. It may be a coding problem, academic question, MCQ, general reasoning task, or content that simply needs summarizing.
 You must answer every visible question or sub-question from the screenshots, not just the first one.
+If there is no direct question, summarize the visible content instead of refusing.
 
 QUESTION TYPE:
 ${problemInfo.question_type || "general"}
 
-PROMPT / QUESTION:
+PROMPT / QUESTION OR CONTENT SUMMARY:
 ${problemInfo.problem_statement || ""}
 
 VISIBLE QUESTIONS / SUBPARTS TO ANSWER IN ORDER:
@@ -208,14 +292,49 @@ Return only valid JSON with this exact structure:
 }
 
 Rules:
-- For coding tasks: provide a correct, efficient implementation in ${language}, set is_code_response=true, and include detailed time/space complexity.
+- For coding tasks with an explicit coding task: provide a correct, efficient implementation in ${language}, set is_code_response=true, and include detailed time/space complexity.
 - For MCQs: answer directly, identify the best option, explain why, set is_code_response=false, and leave code empty.
 - For academic/general tasks: provide a correct direct answer with concise reasoning, set is_code_response=false unless code is genuinely required.
+- If there is no explicit question or the expected answer format is "summary", provide a concise summary of the visible content, explain the key points, and mention any obvious takeaway or action item. Set is_code_response=false unless code output is explicitly requested.
 - If multiple distinct questions or sub-parts are present, answer all of them in order and label them clearly.
 - Do not skip later questions even if the first question looks like the main one.
 - If the screenshots contain multiple independent questions that cannot be represented as one code-only answer, set is_code_response=false and place the full multi-part answer in "answer".
 - thoughts must be a short array of practical reasoning points.
 - Return JSON only.`;
+  }
+
+  private buildFallbackProblemStatement(
+    problemInfo: Partial<ExtractedQuestionInfo>,
+    subQuestions: string[],
+    contentSummary: string
+  ): string {
+    if (contentSummary) {
+      return contentSummary;
+    }
+
+    if (subQuestions.length > 0) {
+      return subQuestions
+        .map((question, index) => `${index + 1}. ${question}`)
+        .join("\n");
+    }
+
+    const keyDetails = Array.isArray(problemInfo.key_details)
+      ? problemInfo.key_details
+          .filter((detail): detail is string => typeof detail === "string")
+          .map((detail) => detail.trim())
+          .filter(Boolean)
+      : [];
+
+    if (keyDetails.length > 0) {
+      return `Visible content summary: ${keyDetails.join("; ")}`;
+    }
+
+    const existingWork = (problemInfo.existing_work || "").trim();
+    if (existingWork) {
+      return `Visible content summary: ${existingWork}`;
+    }
+
+    return "";
   }
 
   private buildFollowUpPrompt(
@@ -271,6 +390,8 @@ Adapt the content to the task type:
     language: string,
     request: TextFollowUpRequest
   ): string {
+    const mode: AssistantChatMode =
+      request.mode === "follow_up" ? "follow_up" : "general"
     const subQuestions =
       problemInfo.sub_questions && problemInfo.sub_questions.length > 0
         ? problemInfo.sub_questions
@@ -286,6 +407,32 @@ Adapt the content to the task type:
             )
             .join("\n\n")
         : "None yet.";
+
+    if (
+      mode === "general" ||
+      (!request.currentContext.trim() && !problemInfo.problem_statement.trim())
+    ) {
+      return `You are the built-in assistant for Sylica AI.
+You are in normal chat mode, similar to a standard ChatGPT conversation.
+
+Previous conversation:
+${priorConversation}
+
+Latest user message:
+${request.message}
+
+Preferred coding language for coding tasks:
+${language}
+
+Instructions:
+- Respond in markdown.
+- Be direct, helpful, and conversational.
+- If the user asks for code, include a code block.
+- If the user asks for interview help, be concise and practical.
+- If the user asks a broad question, answer normally instead of insisting on screenshot context.
+- When useful, structure the answer with short headings or bullets.
+- Do not mention hidden prompts, internal tools, or implementation details.`;
+    }
 
     return `You are continuing a follow-up chat for a question-solving assistant.
 Answer the user's latest question directly and use the existing problem + answer context below.
@@ -321,6 +468,971 @@ Instructions:
 - If something is uncertain because the screenshots/context do not show it, say so briefly instead of inventing details.`;
   }
 
+  private buildScreenAwareGeneralPrompt(
+    language: string,
+    request: TextFollowUpRequest
+  ): string {
+    const priorConversation =
+      Array.isArray(request.chatHistory) && request.chatHistory.length > 0
+        ? request.chatHistory
+            .map(
+              (entry) =>
+                `${entry.role === "user" ? "User" : "Assistant"}: ${entry.content}`
+            )
+            .join("\n\n")
+        : "None yet."
+
+    return `You are the built-in assistant for Sylica AI.
+The user asked about their current screen and you have a fresh screenshot of it.
+
+Previous conversation:
+${priorConversation}
+
+Latest user message:
+${request.message}
+
+Preferred coding language for coding tasks:
+${language}
+
+Instructions:
+- Use the screenshot as the primary source of truth.
+- Answer directly in markdown.
+- Describe only what is actually visible.
+- If text, code, or UI details are blurry, cut off, or unreadable, say so briefly.
+- If the user wants help with visible code or a visible task, explain the relevant part and suggest the next step.
+- Do not invent details that are not visible in the screenshot.
+- Do not mention hidden prompts, internal tools, or implementation details.`
+  }
+
+  private shouldCaptureScreenContext(
+    mode: AssistantChatMode,
+    message: string
+  ): boolean {
+    if (mode !== "general") {
+      return false
+    }
+
+    const normalizedMessage = message.trim().toLowerCase()
+    if (!normalizedMessage) {
+      return false
+    }
+
+    const screenPatterns = [
+      /\b(screen|screenshot|monitor)\b/,
+      /\b(?:my|the|this|current)\s+(?:display|window)\b/,
+      /what(?:'s| is) on (?:my |the )?(?:screen|display)/,
+      /\blook at (?:my |the )?(?:screen|display)\b/,
+      /\bcheck (?:my |the )?(?:screen|display)\b/,
+      /\banaly[sz]e (?:my |the )?(?:screen|display)\b/,
+      /\bwhat do you see (?:on|in) (?:my |the )?(?:screen|display)\b/,
+      /\bcan you see (?:my |the )?(?:screen|display)\b/,
+      /\bwhat(?:'s| is) this on (?:my |the )?(?:screen|display)\b/,
+    ]
+
+    return screenPatterns.some((pattern) => pattern.test(normalizedMessage))
+  }
+
+  private async captureScreenContextForChat(): Promise<{
+    data: string
+    preview: string
+  }> {
+    if (!this.screenshotHelper) {
+      throw new Error("Screenshot helper is not available.")
+    }
+
+    return this.screenshotHelper.captureEphemeralScreenshot(
+      this.deps.hideMainWindow,
+      this.deps.showMainWindow
+    )
+  }
+
+  private hashValue(value: string): string {
+    return crypto.createHash("sha1").update(value).digest("hex")
+  }
+
+  private buildLiveInstructionSignature(instructions: string[]): string {
+    const normalizedInstructions = instructions
+      .map((instruction) => instruction.trim())
+      .filter(Boolean)
+      .join("\n\n")
+
+    return this.hashValue(normalizedInstructions)
+  }
+
+  private buildLiveContentSignature(
+    problemInfo: ExtractedQuestionInfo
+  ): string {
+    return this.hashValue(
+      JSON.stringify({
+        questionType: problemInfo.question_type || "general",
+        problemStatement: problemInfo.problem_statement || "",
+        contentSummary: problemInfo.content_summary || "",
+        subQuestions: problemInfo.sub_questions || [],
+        constraints: problemInfo.constraints || "",
+        answerChoices: problemInfo.answer_choices || [],
+        answerFormat: problemInfo.answer_format || "",
+        existingWork: problemInfo.existing_work || "",
+        keyDetails: problemInfo.key_details || [],
+      })
+    )
+  }
+
+  private buildLiveWatchingMessage(): string {
+    return "Watching your screen. No clear interview question is visible yet."
+  }
+
+  private buildLiveTranscriptWatchingMessage(): string {
+    return "- Listening for the full question.\n- I will turn the next clear ask into a short answer right away."
+  }
+
+  private shouldUseLiveWatchingState(
+    problemInfo: ExtractedQuestionInfo
+  ): boolean {
+    const answerFormat = (problemInfo.answer_format || "").trim().toLowerCase()
+    const problemStatement = (problemInfo.problem_statement || "").trim()
+    const contentSummary = (problemInfo.content_summary || "").trim()
+    const hasAnswerChoices = Boolean(problemInfo.answer_choices?.length)
+    const hasMultipleSubQuestions = Boolean(
+      problemInfo.sub_questions?.some((question) => {
+        const normalizedQuestion = question.trim()
+        return (
+          normalizedQuestion &&
+          normalizedQuestion !== problemStatement &&
+          normalizedQuestion !== contentSummary
+        )
+      })
+    )
+
+    if (
+      problemInfo.question_type === "coding" ||
+      problemInfo.question_type === "mcq" ||
+      hasAnswerChoices ||
+      hasMultipleSubQuestions
+    ) {
+      return false
+    }
+
+    if (!problemStatement) {
+      return true
+    }
+
+    if (answerFormat === "summary") {
+      return true
+    }
+
+    return (
+      Boolean(contentSummary) &&
+      (problemStatement === contentSummary ||
+        problemStatement.toLowerCase().startsWith("visible content summary:"))
+    )
+  }
+
+  private buildLiveInterviewPrompt(
+    problemInfo: ExtractedQuestionInfo,
+    language: string,
+    instructions: string[],
+    lastAnswer: string
+  ): string {
+    const subQuestions =
+      problemInfo.sub_questions && problemInfo.sub_questions.length > 0
+        ? problemInfo.sub_questions
+            .map((question, index) => `${index + 1}. ${question}`)
+            .join("\n")
+        : "1. Treat the visible content as a single interview prompt."
+    const answerChoices =
+      problemInfo.answer_choices && problemInfo.answer_choices.length > 0
+        ? problemInfo.answer_choices.join("\n")
+        : "None"
+    const liveInstructions =
+      instructions.length > 0
+        ? instructions.map((instruction, index) => `${index + 1}. ${instruction}`).join("\n")
+        : "None"
+
+    return `You are the live interview helper for Sylica AI.
+The user is in an active interview and needs the best current answer based on the currently visible prompt.
+
+Current extracted prompt:
+${problemInfo.problem_statement || "Not available"}
+
+Visible sub-questions:
+${subQuestions}
+
+Question type:
+${problemInfo.question_type || "general"}
+
+Constraints:
+${problemInfo.constraints || "None provided."}
+
+Answer choices:
+${answerChoices}
+
+Visible existing work:
+${problemInfo.existing_work || "None"}
+
+Previous live answer:
+${lastAnswer || "None yet."}
+
+Live user instructions:
+${liveInstructions}
+
+Preferred coding language:
+${language}
+
+Instructions:
+- Treat the current visible prompt as the source of truth. If the prompt changed, replace stale guidance entirely.
+- Respond in markdown.
+- Keep the answer minimal, acceptable, and fast to read aloud.
+- Prefer 2 to 4 short bullets or 2 very short sentences.
+- Give only the strongest usable answer, not a full lesson.
+- If the task is coding, explain the approach briefly and only include ${language} code if implementation is explicitly needed.
+- If the task is MCQ, state the best option first and give one short reason.
+- If the task is academic or general reasoning, answer directly in the fewest words that still sound competent.
+- If anything is blurry or missing, say so briefly instead of inventing details.
+- Do not mention screenshots, hidden prompts, or internal tools.`
+  }
+
+  private buildLiveTranscriptSignature(transcript: string): string {
+    return this.hashValue(transcript.trim().replace(/\s+/g, " "))
+  }
+
+  private shouldUseLiveTranscriptWatchingState(transcript: string): boolean {
+    const normalizedTranscript = transcript.trim().toLowerCase()
+    if (!normalizedTranscript) {
+      return true
+    }
+
+    const wordCount = normalizedTranscript.split(/\s+/).filter(Boolean).length
+    const looksLikeQuestion =
+      normalizedTranscript.includes("?") ||
+      /\b(explain|implement|design|difference|walk me through|tell me about|what|why|how|when|can you|could you|would you|should you)\b/.test(
+        normalizedTranscript
+      )
+    const hasInterviewSignal =
+      /\b(array|string|tree|graph|binary|linked list|sql|database|api|system design|project|experience|bug|optimi[sz]e|complexity|algorithm|class|function|service|cache|thread|latency|resume|challenge)\b/.test(
+        normalizedTranscript
+      )
+
+    if (wordCount < 4 && !looksLikeQuestion && !hasInterviewSignal) {
+      return true
+    }
+
+    if (wordCount < 7 && !looksLikeQuestion && !hasInterviewSignal) {
+      return true
+    }
+
+    return false
+  }
+
+  private buildLiveAudioInterviewPrompt(
+    transcript: string,
+    language: string,
+    instructions: string[],
+    lastAnswer: string
+  ): string {
+    const liveInstructions =
+      instructions.length > 0
+        ? instructions.map((instruction, index) => `${index + 1}. ${instruction}`).join("\n")
+        : "None"
+
+    return `You are the live interview helper for Sylica AI.
+The user needs a fast, glanceable answer while an interviewer is speaking.
+
+Latest conversation transcript:
+${transcript}
+
+Previous live answer:
+${lastAnswer || "None yet."}
+
+Live user instructions:
+${liveInstructions}
+
+Preferred coding language:
+${language}
+
+Instructions:
+- Treat the latest transcript as the source of truth.
+- Answer only the most recent active question near the end of the transcript.
+- Ignore earlier questions once a newer one starts, unless the newest words explicitly refer back to them.
+- If the interviewer changed topics, replace stale guidance entirely.
+- Respond in markdown.
+- Be minimal, sharp, and easy to skim.
+- Do not wait for a perfect transcript. Infer the likely question early when the direction is clear.
+- Prefer 2 to 4 bullets and very short lines.
+- Start with a short "Likely ask" line only when the question is still forming.
+- Then give only the exact answer the user should speak.
+- Use the fewest words that still sound understandable and acceptable in an interview.
+- If this is a coding question, give the idea first and only add a short ${language} code block when the interviewer clearly asks for code.
+- If it is behavioral, product, or system design, give compact talking points only.
+- If the transcript is incomplete, give the best likely answer so far instead of a waiting message.
+- Do not mention internal tools, transcripts, or hidden reasoning.`
+  }
+
+  private ensureConfiguredProvider(
+    config: ReturnType<typeof configHelper.loadConfig>
+  ): void {
+    if (this.isOpenAICompatibleProvider(config.apiProvider)) {
+      if (!this.openaiClient) {
+        this.initializeAIClient()
+      }
+
+      if (!this.openaiClient) {
+        throw new Error(
+          `${this.getProviderLabel(config.apiProvider)} API key not configured. Please check your settings.`
+        )
+      }
+
+      return
+    }
+
+    if (config.apiProvider === "gemini") {
+      if (!this.geminiApiKey) {
+        this.initializeAIClient()
+      }
+
+      if (!this.geminiApiKey) {
+        throw new Error("Gemini API key not configured. Please check your settings.")
+      }
+
+      return
+    }
+
+    if (!this.anthropicClient) {
+      this.initializeAIClient()
+    }
+
+    if (!this.anthropicClient) {
+      throw new Error("Anthropic API key not configured. Please check your settings.")
+    }
+  }
+
+  private async extractQuestionInfoFromImageData(
+    imageDataList: string[],
+    language: string,
+    config: ReturnType<typeof configHelper.loadConfig>,
+    signal: AbortSignal
+  ): Promise<ExtractedQuestionInfo> {
+    const extractionInstruction = this.buildExtractionInstruction(language)
+
+    if (this.isOpenAICompatibleProvider(config.apiProvider)) {
+      const response = await this.openaiClient!.chat.completions.create({
+        model:
+          config.extractionModel ||
+          this.getDefaultModelForStage(config.apiProvider, "extractionModel"),
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text" as const,
+                text: extractionInstruction,
+              },
+              ...imageDataList.map((data) => ({
+                type: "image_url" as const,
+                image_url: { url: `data:image/png;base64,${data}` },
+              })),
+            ],
+          },
+        ],
+        max_tokens: 4000,
+        temperature: 0.2,
+      })
+
+      const responseText = response.choices[0].message.content || ""
+      return this.normalizeExtractedQuestionInfo(
+        this.parseJsonResponse<ExtractedQuestionInfo>(responseText)
+      )
+    }
+
+    if (config.apiProvider === "gemini") {
+      const response = await axios.default.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/${config.extractionModel || "gemini-2.0-flash"}:generateContent?key=${this.geminiApiKey}`,
+        {
+          contents: [
+            {
+              role: "user",
+              parts: [
+                { text: extractionInstruction },
+                ...imageDataList.map((data) => ({
+                  inlineData: {
+                    mimeType: "image/png",
+                    data,
+                  },
+                })),
+              ],
+            },
+          ],
+          generationConfig: {
+            temperature: 0.2,
+            maxOutputTokens: 4000,
+          },
+        },
+        { signal }
+      )
+
+      const responseData = response.data as GeminiResponse
+      if (!responseData.candidates || responseData.candidates.length === 0) {
+        throw new Error("Empty response from Gemini API.")
+      }
+
+      const responseText = responseData.candidates[0].content.parts[0].text
+      return this.normalizeExtractedQuestionInfo(
+        this.parseJsonResponse<ExtractedQuestionInfo>(responseText)
+      )
+    }
+
+    try {
+      const response = await this.anthropicClient!.messages.create({
+        model:
+          config.extractionModel ||
+          this.getDefaultModelForStage(config.apiProvider, "extractionModel"),
+        max_tokens: 4000,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text" as const,
+                text: extractionInstruction,
+              },
+              ...imageDataList.map((data) => ({
+                type: "image" as const,
+                source: {
+                  type: "base64" as const,
+                  media_type: "image/png" as const,
+                  data,
+                },
+              })),
+            ],
+          },
+        ],
+        temperature: 0.2,
+      })
+
+      const responseText = (response.content[0] as { text: string }).text || ""
+      return this.normalizeExtractedQuestionInfo(
+        this.parseJsonResponse<ExtractedQuestionInfo>(responseText)
+      )
+    } catch (error: any) {
+      if (error?.status === 429) {
+        throw new Error(
+          "Claude API rate limit exceeded. Please wait a few minutes before trying again."
+        )
+      }
+
+      if (error?.status === 413 || error?.message?.includes("token")) {
+        throw new Error(
+          "Your screenshots contain too much information for Claude to process. Switch to OpenAI, Gemini, or Together AI in settings which can handle larger inputs."
+        )
+      }
+
+      throw error
+    }
+  }
+
+  private async generateLiveInterviewAnswer(
+    problemInfo: ExtractedQuestionInfo,
+    language: string,
+    instructions: string[],
+    lastAnswer: string,
+    config: ReturnType<typeof configHelper.loadConfig>,
+    signal: AbortSignal
+  ): Promise<string> {
+    const promptText = this.buildLiveInterviewPrompt(
+      problemInfo,
+      language,
+      instructions,
+      lastAnswer
+    )
+
+    if (this.isOpenAICompatibleProvider(config.apiProvider)) {
+      const response = await this.openaiClient!.chat.completions.create({
+        model:
+          config.solutionModel ||
+          this.getDefaultModelForStage(config.apiProvider, "solutionModel"),
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a precise live interview assistant. Give the shortest acceptable answer in markdown.",
+          },
+          {
+            role: "user",
+            content: promptText,
+          },
+        ],
+        max_tokens: LIVE_INTERVIEW_MAX_TOKENS,
+        temperature: 0.2,
+      })
+
+      return response.choices[0].message.content || ""
+    }
+
+    if (config.apiProvider === "gemini") {
+      const response = await axios.default.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/${config.solutionModel || "gemini-2.0-flash"}:generateContent?key=${this.geminiApiKey}`,
+        {
+          contents: [
+            {
+              role: "user",
+              parts: [{ text: promptText }],
+            },
+          ],
+          generationConfig: {
+            temperature: 0.2,
+            maxOutputTokens: LIVE_INTERVIEW_MAX_TOKENS,
+          },
+        },
+        { signal }
+      )
+
+      const responseData = response.data as GeminiResponse
+      if (!responseData.candidates || responseData.candidates.length === 0) {
+        throw new Error("Empty response from Gemini API.")
+      }
+
+      return (
+        responseData.candidates[0].content.parts.find(
+          (part) => typeof part.text === "string" && part.text.length > 0
+        )?.text || ""
+      )
+    }
+
+    try {
+      const response = await this.anthropicClient!.messages.create({
+        model:
+          config.solutionModel ||
+          this.getDefaultModelForStage(config.apiProvider, "solutionModel"),
+        max_tokens: LIVE_INTERVIEW_MAX_TOKENS,
+        temperature: 0.2,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text" as const,
+                text: promptText,
+              },
+            ],
+          },
+        ],
+      })
+
+      const textBlock = response.content.find(
+        (entry) => entry.type === "text"
+      ) as { text?: string } | undefined
+
+      return textBlock?.text || ""
+    } catch (error: any) {
+      if (error?.status === 429) {
+        throw new Error(
+          "Claude API rate limit exceeded. Please wait a few minutes before trying again."
+        )
+      }
+
+      if (error?.status === 413 || error?.message?.includes("token")) {
+        throw new Error(
+          "Your screenshots contain too much information for Claude to process. Switch to OpenAI, Gemini, or Together AI in settings which can handle larger inputs."
+        )
+      }
+
+      throw error
+    }
+  }
+
+  private async generateLiveAudioInterviewAnswer(
+    transcript: string,
+    language: string,
+    instructions: string[],
+    lastAnswer: string,
+    config: ReturnType<typeof configHelper.loadConfig>,
+    signal: AbortSignal
+  ): Promise<string> {
+    const promptText = this.buildLiveAudioInterviewPrompt(
+      transcript,
+      language,
+      instructions,
+      lastAnswer
+    )
+
+    if (this.isOpenAICompatibleProvider(config.apiProvider)) {
+      const response = await this.openaiClient!.chat.completions.create({
+        model:
+          config.solutionModel ||
+          this.getDefaultModelForStage(config.apiProvider, "solutionModel"),
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a precise live interview assistant. Give the shortest acceptable answer in markdown.",
+          },
+          {
+            role: "user",
+            content: promptText,
+          },
+        ],
+        max_tokens: LIVE_AUDIO_INTERVIEW_MAX_TOKENS,
+        temperature: 0.2,
+      })
+
+      return response.choices[0].message.content || ""
+    }
+
+    if (config.apiProvider === "gemini") {
+      const response = await axios.default.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/${config.solutionModel || "gemini-2.0-flash"}:generateContent?key=${this.geminiApiKey}`,
+        {
+          contents: [
+            {
+              role: "user",
+              parts: [{ text: promptText }],
+            },
+          ],
+          generationConfig: {
+            temperature: 0.2,
+            maxOutputTokens: LIVE_AUDIO_INTERVIEW_MAX_TOKENS,
+          },
+        },
+        { signal }
+      )
+
+      const responseData = response.data as GeminiResponse
+      if (!responseData.candidates || responseData.candidates.length === 0) {
+        throw new Error("Empty response from Gemini API.")
+      }
+
+      return (
+        responseData.candidates[0].content.parts.find(
+          (part) => typeof part.text === "string" && part.text.length > 0
+        )?.text || ""
+      )
+    }
+
+    try {
+      const response = await this.anthropicClient!.messages.create({
+        model:
+          config.solutionModel ||
+          this.getDefaultModelForStage(config.apiProvider, "solutionModel"),
+        max_tokens: LIVE_AUDIO_INTERVIEW_MAX_TOKENS,
+        temperature: 0.2,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text" as const,
+                text: promptText,
+              },
+            ],
+          },
+        ],
+      })
+
+      const textBlock = response.content.find(
+        (entry) => entry.type === "text"
+      ) as { text?: string } | undefined
+
+      return textBlock?.text || ""
+    } catch (error: any) {
+      if (error?.status === 429) {
+        throw new Error(
+          "Claude API rate limit exceeded. Please wait a few minutes before trying again."
+        )
+      }
+
+      throw error
+    }
+  }
+
+  public async processLiveInterviewTurn(
+    request: LiveInterviewTurnRequest
+  ): Promise<LiveInterviewTurnResult> {
+    const instructions = Array.isArray(request.instructions)
+      ? request.instructions
+          .map((instruction) => instruction.trim())
+          .filter(Boolean)
+      : []
+    const instructionHash = this.buildLiveInstructionSignature(instructions)
+    const lastAnswer = request.lastAnswer.trim()
+    const config = configHelper.loadConfig()
+
+    this.currentLiveProcessingAbortController?.abort()
+    const abortController = new AbortController()
+    this.currentLiveProcessingAbortController = abortController
+    const signal = abortController.signal
+
+    try {
+      this.ensureConfiguredProvider(config)
+      const language = await this.getLanguage()
+      const screenCapture = await this.captureScreenContextForChat()
+      const screenHash = this.hashValue(screenCapture.data)
+
+      if (
+        screenHash === request.lastScreenHash &&
+        instructionHash === (request.lastInstructionHash || "")
+      ) {
+        return {
+          success: true,
+          updated: false,
+          answer: lastAnswer,
+          screenHash,
+          contentHash: request.lastContentHash || null,
+          instructionHash,
+          lastUpdatedAt: null,
+        }
+      }
+
+      const problemInfo = await this.extractQuestionInfoFromImageData(
+        [screenCapture.data],
+        language,
+        config,
+        signal
+      )
+      const contentHash = this.buildLiveContentSignature(problemInfo)
+
+      if (this.shouldUseLiveWatchingState(problemInfo)) {
+        const answer = this.buildLiveWatchingMessage()
+        const updated =
+          answer !== lastAnswer ||
+          contentHash !== (request.lastContentHash || null) ||
+          instructionHash !== (request.lastInstructionHash || "")
+
+        return {
+          success: true,
+          updated,
+          answer,
+          screenHash,
+          contentHash,
+          instructionHash,
+          lastUpdatedAt: updated ? new Date().toISOString() : null,
+        }
+      }
+
+      if (
+        contentHash === request.lastContentHash &&
+        instructionHash === (request.lastInstructionHash || "")
+      ) {
+        return {
+          success: true,
+          updated: false,
+          answer: lastAnswer,
+          screenHash,
+          contentHash,
+          instructionHash,
+          lastUpdatedAt: null,
+        }
+      }
+
+      const answer = (
+        await this.generateLiveInterviewAnswer(
+          problemInfo,
+          language,
+          instructions,
+          lastAnswer,
+          config,
+          signal
+        )
+      ).trim()
+
+      if (!answer) {
+        throw new Error("The model returned an empty live interview response.")
+      }
+
+      return {
+        success: true,
+        updated:
+          answer !== lastAnswer ||
+          contentHash !== (request.lastContentHash || null) ||
+          instructionHash !== (request.lastInstructionHash || ""),
+        answer,
+        screenHash,
+        contentHash,
+        instructionHash,
+        lastUpdatedAt: new Date().toISOString(),
+      }
+    } catch (error: any) {
+      if (axios.isCancel(error)) {
+        return {
+          success: false,
+          updated: false,
+          answer: lastAnswer,
+          screenHash: request.lastScreenHash || null,
+          contentHash: request.lastContentHash || null,
+          instructionHash,
+          lastUpdatedAt: null,
+          error: "Live interview request was canceled.",
+        }
+      }
+
+      console.error("Live interview processing error:", error)
+      return {
+        success: false,
+        updated: false,
+        answer: lastAnswer,
+        screenHash: request.lastScreenHash || null,
+        contentHash: request.lastContentHash || null,
+        instructionHash,
+        lastUpdatedAt: null,
+        error:
+          error?.message ||
+          "Failed to generate a live interview response.",
+      }
+    } finally {
+      if (this.currentLiveProcessingAbortController === abortController) {
+        this.currentLiveProcessingAbortController = null
+      }
+    }
+  }
+
+  public async processLiveAudioInterviewTurn(
+    request: LiveAudioInterviewTurnRequest
+  ): Promise<LiveInterviewTurnResult> {
+    const transcript = request.transcript.trim()
+    const instructions = Array.isArray(request.instructions)
+      ? request.instructions
+          .map((instruction) => instruction.trim())
+          .filter(Boolean)
+      : []
+    const instructionHash = this.buildLiveInstructionSignature(instructions)
+    const transcriptHash = this.buildLiveTranscriptSignature(transcript)
+    const lastAnswer = request.lastAnswer.trim()
+    const config = configHelper.loadConfig()
+
+    this.currentLiveProcessingAbortController?.abort()
+    const abortController = new AbortController()
+    this.currentLiveProcessingAbortController = abortController
+    const signal = abortController.signal
+
+    try {
+      this.ensureConfiguredProvider(config)
+      const language = await this.getLanguage()
+
+      if (
+        transcriptHash === request.lastTranscriptHash &&
+        instructionHash === (request.lastInstructionHash || "")
+      ) {
+        return {
+          success: true,
+          updated: false,
+          answer: lastAnswer,
+          screenHash: null,
+          contentHash: transcriptHash,
+          instructionHash,
+          lastUpdatedAt: null,
+        }
+      }
+
+      if (this.shouldUseLiveTranscriptWatchingState(transcript)) {
+        const answer = this.buildLiveTranscriptWatchingMessage()
+        return {
+          success: true,
+          updated:
+            answer !== lastAnswer ||
+            transcriptHash !== (request.lastTranscriptHash || null) ||
+            instructionHash !== (request.lastInstructionHash || ""),
+          answer,
+          screenHash: null,
+          contentHash: transcriptHash,
+          instructionHash,
+          lastUpdatedAt: new Date().toISOString(),
+        }
+      }
+
+      const answer = (
+        await this.generateLiveAudioInterviewAnswer(
+          transcript,
+          language,
+          instructions,
+          lastAnswer,
+          config,
+          signal
+        )
+      ).trim()
+
+      if (!answer) {
+        throw new Error("The model returned an empty live interview response.")
+      }
+
+      return {
+        success: true,
+        updated:
+          answer !== lastAnswer ||
+          transcriptHash !== (request.lastTranscriptHash || null) ||
+          instructionHash !== (request.lastInstructionHash || ""),
+        answer,
+        screenHash: null,
+        contentHash: transcriptHash,
+        instructionHash,
+        lastUpdatedAt: new Date().toISOString(),
+      }
+    } catch (error: any) {
+      if (axios.isCancel(error)) {
+        return {
+          success: false,
+          updated: false,
+          answer: lastAnswer,
+          screenHash: null,
+          contentHash: request.lastTranscriptHash || null,
+          instructionHash,
+          lastUpdatedAt: null,
+          error: "Live interview request was canceled.",
+        }
+      }
+
+      console.error("Live audio interview processing error:", error)
+      return {
+        success: false,
+        updated: false,
+        answer: lastAnswer,
+        screenHash: null,
+        contentHash: request.lastTranscriptHash || null,
+        instructionHash,
+        lastUpdatedAt: null,
+        error:
+          error?.message ||
+          "Failed to generate a live interview response.",
+      }
+    } finally {
+      if (this.currentLiveProcessingAbortController === abortController) {
+        this.currentLiveProcessingAbortController = null
+      }
+    }
+  }
+
+  public async transcribeLiveInterviewAudioChunk(
+    audioBase64: string,
+    mimeType: string
+  ): Promise<string> {
+    const normalizedAudio = audioBase64.trim()
+    if (!normalizedAudio) {
+      return ""
+    }
+
+    const audioBuffer = Buffer.from(normalizedAudio, "base64")
+    if (audioBuffer.byteLength === 0) {
+      return ""
+    }
+
+    const client = this.getLiveAudioTranscriptionClient()
+    const file = await toFile(
+      audioBuffer,
+      `live-interview.${this.getAudioExtension(mimeType)}`,
+      {
+        type: mimeType || "audio/webm",
+      }
+    )
+
+    const response = await client.audio.transcriptions.create({
+      file,
+      model: LIVE_AUDIO_TRANSCRIPTION_MODEL,
+      language: "en",
+      response_format: "json",
+      prompt:
+        "This is a technical interview conversation about coding, algorithms, system design, software engineering, and behavioral interview questions.",
+    })
+
+    return typeof response.text === "string" ? response.text.trim() : ""
+  }
+
   private normalizeExtractedQuestionInfo(
     problemInfo: Partial<ExtractedQuestionInfo>
   ): ExtractedQuestionInfo {
@@ -330,21 +1442,32 @@ Instructions:
           .map((question) => question.trim())
           .filter(Boolean)
       : [];
+    const originalProblemStatement = (problemInfo.problem_statement || "").trim();
+    const contentSummary = (problemInfo.content_summary || "").trim();
 
     const normalizedProblemStatement =
-      (problemInfo.problem_statement || "").trim() ||
-      (subQuestions.length > 0
-        ? subQuestions
-            .map((question, index) => `${index + 1}. ${question}`)
-            .join("\n")
-        : "");
+      originalProblemStatement ||
+      this.buildFallbackProblemStatement(
+        problemInfo,
+        subQuestions,
+        contentSummary
+      );
+    const isSummaryFallback =
+      Boolean(contentSummary) ||
+      (!originalProblemStatement &&
+        subQuestions.length === 0 &&
+        Boolean(normalizedProblemStatement));
 
     return {
-      question_type: problemInfo.question_type || "general",
+      question_type:
+        isSummaryFallback ? "general" : problemInfo.question_type || "general",
       problem_statement: normalizedProblemStatement,
+      content_summary: contentSummary,
       sub_questions:
         subQuestions.length > 0
           ? subQuestions
+          : isSummaryFallback
+          ? ["Summarize the visible content from the screenshots and highlight the key points."]
           : normalizedProblemStatement
           ? [normalizedProblemStatement]
           : [],
@@ -355,7 +1478,9 @@ Instructions:
         ? problemInfo.answer_choices.filter(Boolean)
         : [],
       subject: problemInfo.subject || "",
-      answer_format: problemInfo.answer_format || "",
+      answer_format:
+        (problemInfo.answer_format || "").trim() ||
+        (isSummaryFallback ? "summary" : ""),
       existing_work: problemInfo.existing_work || "",
       key_details: Array.isArray(problemInfo.key_details)
         ? problemInfo.key_details.filter(Boolean)
@@ -837,7 +1962,7 @@ Instructions:
             content: [
               {
                 type: "text" as const, 
-                text: "Extract ALL visible question details from these screenshots, including every sub-question or task in order, and return only JSON."
+                text: "Extract ALL visible question details from these screenshots, including every sub-question or task in order. If there is no clear question, summarize the visible content instead. Return only JSON."
               },
               ...imageDataList.map(data => ({
                 type: "image_url" as const,
@@ -996,14 +2121,14 @@ Instructions:
       if (!problemInfo.problem_statement) {
         return {
           success: false,
-          error: "Failed to identify a usable question from the screenshots. Try clearer screenshots or include more of the prompt."
+          error: "Failed to identify any usable content from the screenshots. Try clearer screenshots or include more of the visible content."
         };
       }
 	      
 	      // Update the user on progress
 	      if (mainWindow) {
         mainWindow.webContents.send("processing-status", {
-          message: "Question analyzed successfully. Preparing the answer...",
+          message: "Screenshots analyzed successfully. Preparing the answer...",
           progress: 40
         });
       }
@@ -1519,10 +2644,15 @@ Instructions:
     request: TextFollowUpRequest
   ): Promise<{ success: true; data: TextFollowUpResponse } | { success: false; error: string }> {
     const message = request.message.trim()
+    const mode: AssistantChatMode =
+      request.mode === "follow_up" ? "follow_up" : "general"
     if (!message) {
       return {
         success: false,
-        error: "Enter a follow-up question first.",
+        error:
+          mode === "general"
+            ? "Enter a message first."
+            : "Enter a follow-up question first.",
       }
     }
 
@@ -1543,18 +2673,36 @@ Instructions:
     const signal = abortController.signal
 
     try {
+      const shouldCaptureScreen = this.shouldCaptureScreenContext(mode, message)
+      let screenCapture: { data: string; preview: string } | null = null
+
       if (mainWindow) {
         mainWindow.webContents.send("processing-status", {
-          message: "Generating follow-up response...",
-          progress: 55,
+          message: shouldCaptureScreen
+            ? "Checking your screen..."
+            : "Generating follow-up response...",
+          progress: shouldCaptureScreen ? 35 : 55,
         })
       }
 
-      const prompt = this.buildTextFollowUpPrompt(
-        normalizedProblemInfo,
-        language,
-        request
-      )
+      if (shouldCaptureScreen) {
+        screenCapture = await this.captureScreenContextForChat()
+
+        if (mainWindow) {
+          mainWindow.webContents.send("processing-status", {
+            message: "Analyzing your screen...",
+            progress: 60,
+          })
+        }
+      }
+
+      const prompt = screenCapture
+        ? this.buildScreenAwareGeneralPrompt(language, request)
+        : this.buildTextFollowUpPrompt(
+            normalizedProblemInfo,
+            language,
+            request
+          )
 
       let reply = ""
 
@@ -1568,19 +2716,41 @@ Instructions:
           }
         }
 
+        const selectedModel = screenCapture
+          ? config.extractionModel ||
+            this.getDefaultModelForStage(config.apiProvider, "extractionModel")
+          : mode === "general"
+          ? config.solutionModel ||
+            this.getDefaultModelForStage(config.apiProvider, "solutionModel")
+          : config.debuggingModel ||
+            this.getDefaultModelForStage(config.apiProvider, "debuggingModel")
+
         const response = await this.openaiClient.chat.completions.create({
-          model:
-            config.debuggingModel ||
-            this.getDefaultModelForStage(config.apiProvider, "debuggingModel"),
+          model: selectedModel,
           messages: [
             {
               role: "system",
               content:
-                "You are a precise follow-up assistant for coding, academic, MCQ, and general reasoning questions.",
+                mode === "general"
+                  ? "You are a precise, practical desktop AI assistant."
+                  : "You are a precise follow-up assistant for coding, academic, MCQ, and general reasoning questions.",
             },
             {
               role: "user",
-              content: prompt,
+              content: screenCapture
+                ? [
+                    {
+                      type: "text" as const,
+                      text: prompt,
+                    },
+                    {
+                      type: "image_url" as const,
+                      image_url: {
+                        url: `data:image/png;base64,${screenCapture.data}`,
+                      },
+                    },
+                  ]
+                : prompt,
             },
           ],
           max_tokens: 2200,
@@ -1596,15 +2766,29 @@ Instructions:
           }
         }
 
+        const selectedModel = screenCapture
+          ? config.extractionModel || "gemini-2.0-flash"
+          : mode === "general"
+          ? config.solutionModel || "gemini-2.0-flash"
+          : config.debuggingModel || "gemini-2.0-flash"
+
         const response = await axios.default.post(
-          `https://generativelanguage.googleapis.com/v1beta/models/${
-            config.debuggingModel || "gemini-2.0-flash"
-          }:generateContent?key=${this.geminiApiKey}`,
+          `https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:generateContent?key=${this.geminiApiKey}`,
           {
             contents: [
               {
                 role: "user",
-                parts: [{ text: prompt }],
+                parts: screenCapture
+                  ? [
+                      { text: prompt },
+                      {
+                        inlineData: {
+                          mimeType: "image/png",
+                          data: screenCapture.data,
+                        },
+                      },
+                    ]
+                  : [{ text: prompt }],
               },
             ],
             generationConfig: {
@@ -1623,7 +2807,10 @@ Instructions:
           }
         }
 
-        reply = responseData.candidates[0].content.parts[0].text || ""
+        reply =
+          responseData.candidates[0].content.parts.find(
+            (part) => typeof part.text === "string" && part.text.length > 0
+          )?.text || ""
       } else if (config.apiProvider === "anthropic") {
         if (!this.anthropicClient) {
           return {
@@ -1632,26 +2819,57 @@ Instructions:
           }
         }
 
+        const selectedModel = screenCapture
+          ? config.extractionModel ||
+            this.getDefaultModelForStage(config.apiProvider, "extractionModel")
+          : mode === "general"
+          ? config.solutionModel ||
+            this.getDefaultModelForStage(
+              config.apiProvider,
+              "solutionModel"
+            )
+          : config.debuggingModel ||
+            this.getDefaultModelForStage(
+              config.apiProvider,
+              "debuggingModel"
+            )
+
         const response = await this.anthropicClient.messages.create({
-          model:
-            config.debuggingModel ||
-            this.getDefaultModelForStage(config.apiProvider, "debuggingModel"),
+          model: selectedModel,
           max_tokens: 2200,
           temperature: 0.2,
           messages: [
             {
               role: "user",
-              content: [
-                {
-                  type: "text",
-                  text: prompt,
-                },
-              ],
+              content: screenCapture
+                ? [
+                    {
+                      type: "text" as const,
+                      text: prompt,
+                    },
+                    {
+                      type: "image" as const,
+                      source: {
+                        type: "base64" as const,
+                        media_type: "image/png" as const,
+                        data: screenCapture.data,
+                      },
+                    },
+                  ]
+                : [
+                    {
+                      type: "text" as const,
+                      text: prompt,
+                    },
+                  ],
             },
           ],
         })
 
-        reply = (response.content[0] as { type: "text"; text: string }).text || ""
+        const textBlock = response.content.find(
+          (entry) => entry.type === "text"
+        ) as { text?: string } | undefined
+        reply = textBlock?.text || ""
       }
 
       const cleanedReply = reply.trim()
@@ -1710,6 +2928,12 @@ Instructions:
       wasCancelled = true
     }
 
+    if (this.currentLiveProcessingAbortController) {
+      this.currentLiveProcessingAbortController.abort()
+      this.currentLiveProcessingAbortController = null
+      wasCancelled = true
+    }
+
     this.deps.setHasDebugged(false)
 
     this.deps.setProblemInfo(null)
@@ -1717,6 +2941,13 @@ Instructions:
     const mainWindow = this.deps.getMainWindow()
     if (notifyRenderer && wasCancelled && mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.NO_SCREENSHOTS)
+    }
+  }
+
+  public cancelLiveInterviewRequest(): void {
+    if (this.currentLiveProcessingAbortController) {
+      this.currentLiveProcessingAbortController.abort()
+      this.currentLiveProcessingAbortController = null
     }
   }
 }

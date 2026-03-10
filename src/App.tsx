@@ -1,5 +1,4 @@
 import SubscribedApp from "./_pages/SubscribedApp"
-import { UpdateNotification } from "./components/UpdateNotification"
 import {
   QueryClient,
   QueryClientProvider
@@ -16,7 +15,12 @@ import { ToastContext } from "./contexts/toast"
 import { AccountDashboardDialog } from "./components/Account/AccountDashboardDialog"
 import { AuthScreen } from "./components/Auth/AuthScreen"
 import { SettingsDialog } from "./components/Settings/SettingsDialog"
+import UninstallOffboardingDialog from "./components/Uninstall/UninstallOffboardingDialog"
 import type { AuthState } from "../shared/backendAuth"
+import {
+  EMPTY_DESKTOP_UPDATE_STATE,
+  type DesktopUpdateState,
+} from "../shared/desktopUpdates"
 import { updateWindowToElement } from "./utils/contentSize"
 
 // Create a React Query client
@@ -53,6 +57,11 @@ function App() {
 	
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [isAccountDashboardOpen, setIsAccountDashboardOpen] = useState(false)
+  const [isUninstallOffboardingOpen, setIsUninstallOffboardingOpen] =
+    useState(false)
+  const [desktopUpdateState, setDesktopUpdateState] = useState<DesktopUpdateState>(
+    EMPTY_DESKTOP_UPDATE_STATE
+  )
   const appShellRef = useRef<HTMLDivElement>(null)
 
   // Set unlimited credits
@@ -162,6 +171,43 @@ function App() {
     }
   }, [])
 
+  useEffect(() => {
+    let cancelled = false
+
+    void window.electronAPI.getUpdateState().then((result) => {
+      if (!cancelled && result.success) {
+        setDesktopUpdateState(result.data.state)
+      }
+    })
+
+    const unsubscribe = window.electronAPI.onUpdateState((state) => {
+      setDesktopUpdateState(state)
+    })
+
+    return () => {
+      cancelled = true
+      unsubscribe()
+    }
+  }, [])
+
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.onShowUninstallOffboarding(() => {
+      setIsUninstallOffboardingOpen(true)
+    })
+
+    return () => {
+      unsubscribe()
+    }
+  }, [])
+
+  const handleDownloadUpdate = useCallback(async () => {
+    return window.electronAPI.downloadUpdate()
+  }, [])
+
+  const handleInstallUpdate = useCallback(async () => {
+    return window.electronAPI.installUpdate()
+  }, [])
+
   // Initialize basic app state
   useEffect(() => {
     // Load config and set values
@@ -219,7 +265,7 @@ function App() {
       setAuthState({
         authenticated: false,
         session: null,
-        error: "Please log in before using CheatBit."
+        error: "Please log in before using Sylica AI."
       })
       setIsAccountDashboardOpen(false)
       showToast("Login Required", "Please log in to continue.", "error")
@@ -305,6 +351,9 @@ function App() {
                     credits={credits}
                     currentLanguage={currentLanguage}
                     setLanguage={updateLanguage}
+                    desktopUpdateState={desktopUpdateState}
+                    onDownloadUpdate={handleDownloadUpdate}
+                    onInstallUpdate={handleInstallUpdate}
                   />
                   <SettingsDialog 
                     open={isSettingsOpen} 
@@ -313,6 +362,11 @@ function App() {
                   <AccountDashboardDialog
                     open={isAccountDashboardOpen}
                     onOpenChange={handleCloseAccountDashboard}
+                  />
+                  <UninstallOffboardingDialog
+                    open={isUninstallOffboardingOpen}
+                    authState={authState}
+                    onOpenChange={setIsUninstallOffboardingOpen}
                   />
                 </div>
               ) : (
@@ -334,7 +388,13 @@ function App() {
                 </div>
               </div>
             )}
-            <UpdateNotification />
+            {!authState.authenticated && (
+              <UninstallOffboardingDialog
+                open={isUninstallOffboardingOpen}
+                authState={authState}
+                onOpenChange={setIsUninstallOffboardingOpen}
+              />
+            )}
           </div>
           
           <Toast

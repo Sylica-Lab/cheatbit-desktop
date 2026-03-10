@@ -1,5 +1,5 @@
 #!/bin/bash
-echo "=== Interview Coder - Invisible Edition (No Paywall) ==="
+echo "=== Sylica AI - Invisible Edition (No Paywall) ==="
 echo
 echo "IMPORTANT: This app is designed to be INVISIBLE by default!"
 echo "Use the keyboard shortcuts to control it:"
@@ -20,10 +20,10 @@ echo
 cd "$(dirname "$0")"
 
 echo "=== Step 1: Creating required directories... ==="
-mkdir -p ~/Library/Application\ Support/interview-coder-v1/temp
-mkdir -p ~/Library/Application\ Support/interview-coder-v1/cache
-mkdir -p ~/Library/Application\ Support/interview-coder-v1/screenshots
-mkdir -p ~/Library/Application\ Support/interview-coder-v1/extra_screenshots
+mkdir -p ~/Library/Application\ Support/sylica-ai/temp
+mkdir -p ~/Library/Application\ Support/sylica-ai/cache
+mkdir -p ~/Library/Application\ Support/sylica-ai/screenshots
+mkdir -p ~/Library/Application\ Support/sylica-ai/extra_screenshots
 
 echo "=== Step 2: Cleaning previous builds... ==="
 echo "Removing old build files to ensure a fresh start..."
@@ -32,7 +32,7 @@ rm -f .env
 
 echo "=== Step 3: Building application... ==="
 echo "This may take a moment..."
-npm run build
+npx vite build || exit 1
 
 echo "=== Step 4: Launching in stealth mode... ==="
 echo "Remember: Cmd+B to make it visible, Cmd+[ and Cmd+] to adjust opacity!"

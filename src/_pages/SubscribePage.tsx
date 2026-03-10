@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react"
 import { supabase } from "../lib/supabase"
 import { User } from "@supabase/supabase-js"
+import { CheatbitMark } from "../components/Brand/CheatbitMark"
 
 interface SubscribePageProps {
   user: User
@@ -60,11 +61,14 @@ export default function SubscribePage({ user }: SubscribePageProps) {
     >
       <div className="w-full px-6">
         <div className="text-center">
+          <div className="mb-4 flex justify-center">
+            <CheatbitMark className="h-14 w-14 rounded-[22px]" />
+          </div>
           <h2 className="text-2xl font-bold text-white">
-            Welcome to CheatBit
+            Welcome to Sylica AI
           </h2>
           <p className="text-gray-400 text-sm mt-2 mb-6">
-            To continue using CheatBit, you'll need to subscribe
+            Start free with 20 requests, then upgrade to Pro for unlimited access
             ($20/month)
           </p>
           <p className="text-gray-500 text-[11px] -mt-4 mb-6 italic">
@@ -105,7 +109,7 @@ export default function SubscribePage({ user }: SubscribePageProps) {
             onClick={handleSubscribe}
             className="w-full px-4 py-3 bg-white text-black rounded-xl font-medium hover:bg-white/90 transition-colors flex items-center justify-center gap-2 mb-6"
           >
-            Subscribe
+            Upgrade to Pro
             <svg
               xmlns="http://www.w3.org/2000/svg"
               width="14"

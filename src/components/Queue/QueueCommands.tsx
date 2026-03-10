@@ -1,213 +1,458 @@
-import React, { useState, useEffect, useRef } from "react"
-import { createRoot } from "react-dom/client"
-import { Keyboard, LayoutDashboard, Settings2 } from "lucide-react"
-
+import React, { useEffect, useState } from "react"
+import {
+  Computer,
+  Focus,
+  LayoutDashboard,
+  Radio,
+  ScanSearch,
+} from "lucide-react"
+import type { ComputerUseState } from "../../../shared/followUpChat"
+import type { DesktopUpdateState } from "../../../shared/desktopUpdates"
 import { useToast } from "../../contexts/toast"
-import { LanguageSelector } from "../shared/LanguageSelector"
 import { COMMAND_KEY } from "../../utils/platform"
+import { CheatbitMark } from "../Brand/CheatbitMark"
+import InlineUpdateButton from "../Updates/InlineUpdateButton"
+
+function isComputerTaskActive(status: ComputerUseState["status"]): boolean {
+  return (
+    status === "starting" ||
+    status === "running" ||
+    status === "waiting_for_secret" ||
+    status === "stopping"
+  )
+}
 
 interface QueueCommandsProps {
+  activeMode: "analyze" | "chat"
+  onModeChange: (mode: "analyze" | "chat") => void
   onTooltipVisibilityChange: (visible: boolean, height: number) => void
   screenshotCount?: number
   credits: number
-  currentLanguage: string
-  setLanguage: (language: string) => void
+  desktopUpdateState: DesktopUpdateState
+  isMinimized: boolean
+  onToggleMinimized: () => void
+  modeSwitchLocked?: boolean
+  computerUseState: ComputerUseState
+  onDownloadUpdate: () => Promise<{ success: true } | { success: false; error: string }>
+  onInstallUpdate: () => Promise<{ success: true } | { success: false; error: string }>
+  onStartComputerTask: (task: string) => Promise<void> | void
+  onStopComputerTask: () => Promise<void> | void
+  onResumeComputerTask: () => Promise<void> | void
 }
 
 const QueueCommands: React.FC<QueueCommandsProps> = ({
+  activeMode,
+  onModeChange,
   onTooltipVisibilityChange,
   screenshotCount = 0,
   credits,
-  currentLanguage,
-  setLanguage
+  desktopUpdateState,
+  isMinimized,
+  onToggleMinimized,
+  modeSwitchLocked = false,
+  computerUseState,
+  onDownloadUpdate,
+  onInstallUpdate,
+  onStartComputerTask,
+  onStopComputerTask,
+  onResumeComputerTask,
 }) => {
-  const [isTooltipVisible, setIsTooltipVisible] = useState(false)
-  const tooltipRef = useRef<HTMLDivElement>(null)
   const { showToast } = useToast()
-
-  // Extract the repeated language selection logic into a separate function
-  const extractLanguagesAndUpdate = (direction?: 'next' | 'prev') => {
-    // Create a hidden instance of LanguageSelector to extract languages
-    const hiddenRenderContainer = document.createElement('div');
-    hiddenRenderContainer.style.position = 'absolute';
-    hiddenRenderContainer.style.left = '-9999px';
-    document.body.appendChild(hiddenRenderContainer);
-    
-    // Create a root and render the LanguageSelector temporarily
-    const root = createRoot(hiddenRenderContainer);
-    root.render(
-      <LanguageSelector 
-        currentLanguage={currentLanguage} 
-        setLanguage={() => {}}
-      />
-    );
-    
-    // Use a small delay to ensure the component has rendered
-    // 50ms is generally enough for React to complete a render cycle
-    setTimeout(() => {
-      // Extract options from the rendered select element
-      const selectElement = hiddenRenderContainer.querySelector('select');
-      if (selectElement) {
-        const options = Array.from(selectElement.options);
-        const values = options.map(opt => opt.value);
-        
-        // Find current language index
-        const currentIndex = values.indexOf(currentLanguage);
-        let newIndex = currentIndex;
-        
-        if (direction === 'prev') {
-          // Go to previous language
-          newIndex = (currentIndex - 1 + values.length) % values.length;
-        } else {
-          // Default to next language
-          newIndex = (currentIndex + 1) % values.length;
-        }
-        
-        if (newIndex !== currentIndex) {
-          setLanguage(values[newIndex]);
-          window.electronAPI.updateConfig({ language: values[newIndex] });
-        }
-      }
-      
-      // Clean up
-      root.unmount();
-      document.body.removeChild(hiddenRenderContainer);
-    }, 50);
-  };
+  const dragRegionStyle = { WebkitAppRegion: "drag" as const }
+  const noDragStyle = { WebkitAppRegion: "no-drag" as const }
+  const [isComputerPromptOpen, setIsComputerPromptOpen] = useState(false)
+  const [computerTask, setComputerTask] = useState("")
 
   useEffect(() => {
-    let tooltipHeight = 0
-    if (tooltipRef.current && isTooltipVisible) {
-      tooltipHeight = tooltipRef.current.offsetHeight + 10
+    onTooltipVisibilityChange(false, 0)
+  }, [isMinimized, onTooltipVisibilityChange])
+
+  useEffect(() => {
+    if (computerUseState.status !== "idle") {
+      setIsComputerPromptOpen(false)
+      setComputerTask("")
     }
-    onTooltipVisibilityChange(isTooltipVisible, tooltipHeight)
-  }, [isTooltipVisible])
-
-  const handleSignOut = async () => {
-    try {
-      await window.electronAPI.logout()
-
-      showToast('Success', 'Logged out successfully', 'success');
-      
-      // Reload the app after a short delay
-      setTimeout(() => {
-        window.location.reload();
-      }, 1500);
-    } catch (err) {
-      console.error("Error logging out:", err);
-      showToast('Error', 'Failed to log out', 'error');
-    }
-  }
-
-  const handleMouseEnter = () => {
-    setIsTooltipVisible(true)
-  }
-
-  const handleMouseLeave = () => {
-    setIsTooltipVisible(false)
-  }
+  }, [computerUseState.status])
 
   const openAccountDashboard = () => {
-    setIsTooltipVisible(false)
     window.dispatchEvent(new CustomEvent("open-account-dashboard"))
   }
 
-  const openSettings = () => {
-    setIsTooltipVisible(false)
-    void window.electronAPI.openSettingsPortal()
+  const handleScreenshot = async () => {
+    try {
+      const result = await window.electronAPI.triggerScreenshot()
+      if (!result.success) {
+        showToast(
+          "Error",
+          result.error || "Failed to take screenshot",
+          "error"
+        )
+      }
+    } catch (error) {
+      console.error("Error taking screenshot:", error)
+      showToast("Error", "Failed to take screenshot", "error")
+    }
+  }
+
+  const handleRegionScreenshot = async () => {
+    try {
+      const result = await window.electronAPI.triggerRegionScreenshot()
+      if (result.canceled) {
+        return
+      }
+
+      if (!result.success) {
+        showToast(
+          "Error",
+          result.error || "Failed to capture selected area",
+          "error"
+        )
+      }
+    } catch (error) {
+      console.error("Error taking region screenshot:", error)
+      showToast("Error", "Failed to capture selected area", "error")
+    }
+  }
+
+  const handleSolve = async () => {
+    if (screenshotCount === 0) {
+      return
+    }
+
+    try {
+      const result = await window.electronAPI.triggerProcessScreenshots()
+      if (!result.success) {
+        showToast(
+          "Error",
+          result.error || "Failed to process screenshots",
+          "error"
+        )
+      }
+    } catch (error) {
+      console.error("Error processing screenshots:", error)
+      showToast("Error", "Failed to process screenshots", "error")
+    }
+  }
+
+  const isComputerUseActive = isComputerTaskActive(computerUseState.status)
+  const isWaitingForSecret =
+    computerUseState.status === "waiting_for_secret" ||
+    computerUseState.needsSecretInput
+
+  const handleComputerSubmit = async () => {
+    const normalizedTask = computerTask.trim()
+    if (!normalizedTask) {
+      showToast("Computer Use", "Enter a browser task first.", "neutral")
+      return
+    }
+
+    try {
+      await onStartComputerTask(normalizedTask)
+      setIsComputerPromptOpen(false)
+      setComputerTask("")
+    } catch (error) {
+      showToast(
+        "Computer Use",
+        error instanceof Error ? error.message : "Failed to start browser task.",
+        "error"
+      )
+    }
+  }
+
+  if (isMinimized) {
+    return (
+      <div className="w-fit">
+        <div
+          className="flex cursor-move items-center rounded-2xl border border-white/10 bg-black/[0.92] p-1.5 text-xs text-white/90 backdrop-blur-md"
+          style={dragRegionStyle}
+        >
+          <button
+            type="button"
+            className="rounded-[14px] transition-transform hover:scale-[1.03] focus:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+            onClick={onToggleMinimized}
+            aria-label="Expand widget"
+            title="Expand widget"
+            style={noDragStyle}
+          >
+            <CheatbitMark
+              className="h-9 w-9 rounded-[14px] border-white/8 bg-white/[0.02] p-0.5 shadow-none"
+              rotating
+            />
+          </button>
+        </div>
+      </div>
+    )
   }
 
   return (
-    <div>
-      <div className="pt-2 w-fit">
-        <div className="text-xs text-white/90 backdrop-blur-md bg-black/60 rounded-lg py-2 px-4 flex items-center justify-center gap-4">
-          {/* Screenshot */}
-          <div
-            className="flex items-center gap-2 cursor-pointer rounded px-2 py-1.5 hover:bg-white/10 transition-colors"
-            onClick={async () => {
-              try {
-                const result = await window.electronAPI.triggerScreenshot()
-                if (!result.success) {
-                  console.error("Failed to take screenshot:", result.error)
-                  showToast(
-                    "Error",
-                    result.error || "Failed to take screenshot",
-                    "error"
-                  )
-                }
-              } catch (error) {
-                console.error("Error taking screenshot:", error)
-                showToast("Error", "Failed to take screenshot", "error")
-              }
-            }}
+    <div className="w-full pt-2">
+      <div
+        className="flex w-full min-w-[320px] cursor-move items-center justify-between gap-2 rounded-xl border border-white/10 bg-black/[0.92] px-3 py-2 text-xs text-white/90 backdrop-blur-md"
+        style={dragRegionStyle}
+      >
+        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap">
+          <button
+            type="button"
+            className="rounded-[12px] transition-transform hover:scale-[1.03] focus:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+            onClick={onToggleMinimized}
+            aria-label="Minimize widget"
+            title="Minimize widget"
+            style={noDragStyle}
           >
-            <span className="text-[11px] leading-none truncate">
-              {screenshotCount === 0
-                ? "Analyse Screen"
-                : screenshotCount === 1
-                ? "Take second screenshot"
-                : screenshotCount === 2
-                ? "Take third screenshot"
-                : screenshotCount === 3
-                ? "Take fourth screenshot"
-                : screenshotCount === 4
-                ? "Take fifth screenshot"
-                : "Next will replace first screenshot"}
-            </span>
-            <div className="flex gap-1">
-              <button className="bg-white/10 rounded-md px-1.5 py-1 text-[11px] leading-none text-white/70">
-                {COMMAND_KEY}
-              </button>
-              <button className="bg-white/10 rounded-md px-1.5 py-1 text-[11px] leading-none text-white/70">
-                H
-              </button>
-            </div>
-          </div>
+            <CheatbitMark
+              className="h-7 w-7 rounded-[10px] border-white/8 bg-white/[0.02] p-0.5 shadow-none"
+              rotating
+            />
+          </button>
 
-          {/* Solve Command */}
-          {screenshotCount > 0 && (
-            <div
-              className={`flex flex-col cursor-pointer rounded px-2 py-1.5 hover:bg-white/10 transition-colors ${
-                credits <= 0 ? "opacity-50 cursor-not-allowed" : ""
-              }`}
-              onClick={async () => {
+          {activeMode === "analyze" && (
+            <>
+              <button
+                type="button"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-white/80 transition-colors hover:bg-white/10 hover:text-white"
+                onClick={() => {
+                  void handleRegionScreenshot()
+                }}
+                aria-label="Select area"
+                title="Select Area"
+                style={noDragStyle}
+              >
+                <Focus className="h-3.5 w-3.5" />
+              </button>
 
-                try {
-                  const result =
-                    await window.electronAPI.triggerProcessScreenshots()
-                  if (!result.success) {
-                    console.error(
-                      "Failed to process screenshots:",
-                      result.error
-                    )
-                    showToast(
-                      "Error",
-                      result.error || "Failed to process screenshots",
-                      "error"
-                    )
-                  }
-                } catch (error) {
-                  console.error("Error processing screenshots:", error)
-                  showToast("Error", "Failed to process screenshots", "error")
-                }
-              }}
-            >
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] leading-none">Solve </span>
-                <div className="flex gap-1 ml-2">
-                  <button className="bg-white/10 rounded-md px-1.5 py-1 text-[11px] leading-none text-white/70">
+              <button
+                type="button"
+                className="flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-white/10"
+                onClick={() => {
+                  void handleScreenshot()
+                }}
+                style={noDragStyle}
+              >
+                <span className="max-w-[8rem] truncate text-[11px] leading-none">
+                  {screenshotCount === 0
+                    ? "Analyze Screen"
+                    : screenshotCount === 1
+                    ? "Take second screenshot"
+                    : screenshotCount === 2
+                    ? "Take third screenshot"
+                    : screenshotCount === 3
+                    ? "Take fourth screenshot"
+                    : screenshotCount === 4
+                    ? "Take fifth screenshot"
+                    : "Next will replace first screenshot"}
+                </span>
+                <div className="flex gap-1">
+                  <span className="rounded-md bg-white/10 px-1.5 py-1 text-[11px] leading-none text-white/70">
                     {COMMAND_KEY}
-                  </button>
-                  <button className="bg-white/10 rounded-md px-1.5 py-1 text-[11px] leading-none text-white/70">
-                    ↵
-                  </button>
-                </div>
-              </div>
-            </div>
+                  </span>
+                  <span className="rounded-md bg-white/10 px-1.5 py-1 text-[11px] leading-none text-white/70">
+                    H
+                  </span>
+                  </div>
+                </button>
+            </>
           )}
 
-          {/* Separator */}
-          <div className="mx-2 h-4 w-px bg-white/20" />
+          <div className="flex shrink-0 items-center gap-1 rounded-full border border-white/10 bg-black/[0.6] p-0.5">
+            <button
+              type="button"
+              className={`flex h-7 w-7 items-center justify-center rounded-full transition-colors ${
+                activeMode === "analyze"
+                  ? "bg-white text-black"
+                  : "text-white/[0.68] hover:text-white"
+              } ${modeSwitchLocked ? "cursor-not-allowed opacity-45" : ""}`}
+              onClick={() => onModeChange("analyze")}
+              disabled={modeSwitchLocked}
+              aria-label="Solve mode"
+              title="Solve"
+              style={noDragStyle}
+            >
+              <ScanSearch className="h-3 w-3" />
+            </button>
+            <button
+              type="button"
+              className={`flex h-7 w-7 items-center justify-center rounded-full transition-colors ${
+                activeMode === "chat"
+                  ? "bg-white text-black"
+                  : "text-white/[0.68] hover:text-white"
+              }`}
+              onClick={() => onModeChange("chat")}
+              aria-label="Chat mode"
+              title="Chat"
+              style={noDragStyle}
+            >
+              <Radio className="h-3 w-3" />
+            </button>
+          </div>
+
+          {isComputerPromptOpen ? (
+            <div
+              className="flex shrink-0 items-center gap-1 rounded-full border border-white/10 bg-black/55 px-2 py-1"
+              style={noDragStyle}
+            >
+              <Computer className="h-3 w-3 text-[#7df9c7]" />
+              <input
+                type="text"
+                value={computerTask}
+                onChange={(event) => setComputerTask(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault()
+                    void handleComputerSubmit()
+                  }
+                  if (event.key === "Escape") {
+                    setIsComputerPromptOpen(false)
+                    setComputerTask("")
+                  }
+                }}
+                placeholder="What should Sylica do?"
+                className="w-[12rem] bg-transparent text-[11px] leading-none text-white outline-none placeholder:text-white/35"
+                autoFocus
+              />
+              <button
+                type="button"
+                className="rounded-full bg-[#7df9c7] px-2 py-1 text-[10px] font-medium text-black"
+                onClick={() => {
+                  void handleComputerSubmit()
+                }}
+              >
+                Run
+              </button>
+              <button
+                type="button"
+                className="rounded-full border border-white/10 px-2 py-1 text-[10px] text-white/72 hover:text-white"
+                onClick={() => {
+                  setIsComputerPromptOpen(false)
+                  setComputerTask("")
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors ${
+                isComputerUseActive
+                  ? "bg-[#17362d] text-[#baf7df] hover:bg-[#1d4338]"
+                  : "text-white/80 hover:bg-white/10 hover:text-white"
+              }`}
+              onClick={() => {
+                if (isComputerUseActive) {
+                  return
+                }
+                setIsComputerPromptOpen(true)
+              }}
+              disabled={isComputerUseActive}
+              aria-label="Computer Use"
+              title="Computer Use"
+              style={noDragStyle}
+            >
+              <Computer className="h-3.5 w-3.5" />
+            </button>
+          )}
+
+          {activeMode === "analyze" && (
+            <>
+              {isComputerUseActive && (
+                <div
+                  className="flex shrink-0 items-center gap-2 rounded-full border border-[#7df9c7]/20 bg-[#17362d] px-2.5 py-1 text-[10px] text-[#d8ffef]"
+                  style={noDragStyle}
+                >
+                  <span className="max-w-[8.5rem] truncate">
+                    {isWaitingForSecret
+                      ? "Waiting for manual login"
+                      : computerUseState.currentAction || "Computer running"}
+                  </span>
+                  {isWaitingForSecret ? (
+                    <button
+                      type="button"
+                      className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] text-white hover:bg-white/15"
+                      onClick={() => {
+                        void onResumeComputerTask()
+                      }}
+                    >
+                      Continue
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] text-white hover:bg-white/15"
+                      onClick={() => {
+                        void onStopComputerTask()
+                      }}
+                    >
+                      Stop
+                    </button>
+                  )}
+                </div>
+              )}
+              {screenshotCount > 0 && (
+                <button
+                  type="button"
+                  className={`flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-white/10 ${
+                    credits <= 0 ? "cursor-not-allowed opacity-50" : ""
+                  }`}
+                  onClick={() => {
+                    void handleSolve()
+                  }}
+                  style={noDragStyle}
+                >
+                  <span className="text-[11px] leading-none">Solve</span>
+                  <div className="flex gap-1">
+                    <span className="rounded-md bg-white/10 px-1.5 py-1 text-[11px] leading-none text-white/70">
+                      {COMMAND_KEY}
+                    </span>
+                    <span className="rounded-md bg-white/10 px-1.5 py-1 text-[11px] leading-none text-white/70">
+                      ↵
+                    </span>
+                  </div>
+                </button>
+              )}
+            </>
+          )}
+
+          {activeMode === "chat" && isComputerUseActive && (
+            <div
+              className="flex shrink-0 items-center gap-2 rounded-full border border-[#7df9c7]/20 bg-[#17362d] px-2.5 py-1 text-[10px] text-[#d8ffef]"
+              style={noDragStyle}
+            >
+              <span className="max-w-[9rem] truncate">
+                {isWaitingForSecret
+                  ? "Waiting for manual login"
+                  : computerUseState.currentAction || "Computer running"}
+              </span>
+              {isWaitingForSecret ? (
+                <button
+                  type="button"
+                  className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] text-white hover:bg-white/15"
+                  onClick={() => {
+                    void onResumeComputerTask()
+                  }}
+                >
+                  Continue
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] text-white hover:bg-white/15"
+                  onClick={() => {
+                    void onStopComputerTask()
+                  }}
+                >
+                  Stop
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="ml-2 flex shrink-0 items-center gap-2">
+          <InlineUpdateButton
+            state={desktopUpdateState}
+            onDownload={onDownloadUpdate}
+            onInstall={onInstallUpdate}
+          />
 
           <button
             type="button"
@@ -215,301 +460,11 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
             onClick={openAccountDashboard}
             aria-label="Dashboard"
             title="Dashboard"
+            style={noDragStyle}
           >
             <LayoutDashboard className="h-3.5 w-3.5" />
           </button>
 
-          <button
-            type="button"
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-white/80 transition-colors hover:bg-white/10 hover:text-white"
-            onClick={openSettings}
-            aria-label="Settings"
-            title="Settings"
-          >
-            <Settings2 className="h-3.5 w-3.5" />
-          </button>
-
-          <div className="mx-1 h-4 w-px bg-white/20" />
-
-          {/* Settings with Tooltip */}
-          <div
-            className="relative inline-block"
-            onMouseEnter={handleMouseEnter}
-            onMouseLeave={handleMouseLeave}
-          >
-            <button
-              type="button"
-              className="flex h-8 w-8 items-center justify-center rounded-lg text-white/70 transition-colors hover:bg-white/10 hover:text-white/90"
-              aria-label="Shortcuts"
-              title="Shortcuts"
-            >
-              <Keyboard className="h-3.5 w-3.5" />
-            </button>
-
-            {/* Tooltip Content */}
-            {isTooltipVisible && (
-              <div
-                ref={tooltipRef}
-                className="absolute top-full left-0 mt-2 w-80 transform -translate-x-[calc(50%-12px)]"
-                style={{ zIndex: 100 }}
-              >
-                {/* Add transparent bridge */}
-                <div className="absolute -top-2 right-0 w-full h-2" />
-                <div className="p-3 text-xs bg-black/80 backdrop-blur-md rounded-lg border border-white/10 text-white/90 shadow-lg">
-                  <div className="space-y-4">
-                    <h3 className="font-medium truncate">Keyboard Shortcuts</h3>
-                    <div className="space-y-3">
-                      {/* Toggle Command */}
-                      <div
-                        className="cursor-pointer rounded px-2 py-1.5 hover:bg-white/10 transition-colors"
-                        onClick={async () => {
-                          try {
-                            const result =
-                              await window.electronAPI.toggleMainWindow()
-                            if (!result.success) {
-                              console.error(
-                                "Failed to toggle window:",
-                                result.error
-                              )
-                              showToast(
-                                "Error",
-                                "Failed to toggle window",
-                                "error"
-                              )
-                            }
-                          } catch (error) {
-                            console.error("Error toggling window:", error)
-                            showToast(
-                              "Error",
-                              "Failed to toggle window",
-                              "error"
-                            )
-                          }
-                        }}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="truncate">Toggle Window</span>
-                          <div className="flex gap-1 flex-shrink-0">
-                            <span className="bg-white/20 px-1.5 py-0.5 rounded text-[10px] leading-none">
-                              {COMMAND_KEY}
-                            </span>
-                            <span className="bg-white/20 px-1.5 py-0.5 rounded text-[10px] leading-none">
-                              B
-                            </span>
-                          </div>
-                        </div>
-                        <p className="text-[10px] leading-relaxed text-white/70 truncate mt-1">
-                          Show or hide this window.
-                        </p>
-                      </div>
-
-                      {/* Screenshot Command */}
-                      <div
-                        className="cursor-pointer rounded px-2 py-1.5 hover:bg-white/10 transition-colors"
-                        onClick={async () => {
-                          try {
-                            const result =
-                              await window.electronAPI.triggerScreenshot()
-                            if (!result.success) {
-                              console.error(
-                                "Failed to take screenshot:",
-                                result.error
-                              )
-                              showToast(
-                                "Error",
-                                "Failed to take screenshot",
-                                "error"
-                              )
-                            }
-                          } catch (error) {
-                            console.error("Error taking screenshot:", error)
-                            showToast(
-                              "Error",
-                              "Failed to take screenshot",
-                              "error"
-                            )
-                          }
-                        }}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="truncate">Take Screenshot</span>
-                          <div className="flex gap-1 flex-shrink-0">
-                            <span className="bg-white/20 px-1.5 py-0.5 rounded text-[10px] leading-none">
-                              {COMMAND_KEY}
-                            </span>
-                            <span className="bg-white/20 px-1.5 py-0.5 rounded text-[10px] leading-none">
-                              H
-                            </span>
-                          </div>
-                        </div>
-                        <p className="text-[10px] leading-relaxed text-white/70 truncate mt-1">
-                          Take a screenshot of the problem description.
-                        </p>
-                      </div>
-
-                      {/* Solve Command */}
-                      <div
-                        className={`cursor-pointer rounded px-2 py-1.5 hover:bg-white/10 transition-colors ${
-                          screenshotCount > 0
-                            ? ""
-                            : "opacity-50 cursor-not-allowed"
-                        }`}
-                        onClick={async () => {
-                          if (screenshotCount === 0) return
-
-                          try {
-                            const result =
-                              await window.electronAPI.triggerProcessScreenshots()
-                            if (!result.success) {
-                              console.error(
-                                "Failed to process screenshots:",
-                                result.error
-                              )
-                              showToast(
-                                "Error",
-                                "Failed to process screenshots",
-                                "error"
-                              )
-                            }
-                          } catch (error) {
-                            console.error(
-                              "Error processing screenshots:",
-                              error
-                            )
-                            showToast(
-                              "Error",
-                              "Failed to process screenshots",
-                              "error"
-                            )
-                          }
-                        }}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="truncate">Solve</span>
-                          <div className="flex gap-1 flex-shrink-0">
-                            <span className="bg-white/20 px-1.5 py-0.5 rounded text-[10px] leading-none">
-                              {COMMAND_KEY}
-                            </span>
-                            <span className="bg-white/20 px-1.5 py-0.5 rounded text-[10px] leading-none">
-                              ↵
-                            </span>
-                          </div>
-                        </div>
-                        <p className="text-[10px] leading-relaxed text-white/70 truncate mt-1">
-                          {screenshotCount > 0
-                            ? "Generate a solution based on the current problem."
-                            : "Take a screenshot first to generate a solution."}
-                        </p>
-                      </div>
-                      
-                      {/* Delete Last Screenshot Command */}
-                      <div
-                        className={`cursor-pointer rounded px-2 py-1.5 hover:bg-white/10 transition-colors ${
-                          screenshotCount > 0
-                            ? ""
-                            : "opacity-50 cursor-not-allowed"
-                        }`}
-                        onClick={async () => {
-                          if (screenshotCount === 0) return
-                          
-                          try {
-                            const result = await window.electronAPI.deleteLastScreenshot()
-                            if (!result.success) {
-                              console.error(
-                                "Failed to delete last screenshot:",
-                                result.error
-                              )
-                              showToast(
-                                "Error",
-                                result.error || "Failed to delete screenshot",
-                                "error"
-                              )
-                            }
-                          } catch (error) {
-                            console.error("Error deleting screenshot:", error)
-                            showToast(
-                              "Error",
-                              "Failed to delete screenshot",
-                              "error"
-                            )
-                          }
-                        }}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="truncate">Delete Last Screenshot</span>
-                          <div className="flex gap-1 flex-shrink-0">
-                            <span className="bg-white/20 px-1.5 py-0.5 rounded text-[10px] leading-none">
-                              {COMMAND_KEY}
-                            </span>
-                            <span className="bg-white/20 px-1.5 py-0.5 rounded text-[10px] leading-none">
-                              L
-                            </span>
-                          </div>
-                        </div>
-                        <p className="text-[10px] leading-relaxed text-white/70 truncate mt-1">
-                          {screenshotCount > 0
-                            ? "Remove the most recently taken screenshot."
-                            : "No screenshots to delete."}
-                        </p>
-                      </div>
-                    </div>
-
-                    {/* Separator and Log Out */}
-                    <div className="pt-3 mt-3 border-t border-white/10">
-                      {/* Simplified Language Selector */}
-                      <div className="mb-3 px-2">
-                        <div 
-                          className="flex items-center justify-between cursor-pointer hover:bg-white/10 rounded px-2 py-1 transition-colors"
-                          onClick={() => extractLanguagesAndUpdate('next')}
-                          tabIndex={0}
-                          onKeyDown={(e) => {
-                            if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
-                              extractLanguagesAndUpdate('prev');
-                            } else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
-                              extractLanguagesAndUpdate('next');
-                            }
-                          }}
-                        >
-                          <span className="text-[11px] text-white/70">Language</span>
-                          <div className="flex items-center gap-2">
-                            <span className="text-[11px] text-white/90">{currentLanguage}</span>
-                            <div className="text-white/40 text-[8px]">
-                              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3">
-                                <path d="M7 13l5 5 5-5M7 6l5 5 5-5"/>
-                              </svg>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      <button
-                        onClick={handleSignOut}
-                        className="flex items-center gap-2 text-[11px] text-red-400 hover:text-red-300 transition-colors w-full"
-                      >
-                        <div className="w-4 h-4 flex items-center justify-center">
-                          <svg
-                            xmlns="http://www.w3.org/2000/svg"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            className="w-3 h-3"
-                          >
-                            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-                            <polyline points="16 17 21 12 16 7" />
-                            <line x1="21" y1="12" x2="9" y2="12" />
-                          </svg>
-                        </div>
-                        Log Out
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
         </div>
       </div>
     </div>

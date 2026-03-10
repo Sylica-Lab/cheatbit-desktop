@@ -1,6 +1,6 @@
 {
-  "name": "interview-coder-v1",
-  "version": "1.0.19",
+  "name": "sylica-ai-desktop",
+  "version": "1.0.30",
   "main": "./dist-electron/main.js",
   "scripts": {
     "clean": "npx rimraf dist dist-electron",
@@ -18,11 +18,13 @@
     "run-prod": "cross-env NODE_ENV=production electron ./dist-electron/main.js",
     "package": "npm run build && electron-builder build",
     "package-mac": "npm run build && electron-builder build --mac",
-    "package-win": "npm run build && electron-builder build --win"
+    "package-win": "npm run build && electron-builder build --win",
+    "publish:win:update": "node build/publish-windows-update.mjs",
+    "release:win:update": "npm run package-win && npm run publish:win:update"
   },
   "build": {
-    "appId": "com.chunginlee.interviewcoder",
-    "productName": "CheatBit",
+    "appId": "com.sylica.ai.desktop",
+    "productName": "Sylica AI",
     "files": [
       "dist/**/*",
       "dist-electron/**/*",
@@ -54,7 +56,7 @@
           ]
         }
       ],
-      "artifactName": "CheatBit-${arch}.${ext}",
+      "artifactName": "Sylica-AI-${arch}.${ext}",
       "icon": "assets/icons/mac/icon.icns",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
@@ -63,9 +65,9 @@
       "identity": "Developer ID Application",
       "notarize": true,
       "protocols": {
-        "name": "interview-coder-protocol",
+        "name": "sylica-ai-protocol",
         "schemes": [
-          "interview-coder"
+          "sylica-ai"
         ]
       }
     },
@@ -74,36 +76,28 @@
         "nsis"
       ],
       "icon": "assets/icons/win/icon.ico",
-      "artifactName": "${productName}-Windows-${version}.${ext}",
+      "artifactName": "Sylica-AI-Windows-${version}.${ext}",
       "protocols": {
-        "name": "interview-coder-protocol",
+        "name": "sylica-ai-protocol",
         "schemes": [
-          "interview-coder"
+          "sylica-ai"
         ]
-      }
+      },
+      "executableName": "SylicaAI"
     },
     "linux": {
       "target": [
         "AppImage"
       ],
-      "icon": "assets/icons/png/icon-256x256.png",
-      "artifactName": "${productName}-Linux-${version}.${ext}",
+      "icon": "assets/icons/logo.svg",
+      "artifactName": "Sylica-AI-Linux-${version}.${ext}",
       "protocols": {
-        "name": "interview-coder-protocol",
+        "name": "sylica-ai-protocol",
         "schemes": [
-          "interview-coder"
+          "sylica-ai"
         ]
       }
     },
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "ibttf",
-        "repo": "interview-coder",
-        "private": false,
-        "releaseType": "release"
-      }
-    ],
     "extraResources": [
       {
         "from": ".env",
@@ -115,6 +109,12 @@
     ],
     "extraMetadata": {
       "main": "dist-electron/main.js"
+    },
+    "nsis": {
+      "include": "build/installer.nsh",
+      "shortcutName": "Sylica AI",
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true
     }
   },
   "keywords": [
@@ -124,9 +124,9 @@
     "technical interview",
     "tool"
   ],
-  "author": "Interview Coder Contributors",
+  "author": "Sylica AI Contributors",
   "license": "AGPL-3.0-or-later",
-  "description": "An invisible desktop application to help you pass your technical interviews.",
+  "description": "Sylica AI is an invisible desktop application to help you pass technical interviews.",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
     "@electron/notarize": "^2.3.0",
@@ -150,6 +150,7 @@
     "lucide-react": "^0.460.0",
     "openai": "^4.28.4",
     "pg": "^8.20.0",
+    "puppeteer-core": "^24.4.0",
     "react": "^18.2.0",
     "react-code-blocks": "^0.1.6",
     "react-dom": "^18.2.0",
@@ -158,7 +159,8 @@
     "screenshot-desktop": "^1.15.0",
     "stripe": "^18.5.0",
     "tailwind-merge": "^2.5.5",
-    "uuid": "^11.0.3"
+    "uuid": "^11.0.3",
+    "ws": "^8.19.0"
   },
   "devDependencies": {
     "@electron/typescript-definitions": "^8.14.0",

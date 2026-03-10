@@ -3,10 +3,25 @@ import { Button } from "../ui/button"
 import { updateWindowToElement } from "../../utils/contentSize"
 import type { UserDashboardData } from "../../../shared/backendAuth"
 import { useToast } from "../../contexts/toast"
+import { CheatbitMark } from "../Brand/CheatbitMark"
 
 interface AccountDashboardDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+}
+
+type BillingLinkKind = "checkout" | "portal"
+
+function billingProviderLabel(provider: UserDashboardData["billing"]["provider"] | undefined): string {
+  if (provider === "dodo") {
+    return "Dodo Payments"
+  }
+
+  if (provider === "stripe") {
+    return "Stripe"
+  }
+
+  return "Billing"
 }
 
 function formatDate(value: string | null): string {
@@ -38,6 +53,8 @@ function labelForAction(action: string): string {
   if (action === "solve") return "Solve"
   if (action === "debug") return "Debug"
   if (action === "screenshot") return "Screenshot"
+  if (action === "live_interview") return "Live Interview"
+  if (action === "computer_use") return "Computer Use"
   return action
 }
 
@@ -57,6 +74,52 @@ function subscriptionStatusClasses(status: string): string {
   return "border-red-300/20 bg-red-300/15 text-red-100"
 }
 
+async function copyTextToClipboard(value: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value)
+    return
+  }
+
+  const textArea = document.createElement("textarea")
+  textArea.value = value
+  textArea.setAttribute("readonly", "true")
+  textArea.style.position = "fixed"
+  textArea.style.opacity = "0"
+  document.body.appendChild(textArea)
+  textArea.focus()
+  textArea.select()
+
+  const copied = document.execCommand("copy")
+  document.body.removeChild(textArea)
+
+  if (!copied) {
+    throw new Error("Failed to copy the checkout link.")
+  }
+}
+
+async function openUrlInBrowser(url: string): Promise<void> {
+  if (window.electronAPI?.openExternal) {
+    const result = await window.electronAPI.openExternal(url)
+    if (result && !result.success) {
+      throw new Error(result.error || "Failed to open the browser.")
+    }
+    return
+  }
+
+  if (window.electronAPI?.openLink) {
+    const result = await window.electronAPI.openLink(url)
+    if (result && !result.success) {
+      throw new Error(result.error || "Failed to open the browser.")
+    }
+    return
+  }
+
+  const popup = window.open(url, "_blank", "noopener,noreferrer")
+  if (!popup) {
+    throw new Error("Failed to open the browser for checkout.")
+  }
+}
+
 export function AccountDashboardDialog({
   open,
   onOpenChange,
@@ -65,6 +128,11 @@ export function AccountDashboardDialog({
   const [dashboard, setDashboard] = useState<UserDashboardData | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [billingAction, setBillingAction] = useState<"checkout" | "portal" | null>(null)
+  const [generatedBillingLink, setGeneratedBillingLink] = useState<{
+    kind: BillingLinkKind
+    url: string
+  } | null>(null)
+  const [billingLinkCopied, setBillingLinkCopied] = useState(false)
   const [error, setError] = useState("")
   const { showToast } = useToast()
 
@@ -166,23 +234,80 @@ export function AccountDashboardDialog({
     }
   }, [open, dashboard, isLoading, error])
 
+  useEffect(() => {
+    if (open) return
+
+    setGeneratedBillingLink(null)
+    setBillingLinkCopied(false)
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target
+      if (!(target instanceof Node)) {
+        return
+      }
+
+      if (panelRef.current?.contains(target)) {
+        return
+      }
+
+      onOpenChange(false)
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown)
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown)
+    }
+  }, [open, onOpenChange])
+
+  const handleCopyBillingLink = async () => {
+    if (!generatedBillingLink) return
+
+    try {
+      await copyTextToClipboard(generatedBillingLink.url)
+      setBillingLinkCopied(true)
+      showToast(
+        "Link Copied",
+        generatedBillingLink.kind === "checkout"
+          ? "Subscription link copied to the clipboard."
+          : "Billing link copied to the clipboard.",
+        "success"
+      )
+      window.setTimeout(() => {
+        setBillingLinkCopied(false)
+      }, 2000)
+    } catch (copyError) {
+      setError(
+        copyError instanceof Error
+          ? copyError.message
+          : "Failed to copy the billing link."
+      )
+    }
+  }
+
   const handleStartCheckout = async () => {
     setBillingAction("checkout")
     setError("")
 
     try {
       const session = await window.electronAPI.createCheckoutSession()
-      window.electronAPI.openExternal(session.url)
+      setGeneratedBillingLink({ kind: "checkout", url: session.url })
+      setBillingLinkCopied(false)
+      await openUrlInBrowser(session.url)
+      const providerLabel = billingProviderLabel(dashboard?.billing.provider)
       showToast(
-        "Stripe Checkout",
-        "Finish the $20/month subscription in your browser, then refresh the dashboard.",
+        `${providerLabel} Checkout`,
+        `Finish the $20/month subscription in your browser. If it does not open, copy the link below.`,
         "success"
       )
     } catch (checkoutError) {
       setError(
         checkoutError instanceof Error
           ? checkoutError.message
-          : "Failed to open Stripe checkout."
+          : "Failed to open checkout."
       )
     } finally {
       setBillingAction(null)
@@ -195,21 +320,31 @@ export function AccountDashboardDialog({
 
     try {
       const session = await window.electronAPI.createBillingPortalSession()
-      window.electronAPI.openExternal(session.url)
+      setGeneratedBillingLink({ kind: "portal", url: session.url })
+      setBillingLinkCopied(false)
+      await openUrlInBrowser(session.url)
+      const providerLabel = billingProviderLabel(dashboard?.billing.provider)
       showToast(
         "Billing Portal",
-        "Stripe billing management opened in your browser.",
+        `${providerLabel} billing management opened in your browser. If it does not open, copy the link below.`,
         "success"
       )
     } catch (portalError) {
       setError(
         portalError instanceof Error
           ? portalError.message
-          : "Failed to open Stripe billing."
+          : "Failed to open billing."
       )
     } finally {
       setBillingAction(null)
     }
+  }
+
+  const handleOpenSettings = () => {
+    onOpenChange(false)
+    window.setTimeout(() => {
+      void window.electronAPI.openSettingsPortal()
+    }, 0)
   }
 
   if (!open) {
@@ -219,27 +354,23 @@ export function AccountDashboardDialog({
   return (
     <div
       ref={panelRef}
-      className="mt-3 flex-none overflow-hidden rounded-[28px] border border-white/10 bg-[#050505] text-white shadow-[0_30px_100px_rgba(0,0,0,0.56)] min-w-[56rem] max-w-[56rem]"
+      className="sylica-sheet-enter mt-3 flex-none overflow-hidden rounded-[28px] border border-white/10 bg-[#050505] text-white shadow-[0_30px_100px_rgba(0,0,0,0.56)] min-w-[56rem] max-w-[56rem]"
     >
       <div className="max-h-[38rem] space-y-4 overflow-y-auto bg-[radial-gradient(circle_at_top_left,_rgba(125,249,199,0.16),_transparent_28%),radial-gradient(circle_at_top_right,_rgba(158,224,255,0.11),_transparent_22%),linear-gradient(180deg,_rgba(255,255,255,0.04),_rgba(255,255,255,0.01))] p-4 sm:p-5">
         <div className="flex items-start justify-between gap-4">
-          <div className="space-y-1">
-            <h2 className="text-[22px] font-semibold tracking-[-0.04em] text-white">
-              Account Dashboard
-            </h2>
-            <p className="text-[13px] leading-5 text-white/62">
-              Subscription, usage, and activity from the backend.
-            </p>
+          <div className="flex items-start gap-3">
+            <CheatbitMark className="h-11 w-11 rounded-[18px]" />
+            <div className="space-y-1">
+              <h2 className="text-[22px] font-semibold tracking-[-0.04em] text-white">
+                Account Dashboard
+              </h2>
+              <p className="text-[13px] leading-5 text-white/62">
+                Subscription, usage, and activity from the backend.
+              </p>
+            </div>
           </div>
 
           <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              onClick={() => onOpenChange(false)}
-              className="border-white/10 text-white hover:bg-white/5"
-            >
-              Close
-            </Button>
             <Button
               variant="outline"
               onClick={() => {
@@ -248,6 +379,20 @@ export function AccountDashboardDialog({
               className="border-white/10 bg-white/5 text-white hover:bg-white/10"
             >
               Refresh
+            </Button>
+            <Button
+              variant="outline"
+              onClick={handleOpenSettings}
+              className="border-white/10 text-white hover:bg-white/5"
+            >
+              Settings
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              className="border-white/10 text-white hover:bg-white/5"
+            >
+              Close
             </Button>
           </div>
         </div>
@@ -320,6 +465,38 @@ export function AccountDashboardDialog({
                     <div className="mt-2 text-[12px] text-white/52">
                       {dashboard.billing.statusMessage}
                     </div>
+                    {generatedBillingLink ? (
+                      <div className="mt-4 rounded-[20px] border border-white/10 bg-black/25 p-3">
+                        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                          <div className="min-w-0">
+                            <div className="text-[10px] uppercase tracking-[0.18em] text-white/40">
+                              {generatedBillingLink.kind === "checkout"
+                                ? "Subscribe Link"
+                                : "Billing Link"}
+                            </div>
+                            <div className="mt-2 break-all rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-[12px] leading-5 text-white/72">
+                              {generatedBillingLink.url}
+                            </div>
+                            <div className="mt-2 text-[12px] text-white/52">
+                              Copy and paste this into any browser if automatic opening does not work.
+                            </div>
+                          </div>
+                          <Button
+                            variant="outline"
+                            onClick={() => {
+                              void handleCopyBillingLink()
+                            }}
+                            className="shrink-0 border-white/10 text-white hover:bg-white/5"
+                          >
+                            {billingLinkCopied
+                              ? "Copied"
+                              : generatedBillingLink.kind === "checkout"
+                              ? "Copy Subscribe Link"
+                              : "Copy Billing Link"}
+                          </Button>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
@@ -411,28 +588,26 @@ export function AccountDashboardDialog({
                 <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
                   <div className="rounded-[22px] border border-white/10 bg-white/[0.035] p-3.5">
                     <div className="text-[10px] uppercase tracking-[0.2em] text-white/40">
-                      Solves Today
+                      Requests Today
                     </div>
                     <div className="mt-2 text-[26px] font-semibold tracking-[-0.04em] text-white">
-                      {dashboard.usage.solvesToday}
+                      {dashboard.usage.requestsToday}
                     </div>
                     <div className="mt-1.5 text-[12px] text-white/58">
                       {dashboard.billing.unlimited
                         ? "Unlimited"
-                        : `${dashboard.usage.remainingSolveDaily} remaining`}
+                        : `${dashboard.usage.remainingRequestsToday} remaining`}
                     </div>
                   </div>
                   <div className="rounded-[22px] border border-white/10 bg-white/[0.035] p-3.5">
                     <div className="text-[10px] uppercase tracking-[0.2em] text-white/40">
-                      Debug Today
+                      Screenshots Today
                     </div>
                     <div className="mt-2 text-[26px] font-semibold tracking-[-0.04em] text-white">
-                      {dashboard.usage.debugToday}
+                      {dashboard.usage.screenshotsToday}
                     </div>
                     <div className="mt-1.5 text-[12px] text-white/58">
-                      {dashboard.billing.unlimited
-                        ? "Unlimited"
-                        : `${dashboard.usage.remainingDebugDaily} remaining`}
+                      Captures do not count against the request cap.
                     </div>
                   </div>
                   <div className="rounded-[22px] border border-white/10 bg-white/[0.035] p-3.5">
@@ -519,31 +694,24 @@ export function AccountDashboardDialog({
                   <div className="text-[10px] uppercase tracking-[0.22em] text-white/40">
                     Rate Limits
                   </div>
-                  <div className="mt-1.5 text-[13px] leading-5 text-white/60">
-                    {dashboard.billing.unlimited
-                      ? "Unlimited Stripe subscription is active for this account."
-                      : "Current backend-enforced caps."}
-                  </div>
+                    <div className="mt-1.5 text-[13px] leading-5 text-white/60">
+                      {dashboard.billing.unlimited
+                      ? `Unlimited ${billingProviderLabel(
+                          dashboard.billing.provider
+                        )} access is active for this account.`
+                      : "Free plan includes 20 daily requests with chat and screen tools included."}
+                    </div>
 
                   <div className="mt-4 grid grid-cols-3 gap-2.5">
                     <div className="rounded-2xl border border-white/10 bg-black/25 p-3">
                       <div className="text-[11px] text-white/45">
-                        Solve / day
+                        Requests / day
                       </div>
                       <div className="mt-1.5 text-[24px] font-semibold text-white">
                         {dashboard.billing.unlimited
                           ? "Unlimited"
-                          : dashboard.user.rateLimits.solveDaily}
-                      </div>
-                    </div>
-                    <div className="rounded-2xl border border-white/10 bg-black/25 p-3">
-                      <div className="text-[11px] text-white/45">
-                        Debug / day
-                      </div>
-                      <div className="mt-1.5 text-[24px] font-semibold text-white">
-                        {dashboard.billing.unlimited
-                          ? "Unlimited"
-                          : dashboard.user.rateLimits.debugDaily}
+                          : dashboard.usage.remainingRequestsToday +
+                            dashboard.usage.requestsToday}
                       </div>
                     </div>
                     <div className="rounded-2xl border border-white/10 bg-black/25 p-3">
@@ -553,7 +721,17 @@ export function AccountDashboardDialog({
                       <div className="mt-1.5 text-[24px] font-semibold text-white">
                         {dashboard.billing.unlimited
                           ? "Unlimited"
+                          : dashboard.user.subscriptionPlan === "free"
+                          ? 20
                           : dashboard.user.rateLimits.requestsPerHour}
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border border-white/10 bg-black/25 p-3">
+                      <div className="text-[11px] text-white/45">
+                        Plan
+                      </div>
+                      <div className="mt-1.5 text-[24px] font-semibold text-white">
+                        {dashboard.billing.unlimited ? "Pro" : "Free"}
                       </div>
                     </div>
                   </div>

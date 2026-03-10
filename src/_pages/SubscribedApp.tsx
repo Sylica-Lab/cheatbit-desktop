@@ -6,17 +6,24 @@ import Solutions from "../_pages/Solutions"
 import { useToast } from "../contexts/toast"
 import { updateWindowToElement } from "../utils/contentSize"
 import { FOLLOW_UP_CHAT_QUERY_KEY } from "../components/FollowUp/FollowUpChat"
+import type { DesktopUpdateState } from "../../shared/desktopUpdates"
 
 interface SubscribedAppProps {
   credits: number
   currentLanguage: string
   setLanguage: (language: string) => void
+  desktopUpdateState: DesktopUpdateState
+  onDownloadUpdate: () => Promise<{ success: true } | { success: false; error: string }>
+  onInstallUpdate: () => Promise<{ success: true } | { success: false; error: string }>
 }
 
 const SubscribedApp: React.FC<SubscribedAppProps> = ({
   credits,
   currentLanguage,
-  setLanguage
+  setLanguage,
+  desktopUpdateState,
+  onDownloadUpdate,
+  onInstallUpdate,
 }) => {
   const queryClient = useQueryClient()
   const [view, setView] = useState<"queue" | "solutions" | "debug">("queue")
@@ -141,7 +148,7 @@ const SubscribedApp: React.FC<SubscribedAppProps> = ({
     <div
       ref={containerRef}
       data-size-root="true"
-      className="inline-flex min-h-0 flex-col items-start bg-transparent"
+      className="sylica-window-enter inline-flex min-h-0 flex-col items-start bg-transparent"
     >
       {view === "queue" ? (
         <Queue
@@ -149,6 +156,9 @@ const SubscribedApp: React.FC<SubscribedAppProps> = ({
           credits={credits}
           currentLanguage={currentLanguage}
           setLanguage={setLanguage}
+          desktopUpdateState={desktopUpdateState}
+          onDownloadUpdate={onDownloadUpdate}
+          onInstallUpdate={onInstallUpdate}
         />
       ) : view === "solutions" ? (
         <Solutions
@@ -156,6 +166,9 @@ const SubscribedApp: React.FC<SubscribedAppProps> = ({
           credits={credits}
           currentLanguage={currentLanguage}
           setLanguage={setLanguage}
+          desktopUpdateState={desktopUpdateState}
+          onDownloadUpdate={onDownloadUpdate}
+          onInstallUpdate={onInstallUpdate}
         />
       ) : null}
     </div>

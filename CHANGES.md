@@ -1,4 +1,4 @@
-# Interview Coder - Unlocked Edition - Changes
+# Sylica AI - Changes
 
 ## Major Architectural Changes
 

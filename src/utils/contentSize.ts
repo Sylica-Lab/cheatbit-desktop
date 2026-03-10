@@ -5,7 +5,7 @@ export function measureElementContentSize(element: HTMLElement): {
   const rect = element.getBoundingClientRect()
 
   return {
-    width: Math.max(1, Math.ceil(Math.max(rect.width, element.scrollWidth))),
+    width: Math.max(1, Math.ceil(rect.width)),
     height: Math.max(1, Math.ceil(Math.max(rect.height, element.scrollHeight)))
   }
 }

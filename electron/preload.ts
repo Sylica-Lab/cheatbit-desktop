@@ -7,10 +7,20 @@ import type {
   UserDashboardData
 } from "../shared/backendAuth"
 import type {
+  AssistantChatMode,
+  ChatThreadSummary,
+  ComputerUseResumeData,
+  ComputerUseStartData,
+  ComputerUseState,
+  LiveInterviewInstructionData,
+  LiveInterviewStartData,
+  LiveInterviewState,
+  LiveInterviewTranscriptData,
+  PersistedChatMessage,
   TextFollowUpRequest,
   TextFollowUpResponse
 } from "../shared/followUpChat"
-const { shell } = require("electron")
+import type { DesktopUpdateState } from "../shared/desktopUpdates"
 
 export const PROCESSING_EVENTS = {
   //global states
@@ -32,6 +42,11 @@ export const PROCESSING_EVENTS = {
   DEBUG_ERROR: "debug-error"
 } as const
 
+const LIVE_INTERVIEW_STATE_EVENT = "live-interview-state"
+const COMPUTER_USE_STATE_EVENT = "computer-use-state"
+const DESKTOP_UPDATE_STATE_EVENT = "updates:state"
+const SHOW_UNINSTALL_OFFBOARDING_EVENT = "show-uninstall-offboarding"
+
 // At the top of the file
 console.log("Preload script is running")
 
@@ -49,6 +64,78 @@ const electronAPI = {
     ipcRenderer.invoke("auth:create-checkout-session") as Promise<BillingSessionResponse>,
   createBillingPortalSession: () =>
     ipcRenderer.invoke("auth:create-billing-portal-session") as Promise<BillingSessionResponse>,
+  requestMicrophoneAccess: () =>
+    ipcRenderer.invoke("permissions:request-microphone") as Promise<{
+      granted: boolean
+      status: string
+      error?: string
+    }>,
+  listChatThreads: (payload?: { mode?: AssistantChatMode }) =>
+    ipcRenderer.invoke("chat:list-threads", payload) as Promise<
+      { success: true; data: { threads: ChatThreadSummary[] } } | { success: false; error: string }
+    >,
+  createChatThread: (payload?: { mode?: AssistantChatMode; title?: string }) =>
+    ipcRenderer.invoke("chat:create-thread", payload) as Promise<
+      { success: true; data: { thread: ChatThreadSummary } } | { success: false; error: string }
+    >,
+  getChatMessages: (payload: { threadId: string }) =>
+    ipcRenderer.invoke("chat:get-messages", payload) as Promise<
+      {
+        success: true
+        data: { thread: ChatThreadSummary; messages: PersistedChatMessage[] }
+      } | { success: false; error: string }
+    >,
+  appendChatMessage: (payload: {
+    threadId: string
+    role: "user" | "assistant"
+    content: string
+  }) =>
+    ipcRenderer.invoke("chat:append-message", payload) as Promise<
+      {
+        success: true
+        data: { thread: ChatThreadSummary; message: PersistedChatMessage }
+      } | { success: false; error: string }
+    >,
+  getLiveInterviewState: () =>
+    ipcRenderer.invoke("live:get-state") as Promise<
+      { success: true; data: { state: LiveInterviewState } } | { success: false; error: string }
+    >,
+  startLiveInterview: () =>
+    ipcRenderer.invoke("live:start") as Promise<
+      { success: true; data: LiveInterviewStartData } | { success: false; error: string }
+    >,
+  stopLiveInterview: () =>
+    ipcRenderer.invoke("live:stop") as Promise<
+      { success: true; data: { state: LiveInterviewState } } | { success: false; error: string }
+    >,
+  addLiveInterviewInstruction: (payload: { content: string }) =>
+    ipcRenderer.invoke("live:add-instruction", payload) as Promise<
+      { success: true; data: LiveInterviewInstructionData } | { success: false; error: string }
+    >,
+  addLiveInterviewTranscript: (payload: { content: string }) =>
+    ipcRenderer.invoke("live:add-transcript", payload) as Promise<
+      { success: true; data: LiveInterviewTranscriptData } | { success: false; error: string }
+    >,
+  addLiveInterviewAudioChunk: (payload: { audioBase64: string; mimeType: string }) =>
+    ipcRenderer.invoke("live:add-audio-chunk", payload) as Promise<
+      { success: true; data: LiveInterviewTranscriptData } | { success: false; error: string }
+    >,
+  getComputerUseState: () =>
+    ipcRenderer.invoke("computer-use:get-state") as Promise<
+      { success: true; data: { state: ComputerUseState } } | { success: false; error: string }
+    >,
+  startComputerUseTask: (payload: { task: string }) =>
+    ipcRenderer.invoke("computer-use:start-task", payload) as Promise<
+      { success: true; data: ComputerUseStartData } | { success: false; error: string }
+    >,
+  stopComputerUseTask: () =>
+    ipcRenderer.invoke("computer-use:stop-task") as Promise<
+      { success: true; data: { state: ComputerUseState } } | { success: false; error: string }
+    >,
+  resumeComputerUseAfterSecret: () =>
+    ipcRenderer.invoke("computer-use:resume-after-secret") as Promise<
+      { success: true; data: ComputerUseResumeData } | { success: false; error: string }
+    >,
   submitTextFollowUp: (payload: TextFollowUpRequest) =>
     ipcRenderer.invoke("submit-text-follow-up", payload) as Promise<
       { success: true; data: TextFollowUpResponse } | { success: false; error: string }
@@ -58,6 +145,10 @@ const electronAPI = {
     return ipcRenderer.invoke("open-subscription-portal", authData)
   },
   openSettingsPortal: () => ipcRenderer.invoke("open-settings-portal"),
+  beginUninstall: () =>
+    ipcRenderer.invoke("app:begin-uninstall") as Promise<
+      { success: true } | { success: false; error: string }
+    >,
   updateContentDimensions: (dimensions: { width: number; height: number }) =>
     ipcRenderer.invoke("update-content-dimensions", dimensions),
   clearStore: () => ipcRenderer.invoke("clear-store"),
@@ -75,6 +166,7 @@ const electronAPI = {
       throw error
     }
   },
+  quitApp: () => ipcRenderer.invoke("quit-app"),
   // Event listeners
   onScreenshotTaken: (
     callback: (data: { path: string; preview: string }) => void
@@ -173,9 +265,24 @@ const electronAPI = {
       ipcRenderer.removeListener(PROCESSING_EVENTS.UNAUTHORIZED, subscription)
     }
   },
+  onLiveInterviewState: (callback: (state: LiveInterviewState) => void) => {
+    const subscription = (_: unknown, state: LiveInterviewState) => callback(state)
+    ipcRenderer.on(LIVE_INTERVIEW_STATE_EVENT, subscription)
+    return () => {
+      ipcRenderer.removeListener(LIVE_INTERVIEW_STATE_EVENT, subscription)
+    }
+  },
+  onComputerUseState: (callback: (state: ComputerUseState) => void) => {
+    const subscription = (_: unknown, state: ComputerUseState) => callback(state)
+    ipcRenderer.on(COMPUTER_USE_STATE_EVENT, subscription)
+    return () => {
+      ipcRenderer.removeListener(COMPUTER_USE_STATE_EVENT, subscription)
+    }
+  },
   // External URL handler
-  openLink: (url: string) => shell.openExternal(url),
+  openLink: (url: string) => ipcRenderer.invoke("openLink", url),
   triggerScreenshot: () => ipcRenderer.invoke("trigger-screenshot"),
+  triggerRegionScreenshot: () => ipcRenderer.invoke("trigger-region-screenshot"),
   triggerProcessScreenshots: () =>
     ipcRenderer.invoke("trigger-process-screenshots"),
   triggerReset: () => ipcRenderer.invoke("trigger-reset"),
@@ -204,20 +311,23 @@ const electronAPI = {
       ipcRenderer.removeListener(PROCESSING_EVENTS.RESET, subscription)
     }
   },
-  startUpdate: () => ipcRenderer.invoke("start-update"),
-  installUpdate: () => ipcRenderer.invoke("install-update"),
-  onUpdateAvailable: (callback: (info: any) => void) => {
-    const subscription = (_: any, info: any) => callback(info)
-    ipcRenderer.on("update-available", subscription)
+  getUpdateState: () =>
+    ipcRenderer.invoke("updates:get-state") as Promise<
+      { success: true; data: { state: DesktopUpdateState } } | { success: false; error: string }
+    >,
+  downloadUpdate: () =>
+    ipcRenderer.invoke("updates:download") as Promise<
+      { success: true; data?: { state: DesktopUpdateState } } | { success: false; error: string }
+    >,
+  installUpdate: () =>
+    ipcRenderer.invoke("updates:install") as Promise<
+      { success: true } | { success: false; error: string }
+    >,
+  onUpdateState: (callback: (state: DesktopUpdateState) => void) => {
+    const subscription = (_: unknown, state: DesktopUpdateState) => callback(state)
+    ipcRenderer.on(DESKTOP_UPDATE_STATE_EVENT, subscription)
     return () => {
-      ipcRenderer.removeListener("update-available", subscription)
-    }
-  },
-  onUpdateDownloaded: (callback: (info: any) => void) => {
-    const subscription = (_: any, info: any) => callback(info)
-    ipcRenderer.on("update-downloaded", subscription)
-    return () => {
-      ipcRenderer.removeListener("update-downloaded", subscription)
+      ipcRenderer.removeListener(DESKTOP_UPDATE_STATE_EVENT, subscription)
     }
   },
   decrementCredits: () => ipcRenderer.invoke("decrement-credits"),
@@ -241,10 +351,16 @@ const electronAPI = {
       ipcRenderer.removeListener("show-settings-dialog", subscription)
     }
   },
+  onShowUninstallOffboarding: (callback: () => void) => {
+    const subscription = () => callback()
+    ipcRenderer.on(SHOW_UNINSTALL_OFFBOARDING_EVENT, subscription)
+    return () => {
+      ipcRenderer.removeListener(SHOW_UNINSTALL_OFFBOARDING_EVENT, subscription)
+    }
+  },
   validateApiKey: (apiKey: string, provider?: ApiProvider) => 
     ipcRenderer.invoke("validate-api-key", apiKey, provider),
-  openExternal: (url: string) => 
-    ipcRenderer.invoke("openExternal", url),
+  openExternal: (url: string) => ipcRenderer.invoke("open-external-url", url),
   onApiKeyInvalid: (callback: () => void) => {
     const subscription = () => callback()
     ipcRenderer.on(PROCESSING_EVENTS.API_KEY_INVALID, subscription)

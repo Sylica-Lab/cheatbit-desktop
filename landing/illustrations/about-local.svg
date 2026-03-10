@@ -1,0 +1,12 @@
+<svg width="280" height="220" viewBox="0 0 280 220" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="280" height="220" rx="28" fill="#F7FAFD"/>
+  <rect x="16" y="16" width="248" height="188" rx="24" fill="#FFFFFF" stroke="#D9E3EB"/>
+  <rect x="34" y="34" width="96" height="14" rx="7" fill="#DFF7EC"/>
+  <text x="48" y="44" fill="#305B48" font-size="10" font-family="Arial, sans-serif">Local-first</text>
+  <path d="M104 96C104 78.3269 118.327 64 136 64C153.673 64 168 78.3269 168 96V106H176C182.627 106 188 111.373 188 118V156C188 162.627 182.627 168 176 168H96C89.3726 168 84 162.627 84 156V118C84 111.373 89.3726 106 96 106H104V96Z" fill="#F4F8FB" stroke="#D9E3EB"/>
+  <path d="M118 106V96C118 86.0589 126.059 78 136 78C145.941 78 154 86.0589 154 96V106" stroke="#67D7A8" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="136" cy="132" r="11" fill="#7DF9C7"/>
+  <rect x="130" y="144" width="12" height="15" rx="6" fill="#7DF9C7"/>
+  <rect x="42" y="180" width="124" height="10" rx="5" fill="#E5EDF4"/>
+  <text x="176" y="184" fill="#7A8C99" font-size="10" font-family="Arial, sans-serif">Private session</text>
+</svg>

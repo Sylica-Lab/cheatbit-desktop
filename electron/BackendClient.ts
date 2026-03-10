@@ -7,10 +7,19 @@ import type {
   UsageAction,
   UsageDecision,
 } from "../shared/backendAuth"
+import type {
+  AssistantChatMode,
+  ChatThreadSummary,
+  FollowUpRole,
+  PersistedChatMessage,
+} from "../shared/followUpChat"
 
-const DEFAULT_BACKEND_URL = "http://127.0.0.1:8787"
+const DEFAULT_BACKEND_URL = "https://cheat.trybookai.com"
 const BACKEND_URL =
-  process.env.INTERVIEW_CODER_BACKEND_URL?.trim() || DEFAULT_BACKEND_URL
+  process.env.SYLICA_AI_BACKEND_URL?.trim() ||
+  process.env.CHEATBIT_BACKEND_URL?.trim() ||
+  process.env.INTERVIEW_CODER_BACKEND_URL?.trim() ||
+  DEFAULT_BACKEND_URL
 
 interface BackendErrorShape {
   error?: string
@@ -31,6 +40,34 @@ interface DashboardResponse {
 }
 
 interface BillingUrlResponse extends BillingSessionResponse {}
+
+interface ChatThreadsResponse {
+  threads: ChatThreadSummary[]
+}
+
+interface ChatThreadResponse {
+  thread: ChatThreadSummary
+}
+
+interface ChatMessagesResponse {
+  thread: ChatThreadSummary
+  messages: PersistedChatMessage[]
+}
+
+interface ChatMessageResponse {
+  thread: ChatThreadSummary
+  message: PersistedChatMessage
+}
+
+class BackendRequestError extends Error {
+  public readonly status?: number
+
+  constructor(message: string, status?: number) {
+    super(message)
+    this.name = "BackendRequestError"
+    this.status = status
+  }
+}
 
 export class BackendClient {
   public getBaseUrl(): string {
@@ -59,11 +96,18 @@ export class BackendClient {
         session: response.session,
       }
     } catch (error) {
-      this.clearSession()
+      if (this.isAuthFailure(error)) {
+        this.clearSession()
+        return {
+          authenticated: false,
+          session: null,
+          error: this.getErrorMessage(error),
+        }
+      }
 
       return {
-        authenticated: false,
-        session: null,
+        authenticated: true,
+        session: storedSession,
         error: this.getErrorMessage(error),
       }
     }
@@ -102,7 +146,7 @@ export class BackendClient {
     if (!session?.token) {
       return {
         allowed: false,
-        error: "Please log in before using CheatBit.",
+        error: "Please log in before using Sylica AI.",
         session: null,
       }
     }
@@ -128,11 +172,7 @@ export class BackendClient {
       }
     } catch (error) {
       const message = this.getErrorMessage(error)
-      const normalized = message.toLowerCase()
-      if (
-        normalized.includes("authentication") ||
-        normalized.includes("session")
-      ) {
+      if (this.isAuthFailure(error)) {
         this.clearSession()
         return {
           allowed: false,
@@ -193,6 +233,83 @@ export class BackendClient {
     })
   }
 
+  public async listChatThreads(
+    mode: AssistantChatMode = "general"
+  ): Promise<ChatThreadSummary[]> {
+    const session = this.getStoredSession()
+    if (!session?.token) {
+      throw new Error("Please log in before loading chat history.")
+    }
+
+    const response = await this.request<ChatThreadsResponse>(
+      `/api/chat/threads?mode=${encodeURIComponent(mode)}`,
+      {
+        method: "GET",
+        token: session.token,
+      }
+    )
+
+    return response.threads
+  }
+
+  public async createChatThread(
+    mode: AssistantChatMode = "general",
+    title?: string
+  ): Promise<ChatThreadSummary> {
+    const session = this.getStoredSession()
+    if (!session?.token) {
+      throw new Error("Please log in before starting a new chat.")
+    }
+
+    const response = await this.request<ChatThreadResponse>("/api/chat/threads", {
+      method: "POST",
+      token: session.token,
+      body: { mode, title },
+    })
+
+    return response.thread
+  }
+
+  public async getChatMessages(
+    threadId: string
+  ): Promise<ChatMessagesResponse> {
+    const session = this.getStoredSession()
+    if (!session?.token) {
+      throw new Error("Please log in before opening chat history.")
+    }
+
+    return this.request<ChatMessagesResponse>(
+      `/api/chat/threads/${encodeURIComponent(threadId)}/messages`,
+      {
+        method: "GET",
+        token: session.token,
+      }
+    )
+  }
+
+  public async appendChatMessage(input: {
+    threadId: string
+    role: FollowUpRole
+    content: string
+  }): Promise<ChatMessageResponse> {
+    const session = this.getStoredSession()
+    if (!session?.token) {
+      throw new Error("Please log in before sending chat messages.")
+    }
+
+    return this.request<ChatMessageResponse>(
+      `/api/chat/threads/${encodeURIComponent(input.threadId)}/messages`,
+      {
+        method: "POST",
+        token: session.token,
+        body: {
+          role: input.role,
+          content: input.content,
+        },
+      }
+    )
+  }
+
   private setStoredSession(session: AuthSession | null): void {
     store.set("authSession", session)
   }
@@ -230,22 +347,49 @@ export class BackendClient {
           options.body !== undefined ? JSON.stringify(options.body) : undefined,
       })
     } catch (error) {
-      throw new Error(
+      throw new BackendRequestError(
         `Cannot reach the backend at ${BACKEND_URL}. Start the backend service first.`
       )
     }
 
     const text = await response.text()
-    const data = text ? (JSON.parse(text) as T & BackendErrorShape) : ({} as T)
+    let data = {} as T & BackendErrorShape
+    if (text) {
+      try {
+        data = JSON.parse(text) as T & BackendErrorShape
+      } catch (error) {
+        throw new BackendRequestError(
+          `Backend returned invalid JSON for ${pathname}.`,
+          response.status
+        )
+      }
+    }
 
     if (!response.ok) {
-      throw new Error(
+      throw new BackendRequestError(
         (data as BackendErrorShape).error ||
-          `Backend request failed with status ${response.status}.`
+          `Backend request failed with status ${response.status}.`,
+        response.status
       )
     }
 
     return data
+  }
+
+  private isAuthFailure(error: unknown): boolean {
+    if (error instanceof BackendRequestError) {
+      return error.status === 401
+    }
+
+    if (error instanceof Error) {
+      const normalized = error.message.toLowerCase()
+      return (
+        normalized === "authentication required." ||
+        normalized === "user session is no longer valid."
+      )
+    }
+
+    return false
   }
 
   private getErrorMessage(error: unknown): string {

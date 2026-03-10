@@ -1,17 +1,168 @@
 // ipcHandlers.ts
 
-import { ipcMain, shell, dialog } from "electron"
+import { spawn } from "node:child_process"
+import fs from "node:fs"
+import path from "node:path"
+import { app, ipcMain, shell } from "electron"
 import { IIpcHandlerDeps } from "./main"
 import { configHelper } from "./ConfigHelper"
 import { backendClient } from "./BackendClient"
 import type { UsageAction } from "../shared/backendAuth"
-import type { FollowUpChatTurn } from "../shared/followUpChat"
+import type {
+  AssistantChatMode,
+  ComputerUseResumeData,
+  ComputerUseStartData,
+  ComputerUseState,
+  FollowUpRole,
+  FollowUpChatTurn,
+  LiveInterviewInstructionData,
+  LiveInterviewStartData,
+  LiveInterviewState,
+  LiveInterviewTranscriptData,
+} from "../shared/followUpChat"
 
 export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
   console.log("Initializing IPC handlers")
 
+  const openExternalUrl = async (
+    rawUrl: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    const url = String(rawUrl || "").trim()
+    if (!url) {
+      return { success: false, error: "Missing URL." }
+    }
+
+    let parsedUrl: URL
+    try {
+      parsedUrl = new URL(url)
+    } catch (_error) {
+      return { success: false, error: "Invalid URL." }
+    }
+
+    const allowedProtocols = new Set(["http:", "https:", "mailto:"])
+    if (!allowedProtocols.has(parsedUrl.protocol)) {
+      return { success: false, error: "Unsupported URL protocol." }
+    }
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const command =
+          process.platform === "win32"
+            ? process.env.ComSpec || process.env.COMSPEC || "cmd.exe"
+            : process.platform === "darwin"
+              ? "open"
+              : "xdg-open"
+
+        const args =
+          process.platform === "win32"
+            ? ["/c", "start", "", url]
+            : [url]
+
+        const child = spawn(command, args, {
+          stdio: "ignore",
+          windowsHide: true,
+        })
+
+        child.once("error", reject)
+        child.once("close", (code) => {
+          if (code === 0) {
+            resolve()
+            return
+          }
+
+          reject(new Error(`External opener exited with code ${code ?? -1}.`))
+        })
+      })
+
+      return { success: true }
+    } catch (nativeError) {
+      console.warn(
+        "Native browser launch failed, falling back to Electron shell.",
+        nativeError
+      )
+    }
+
+    try {
+      await shell.openExternal(url)
+      return { success: true }
+    } catch (error) {
+      console.error(`Error opening URL ${url}:`, error)
+      return {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to open external URL.",
+      }
+    }
+  }
+
+  const beginWindowsUninstall = async (): Promise<{
+    success: boolean
+    error?: string
+  }> => {
+    if (process.platform !== "win32") {
+      return {
+        success: false,
+        error: "Uninstall handoff is supported only on Windows.",
+      }
+    }
+
+    const exePath = app.getPath("exe")
+    const installDir = path.dirname(exePath)
+    const uninstallerCandidates = fs
+      .readdirSync(installDir)
+      .filter(
+        (fileName) =>
+          /^Uninstall .*\.exe$/i.test(fileName) || /^Uninstall\.exe$/i.test(fileName)
+      )
+      .map((fileName) => path.join(installDir, fileName))
+
+    const fallbackPath = path.join(installDir, `Uninstall ${app.getName()}.exe`)
+    const uninstallerPath =
+      uninstallerCandidates.find((candidate) => fs.existsSync(candidate)) ||
+      (fs.existsSync(fallbackPath) ? fallbackPath : null)
+
+    if (!uninstallerPath) {
+      return {
+        success: false,
+        error: "Could not find the Sylica AI uninstaller.",
+      }
+    }
+
+    try {
+      const child = spawn(uninstallerPath, ["--skip-offboarding"], {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true,
+      })
+      child.unref()
+      setTimeout(() => {
+        app.quit()
+      }, 150)
+      return { success: true }
+    } catch (error) {
+      return {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to start the Windows uninstaller.",
+      }
+    }
+  }
+
   const getProcessingAction = (): UsageAction =>
     deps.getView() === "queue" ? "solve" : "debug"
+
+  const resolveChatMode = (rawMode: unknown): AssistantChatMode =>
+    rawMode === "follow_up"
+      ? "follow_up"
+      : rawMode === "live_interview"
+        ? "live_interview"
+        : rawMode === "computer_use"
+          ? "computer_use"
+          : "general"
 
   const hasPendingProcessingInputs = (): boolean =>
     deps.getView() === "queue"
@@ -23,6 +174,19 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     if (mainWindow) {
       mainWindow.webContents.send(deps.PROCESSING_EVENTS.UNAUTHORIZED)
     }
+  }
+
+  const isAuthenticationError = (error: unknown) => {
+    if (!(error instanceof Error)) {
+      return false
+    }
+
+    const message = error.message.toLowerCase()
+    return (
+      message.includes("log in") ||
+      message === "authentication required." ||
+      message === "user session is no longer valid."
+    )
   }
 
   const emitUsageError = (action: UsageAction, message: string) => {
@@ -110,6 +274,10 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     return { success: true }
   })
 
+  ipcMain.handle("app:begin-uninstall", async () => {
+    return beginWindowsUninstall()
+  })
+
   ipcMain.handle("auth:get-dashboard", async () => {
     return backendClient.getAccountDashboard()
   })
@@ -122,16 +290,394 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     return backendClient.createBillingPortalSession()
   })
 
+  ipcMain.handle("permissions:request-microphone", async () => {
+    return deps.requestMicrophoneAccess()
+  })
+
+  ipcMain.handle("chat:list-threads", async (_event, payload) => {
+    const mode = resolveChatMode(payload?.mode)
+
+    try {
+      const threads = await backendClient.listChatThreads(mode)
+      return {
+        success: true as const,
+        data: { threads },
+      }
+    } catch (error) {
+      if (isAuthenticationError(error)) {
+        notifyUnauthorized()
+      }
+
+      return {
+        success: false as const,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to load chat history.",
+      }
+    }
+  })
+
+  ipcMain.handle("chat:create-thread", async (_event, payload) => {
+    const mode = resolveChatMode(payload?.mode)
+    const title = String(payload?.title || "").trim()
+
+    try {
+      const thread = await backendClient.createChatThread(mode, title)
+      return {
+        success: true as const,
+        data: { thread },
+      }
+    } catch (error) {
+      if (isAuthenticationError(error)) {
+        notifyUnauthorized()
+      }
+
+      return {
+        success: false as const,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to create a new chat.",
+      }
+    }
+  })
+
+  ipcMain.handle("live:get-state", async () => {
+    const helper = deps.liveInterviewHelper
+    if (!helper) {
+      return {
+        success: false as const,
+        error: "Live interview is not available right now.",
+      }
+    }
+
+    return {
+      success: true as const,
+      data: {
+        state: helper.getState() as LiveInterviewState,
+      },
+    }
+  })
+
+  ipcMain.handle("live:start", async () => {
+    const helper = deps.liveInterviewHelper
+    if (!helper) {
+      return {
+        success: false as const,
+        error: "Live interview is not available right now.",
+      }
+    }
+
+    const result = await helper.startSession()
+    if ("error" in result) {
+      if (result.authRequired) {
+        notifyUnauthorized()
+      }
+
+      return {
+        success: false as const,
+        error: result.error,
+      }
+    }
+
+    return {
+      success: true as const,
+      data: result.data as LiveInterviewStartData,
+    }
+  })
+
+  ipcMain.handle("live:stop", async () => {
+    const helper = deps.liveInterviewHelper
+    if (!helper) {
+      return {
+        success: false as const,
+        error: "Live interview is not available right now.",
+      }
+    }
+
+    return helper.stopSession()
+  })
+
+  ipcMain.handle("live:add-instruction", async (_event, payload) => {
+    const helper = deps.liveInterviewHelper
+    if (!helper) {
+      return {
+        success: false as const,
+        error: "Live interview is not available right now.",
+      }
+    }
+
+    const content = String(payload?.content || "").trim()
+    if (!content) {
+      return {
+        success: false as const,
+        error: "Enter an instruction first.",
+      }
+    }
+
+    const result = await helper.addInstruction(content)
+    if ("error" in result) {
+      if (result.authRequired) {
+        notifyUnauthorized()
+      }
+
+      return {
+        success: false as const,
+        error: result.error,
+      }
+    }
+
+    return {
+      success: true as const,
+      data: result.data as LiveInterviewInstructionData,
+    }
+  })
+
+  ipcMain.handle("live:add-transcript", async (_event, payload) => {
+    const helper = deps.liveInterviewHelper
+    if (!helper) {
+      return {
+        success: false as const,
+        error: "Live interview is not available right now.",
+      }
+    }
+
+    const content = String(payload?.content || "").trim()
+    if (!content) {
+      return {
+        success: false as const,
+        error: "Transcript text is required.",
+      }
+    }
+
+    const result = await helper.addTranscript(content)
+    if ("error" in result) {
+      return {
+        success: false as const,
+        error: result.error,
+      }
+    }
+
+    return {
+      success: true as const,
+      data: result.data as LiveInterviewTranscriptData,
+    }
+  })
+
+  ipcMain.handle("live:add-audio-chunk", async (_event, payload) => {
+    const helper = deps.liveInterviewHelper
+    if (!helper) {
+      return {
+        success: false as const,
+        error: "Live interview is not available right now.",
+      }
+    }
+
+    const audioBase64 = String(payload?.audioBase64 || "").trim()
+    const mimeType = String(payload?.mimeType || "audio/webm").trim()
+    if (!audioBase64) {
+      return {
+        success: false as const,
+        error: "Audio data is required.",
+      }
+    }
+
+    const result = await helper.addAudioChunk(audioBase64, mimeType)
+    if ("error" in result) {
+      return {
+        success: false as const,
+        error: result.error,
+      }
+    }
+
+    return {
+      success: true as const,
+      data: result.data as LiveInterviewTranscriptData,
+    }
+  })
+
+  ipcMain.handle("computer-use:get-state", async () => {
+    const controller = deps.browserAgentController
+    if (!controller) {
+      return {
+        success: false as const,
+        error: "Computer Use is not available right now.",
+      }
+    }
+
+    return {
+      success: true as const,
+      data: {
+        state: controller.getState() as ComputerUseState,
+      },
+    }
+  })
+
+  ipcMain.handle("computer-use:start-task", async (_event, payload) => {
+    const controller = deps.browserAgentController
+    if (!controller) {
+      return {
+        success: false as const,
+        error: "Computer Use is not available right now.",
+      }
+    }
+
+    const task = String(payload?.task || "").trim()
+    if (!task) {
+      return {
+        success: false as const,
+        error: "Enter a browser task first.",
+      }
+    }
+
+    const result = await controller.startTask(task)
+    if ("error" in result) {
+      if (result.authRequired) {
+        notifyUnauthorized()
+      }
+
+      return {
+        success: false as const,
+        error: result.error,
+      }
+    }
+
+    return {
+      success: true as const,
+      data: result.data as ComputerUseStartData,
+    }
+  })
+
+  ipcMain.handle("computer-use:stop-task", async () => {
+    const controller = deps.browserAgentController
+    if (!controller) {
+      return {
+        success: false as const,
+        error: "Computer Use is not available right now.",
+      }
+    }
+
+    return controller.stopTask()
+  })
+
+  ipcMain.handle("computer-use:resume-after-secret", async () => {
+    const controller = deps.browserAgentController
+    if (!controller) {
+      return {
+        success: false as const,
+        error: "Computer Use is not available right now.",
+      }
+    }
+
+    const result = await controller.resumeAfterSecret()
+    if ("error" in result) {
+      return {
+        success: false as const,
+        error: result.error,
+      }
+    }
+
+    return {
+      success: true as const,
+      data: result.data as ComputerUseResumeData,
+    }
+  })
+
+  ipcMain.handle("chat:get-messages", async (_event, payload) => {
+    const threadId = String(payload?.threadId || "").trim()
+    if (!threadId) {
+      return {
+        success: false as const,
+        error: "Chat thread ID is required.",
+      }
+    }
+
+    try {
+      const data = await backendClient.getChatMessages(threadId)
+      return {
+        success: true as const,
+        data,
+      }
+    } catch (error) {
+      if (isAuthenticationError(error)) {
+        notifyUnauthorized()
+      }
+
+      return {
+        success: false as const,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to load chat messages.",
+      }
+    }
+  })
+
+  ipcMain.handle("chat:append-message", async (_event, payload) => {
+    const threadId = String(payload?.threadId || "").trim()
+    const role: FollowUpRole | null =
+      payload?.role === "assistant" || payload?.role === "user"
+        ? payload.role
+        : null
+    const content = String(payload?.content || "").trim()
+
+    if (!threadId || !role || !content) {
+      return {
+        success: false as const,
+        error: "A valid thread, role, and message are required.",
+      }
+    }
+
+    try {
+      const data = await backendClient.appendChatMessage({
+        threadId,
+        role,
+        content,
+      })
+      return {
+        success: true as const,
+        data,
+      }
+    } catch (error) {
+      if (isAuthenticationError(error)) {
+        notifyUnauthorized()
+      }
+
+      return {
+        success: false as const,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to save the chat message.",
+      }
+    }
+  })
+
   ipcMain.handle("submit-text-follow-up", async (_event, payload) => {
     const message = String(payload?.message || "").trim()
     const currentContext = String(payload?.currentContext || "").trim()
+    const mode: AssistantChatMode =
+      payload?.mode === "general" ? "general" : "follow_up"
     const chatHistory = Array.isArray(payload?.chatHistory)
       ? payload.chatHistory
           .filter(
-            (entry: any): entry is FollowUpChatTurn =>
-              entry &&
-              (entry.role === "user" || entry.role === "assistant") &&
-              typeof entry.content === "string"
+            (entry: unknown): entry is FollowUpChatTurn => {
+              if (!entry || typeof entry !== "object") {
+                return false
+              }
+
+              const candidate = entry as {
+                role?: unknown
+                content?: unknown
+              }
+
+              return (
+                (candidate.role === "user" ||
+                  candidate.role === "assistant") &&
+                typeof candidate.content === "string"
+              )
+            }
           )
           .map((entry) => ({
             role: entry.role,
@@ -148,7 +694,9 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
       }
     }
 
-    const usageDecision = await backendClient.consumeUsage("debug")
+    const usageDecision = await backendClient.consumeUsage(
+      mode === "general" ? "solve" : "debug"
+    )
     if (!usageDecision.allowed) {
       if (!usageDecision.session) {
         notifyUnauthorized()
@@ -166,6 +714,7 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
       message,
       currentContext,
       chatHistory,
+      mode,
     })
 
     if (!result) {
@@ -369,6 +918,38 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     return { error: "No main window available" }
   })
 
+  ipcMain.handle("trigger-region-screenshot", async () => {
+    const mainWindow = deps.getMainWindow()
+    if (mainWindow) {
+      try {
+        const authDecision = await ensureAuthenticatedScreenshot()
+        if (!authDecision.allowed) {
+          return {
+            success: false,
+            error: authDecision.error || "Please log in before using the app.",
+          }
+        }
+
+        const screenshotPath = await deps.takeRegionScreenshot()
+        if (!screenshotPath) {
+          return { success: true, canceled: true }
+        }
+
+        const preview = await deps.getImagePreview(screenshotPath)
+        mainWindow.webContents.send("screenshot-taken", {
+          path: screenshotPath,
+          preview
+        })
+        autoProcessAfterScreenshot()
+        return { success: true }
+      } catch (error) {
+        console.error("Error triggering region screenshot:", error)
+        return { error: "Failed to capture selected area" }
+      }
+    }
+    return { error: "No main window available" }
+  })
+
   ipcMain.handle("take-screenshot", async () => {
     try {
       const authDecision = await ensureAuthenticatedScreenshot()
@@ -389,20 +970,14 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
 
   // Auth-related handlers removed
 
-  ipcMain.handle("open-external-url", (event, url: string) => {
-    shell.openExternal(url)
+  ipcMain.handle("open-external-url", async (_event, url: string) => {
+    return openExternalUrl(url)
   })
   
   // Open external URL handler
-  ipcMain.handle("openLink", (event, url: string) => {
-    try {
-      console.log(`Opening external URL: ${url}`);
-      shell.openExternal(url);
-      return { success: true };
-    } catch (error) {
-      console.error(`Error opening URL ${url}:`, error);
-      return { success: false, error: `Failed to open URL: ${error}` };
-    }
+  ipcMain.handle("openLink", async (_event, url: string) => {
+    console.log(`Opening external URL: ${url}`)
+    return openExternalUrl(url)
   })
 
   // Settings portal handler
@@ -423,6 +998,16 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     } catch (error) {
       console.error("Error toggling window:", error)
       return { error: "Failed to toggle window" }
+    }
+  })
+
+  ipcMain.handle("quit-app", () => {
+    try {
+      app.quit()
+      return { success: true }
+    } catch (error) {
+      console.error("Error quitting app:", error)
+      return { error: "Failed to quit app" }
     }
   })
 

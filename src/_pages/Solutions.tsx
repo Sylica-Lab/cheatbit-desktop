@@ -12,10 +12,12 @@ import Debug from "./Debug"
 import { useToast } from "../contexts/toast"
 import { COMMAND_KEY } from "../utils/platform"
 import { updateWindowToElement } from "../utils/contentSize"
+import { getProcessingToastCopy } from "../utils/processingErrors"
 import {
   FollowUpChat,
   FOLLOW_UP_CHAT_QUERY_KEY,
 } from "../components/FollowUp/FollowUpChat"
+import type { DesktopUpdateState } from "../../shared/desktopUpdates"
 
 export const ContentSection = ({
   title,
@@ -182,12 +184,18 @@ export interface SolutionsProps {
   credits: number
   currentLanguage: string
   setLanguage: (language: string) => void
+  desktopUpdateState: DesktopUpdateState
+  onDownloadUpdate: () => Promise<{ success: true } | { success: false; error: string }>
+  onInstallUpdate: () => Promise<{ success: true } | { success: false; error: string }>
 }
 const Solutions: React.FC<SolutionsProps> = ({
   setView,
   credits,
   currentLanguage,
-  setLanguage
+  setLanguage,
+  desktopUpdateState,
+  onDownloadUpdate,
+  onInstallUpdate,
 }) => {
   const queryClient = useQueryClient()
   const contentRef = useRef<HTMLDivElement>(null)
@@ -319,7 +327,8 @@ const Solutions: React.FC<SolutionsProps> = ({
       }),
       //if there was an error processing the initial solution
       window.electronAPI.onSolutionError((error: string) => {
-        showToast("Processing Failed", error, "error")
+        const toastCopy = getProcessingToastCopy(error)
+        showToast(toastCopy.title, toastCopy.message, "error")
         // Reset solutions in the cache (even though this shouldn't ever happen) and complexities to previous states
         const solution = queryClient.getQueryData(["solution"]) as {
           code: string
@@ -549,6 +558,9 @@ const Solutions: React.FC<SolutionsProps> = ({
             credits={credits}
             currentLanguage={currentLanguage}
             setLanguage={setLanguage}
+            desktopUpdateState={desktopUpdateState}
+            onDownloadUpdate={onDownloadUpdate}
+            onInstallUpdate={onInstallUpdate}
           />
 
           {/* Main Content - Modified width constraints */}

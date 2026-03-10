@@ -7,9 +7,20 @@ import type {
   UserDashboardData
 } from "../shared/backendAuth"
 import type {
+  AssistantChatMode,
+  ChatThreadSummary,
+  ComputerUseResumeData,
+  ComputerUseStartData,
+  ComputerUseState,
+  LiveInterviewInstructionData,
+  LiveInterviewStartData,
+  LiveInterviewState,
+  LiveInterviewTranscriptData,
+  PersistedChatMessage,
   TextFollowUpRequest,
   TextFollowUpResponse
 } from "../shared/followUpChat"
+import type { DesktopUpdateState } from "../shared/desktopUpdates"
 
 interface ImportMetaEnv {
   readonly VITE_SUPABASE_URL: string
@@ -36,6 +47,73 @@ interface ElectronAPI {
   getAccountDashboard: () => Promise<UserDashboardData>
   createCheckoutSession: () => Promise<BillingSessionResponse>
   createBillingPortalSession: () => Promise<BillingSessionResponse>
+  requestMicrophoneAccess: () => Promise<{
+    granted: boolean
+    status: string
+    error?: string
+  }>
+  listChatThreads: (payload?: {
+    mode?: AssistantChatMode
+  }) => Promise<
+    { success: true; data: { threads: ChatThreadSummary[] } } | { success: false; error: string }
+  >
+  createChatThread: (payload?: {
+    mode?: AssistantChatMode
+    title?: string
+  }) => Promise<
+    { success: true; data: { thread: ChatThreadSummary } } | { success: false; error: string }
+  >
+  getChatMessages: (payload: {
+    threadId: string
+  }) => Promise<
+    {
+      success: true
+      data: { thread: ChatThreadSummary; messages: PersistedChatMessage[] }
+    } | { success: false; error: string }
+  >
+  appendChatMessage: (payload: {
+    threadId: string
+    role: "user" | "assistant"
+    content: string
+  }) => Promise<
+    {
+      success: true
+      data: { thread: ChatThreadSummary; message: PersistedChatMessage }
+    } | { success: false; error: string }
+  >
+  getLiveInterviewState: () => Promise<
+    { success: true; data: { state: LiveInterviewState } } | { success: false; error: string }
+  >
+  startLiveInterview: () => Promise<
+    { success: true; data: LiveInterviewStartData } | { success: false; error: string }
+  >
+  stopLiveInterview: () => Promise<
+    { success: true; data: { state: LiveInterviewState } } | { success: false; error: string }
+  >
+  addLiveInterviewInstruction: (payload: { content: string }) => Promise<
+    { success: true; data: LiveInterviewInstructionData } | { success: false; error: string }
+  >
+  addLiveInterviewTranscript: (payload: { content: string }) => Promise<
+    { success: true; data: LiveInterviewTranscriptData } | { success: false; error: string }
+  >
+  addLiveInterviewAudioChunk: (payload: {
+    audioBase64: string
+    mimeType: string
+  }) => Promise<
+    { success: true; data: LiveInterviewTranscriptData } | { success: false; error: string }
+  >
+  getComputerUseState: () => Promise<
+    { success: true; data: { state: ComputerUseState } } | { success: false; error: string }
+  >
+  startComputerUseTask: (payload: { task: string }) => Promise<
+    { success: true; data: ComputerUseStartData } | { success: false; error: string }
+  >
+  stopComputerUseTask: () => Promise<
+    { success: true; data: { state: ComputerUseState } } | { success: false; error: string }
+  >
+  resumeComputerUseAfterSecret: () => Promise<
+    { success: true; data: ComputerUseResumeData } | { success: false; error: string }
+  >
   submitTextFollowUp: (
     payload: TextFollowUpRequest
   ) => Promise<
@@ -45,6 +123,7 @@ interface ElectronAPI {
     id: string
     email: string
   }) => Promise<{ success: boolean; error?: string }>
+  beginUninstall: () => Promise<{ success: true } | { success: false; error: string }>
   updateContentDimensions: (dimensions: {
     width: number
     height: number
@@ -70,10 +149,24 @@ interface ElectronAPI {
   onProblemExtracted: (callback: (data: any) => void) => () => void
   onSolutionSuccess: (callback: (data: any) => void) => () => void
   onUnauthorized: (callback: () => void) => () => void
+  onLiveInterviewState: (
+    callback: (state: LiveInterviewState) => void
+  ) => () => void
+  onComputerUseState: (
+    callback: (state: ComputerUseState) => void
+  ) => () => void
   onDebugError: (callback: (error: string) => void) => () => void
-  openExternal: (url: string) => void
+  openExternal: (
+    url: string
+  ) => Promise<{ success: boolean; error?: string }>
   toggleMainWindow: () => Promise<{ success: boolean; error?: string }>
+  quitApp: () => Promise<{ success: boolean; error?: string }>
   triggerScreenshot: () => Promise<{ success: boolean; error?: string }>
+  triggerRegionScreenshot: () => Promise<{
+    success: boolean
+    error?: string
+    canceled?: boolean
+  }>
   triggerProcessScreenshots: () => Promise<{ success: boolean; error?: string }>
   triggerReset: () => Promise<{ success: boolean; error?: string }>
   triggerMoveLeft: () => Promise<{ success: boolean; error?: string }>
@@ -82,21 +175,29 @@ interface ElectronAPI {
   triggerMoveDown: () => Promise<{ success: boolean; error?: string }>
   onSubscriptionUpdated: (callback: () => void) => () => void
   onSubscriptionPortalClosed: (callback: () => void) => () => void
-  // Add update-related methods
-  startUpdate: () => Promise<{ success: boolean; error?: string }>
-  installUpdate: () => void
-  onUpdateAvailable: (callback: (info: any) => void) => () => void
-  onUpdateDownloaded: (callback: (info: any) => void) => () => void
+  getUpdateState: () => Promise<
+    { success: true; data: { state: DesktopUpdateState } } | { success: false; error: string }
+  >
+  downloadUpdate: () => Promise<
+    { success: true; data?: { state: DesktopUpdateState } } | { success: false; error: string }
+  >
+  installUpdate: () => Promise<{ success: true } | { success: false; error: string }>
+  onUpdateState: (callback: (state: DesktopUpdateState) => void) => () => void
   getConfig: () => Promise<AppConfig>
   updateConfig: (config: Partial<AppConfig>) => Promise<AppConfig>
   validateApiKey: (
     apiKey: string,
     provider?: ApiProvider
   ) => Promise<{ valid: boolean; error?: string }>
-  openLink: (url: string) => void
+  openLink: (
+    url: string
+  ) => Promise<{ success: boolean; error?: string }>
   openSettingsPortal: () => Promise<void>
   onShowSettings: (callback: () => void) => () => void
+  onShowUninstallOffboarding: (callback: () => void) => () => void
   onApiKeyInvalid: (callback: () => void) => () => void
+  onDeleteLastScreenshot: (callback: () => void) => () => void
+  deleteLastScreenshot: () => Promise<{ success: boolean; error?: string }>
   removeListener: (eventName: string, callback: (...args: any[]) => void) => void
 }
 

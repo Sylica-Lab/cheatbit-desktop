@@ -2,12 +2,13 @@
 
 import path from "node:path";
 import fs from "node:fs";
-import { app } from "electron";
+import { app, nativeImage, screen } from "electron";
 import { v4 as uuidv4 } from "uuid";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import screenshot from "screenshot-desktop";
 import os from "os";
+import type { ScreenRegionSelection } from "./RegionSelectionOverlay";
 
 const execFileAsync = promisify(execFile);
 
@@ -33,7 +34,7 @@ export class ScreenshotHelper {
     );
     this.tempDir = path.join(
       app.getPath("temp"),
-      "interview-coder-screenshots"
+      "sylica-ai-screenshots"
     );
 
     // Create directories if they don't exist
@@ -154,6 +155,203 @@ export class ScreenshotHelper {
     this.extraScreenshotQueue = [];
   }
 
+  private getHideDelay(): number {
+    return process.platform === "win32" ? 220 : 140;
+  }
+
+  private getRestoreDelay(): number {
+    return process.platform === "win32" ? 90 : 60;
+  }
+
+  private getOrderedCaptureDisplays(displays: Array<Record<string, any>>) {
+    if (process.platform === "darwin") {
+      return displays;
+    }
+
+    return [...displays].sort((left, right) => {
+      const leftX =
+        typeof left.left === "number" ? left.left : Number(left.offsetX) || 0;
+      const rightX =
+        typeof right.left === "number" ? right.left : Number(right.offsetX) || 0;
+
+      if (leftX !== rightX) {
+        return leftX - rightX;
+      }
+
+      const leftY =
+        typeof left.top === "number" ? left.top : Number(left.offsetY) || 0;
+      const rightY =
+        typeof right.top === "number" ? right.top : Number(right.offsetY) || 0;
+
+      return leftY - rightY;
+    });
+  }
+
+  private async captureDisplayScreenshot(displayIndex: number): Promise<Buffer> {
+    if (process.platform === "win32") {
+      return this.captureScreenshot();
+    }
+
+    const displays = this.getOrderedCaptureDisplays(
+      (await screenshot.listDisplays()) as Array<Record<string, any>>
+    );
+    const targetDisplay = displays[displayIndex] || displays[0];
+
+    if (!targetDisplay) {
+      return this.captureScreenshot();
+    }
+
+    console.log("Capturing screenshot for display:", targetDisplay);
+    return screenshot({
+      format: "png",
+      screen: targetDisplay.id,
+    } as any);
+  }
+
+  private getVirtualDisplayBounds() {
+    const displays = screen.getAllDisplays();
+
+    if (displays.length === 0) {
+      return {
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 1,
+      };
+    }
+
+    const minX = Math.min(...displays.map((display) => display.bounds.x));
+    const minY = Math.min(...displays.map((display) => display.bounds.y));
+    const maxRight = Math.max(
+      ...displays.map((display) => display.bounds.x + display.bounds.width)
+    );
+    const maxBottom = Math.max(
+      ...displays.map((display) => display.bounds.y + display.bounds.height)
+    );
+
+    return {
+      x: minX,
+      y: minY,
+      width: Math.max(1, maxRight - minX),
+      height: Math.max(1, maxBottom - minY),
+    };
+  }
+
+  private cropScreenshotBuffer(
+    screenshotBuffer: Buffer,
+    selection: ScreenRegionSelection
+  ): Buffer {
+    const image = nativeImage.createFromBuffer(screenshotBuffer);
+    const size = image.getSize();
+    const sourceBounds =
+      process.platform === "win32"
+        ? this.getVirtualDisplayBounds()
+        : {
+            x: 0,
+            y: 0,
+            width: selection.displayBounds.width,
+            height: selection.displayBounds.height,
+          };
+    const regionX =
+      process.platform === "win32"
+        ? selection.displayOrigin.x + selection.region.x - sourceBounds.x
+        : selection.region.x;
+    const regionY =
+      process.platform === "win32"
+        ? selection.displayOrigin.y + selection.region.y - sourceBounds.y
+        : selection.region.y;
+
+    const scaleX = size.width / Math.max(sourceBounds.width, 1);
+    const scaleY = size.height / Math.max(sourceBounds.height, 1);
+
+    const cropX = Math.max(
+      0,
+      Math.min(size.width - 1, Math.round(regionX * scaleX))
+    );
+    const cropY = Math.max(
+      0,
+      Math.min(size.height - 1, Math.round(regionY * scaleY))
+    );
+    const cropWidth = Math.max(
+      1,
+      Math.min(
+        size.width - cropX,
+        Math.round(selection.region.width * scaleX)
+      )
+    );
+    const cropHeight = Math.max(
+      1,
+      Math.min(
+        size.height - cropY,
+        Math.round(selection.region.height * scaleY)
+      )
+    );
+
+    return image
+      .crop({
+        x: cropX,
+        y: cropY,
+        width: cropWidth,
+        height: cropHeight,
+      })
+      .toPNG();
+  }
+
+  private async storeScreenshotBuffer(screenshotBuffer: Buffer): Promise<string> {
+    let screenshotPath = "";
+
+    if (this.view === "queue") {
+      screenshotPath = path.join(this.screenshotDir, `${uuidv4()}.png`);
+      const screenshotDir = path.dirname(screenshotPath);
+      if (!fs.existsSync(screenshotDir)) {
+        fs.mkdirSync(screenshotDir, { recursive: true });
+      }
+      await fs.promises.writeFile(screenshotPath, screenshotBuffer);
+      console.log("Adding screenshot to main queue:", screenshotPath);
+      this.screenshotQueue.push(screenshotPath);
+      if (this.screenshotQueue.length > this.MAX_SCREENSHOTS) {
+        const removedPath = this.screenshotQueue.shift();
+        if (removedPath) {
+          try {
+            await fs.promises.unlink(removedPath);
+            console.log(
+              "Removed old screenshot from main queue:",
+              removedPath
+            );
+          } catch (error) {
+            console.error("Error removing old screenshot:", error);
+          }
+        }
+      }
+      return screenshotPath;
+    }
+
+    screenshotPath = path.join(this.extraScreenshotDir, `${uuidv4()}.png`);
+    const screenshotDir = path.dirname(screenshotPath);
+    if (!fs.existsSync(screenshotDir)) {
+      fs.mkdirSync(screenshotDir, { recursive: true });
+    }
+    await fs.promises.writeFile(screenshotPath, screenshotBuffer);
+    console.log("Adding screenshot to extra queue:", screenshotPath);
+    this.extraScreenshotQueue.push(screenshotPath);
+    if (this.extraScreenshotQueue.length > this.MAX_SCREENSHOTS) {
+      const removedPath = this.extraScreenshotQueue.shift();
+      if (removedPath) {
+        try {
+          await fs.promises.unlink(removedPath);
+          console.log(
+            "Removed old screenshot from extra queue:",
+            removedPath
+          );
+        } catch (error) {
+          console.error("Error removing old screenshot:", error);
+        }
+      }
+    }
+
+    return screenshotPath;
+  }
+
   private async captureScreenshot(): Promise<Buffer> {
     try {
       console.log("Starting screenshot capture...");
@@ -182,43 +380,11 @@ export class ScreenshotHelper {
   private async captureWindowsScreenshot(): Promise<Buffer> {
     console.log("Attempting Windows screenshot with multiple methods");
 
-    // Method 1: Try screenshot-desktop with filename first
+    // Method 1: PowerShell capture is the most reliable in the bundled app.
     try {
+      console.log("Attempting Windows screenshot with PowerShell (Method 1)");
       const tempFile = path.join(this.tempDir, `temp-${uuidv4()}.png`);
-      console.log(
-        `Taking Windows screenshot to temp file (Method 1): ${tempFile}`
-      );
-
-      await screenshot({ filename: tempFile });
-
-      if (fs.existsSync(tempFile)) {
-        const buffer = await fs.promises.readFile(tempFile);
-        console.log(
-          `Method 1 successful, screenshot size: ${buffer.length} bytes`
-        );
-
-        // Cleanup temp file
-        try {
-          await fs.promises.unlink(tempFile);
-        } catch (cleanupErr) {
-          console.warn("Failed to clean up temp file:", cleanupErr);
-        }
-
-        return buffer;
-      } else {
-        console.log("Method 1 failed: File not created");
-        throw new Error("Screenshot file not created");
-      }
-    } catch (error) {
-      console.warn("Windows screenshot Method 1 failed:", error);
-
-      // Method 2: Try using PowerShell
-      try {
-        console.log("Attempting Windows screenshot with PowerShell (Method 2)");
-        const tempFile = path.join(this.tempDir, `ps-temp-${uuidv4()}.png`);
-
-        // PowerShell command to take screenshot using .NET classes
-        const psScript = `
+      const psScript = `
         Add-Type -AssemblyName System.Windows.Forms,System.Drawing
         $screens = [System.Windows.Forms.Screen]::AllScreens
         $top = ($screens | ForEach-Object {$_.Bounds.Top} | Measure-Object -Minimum).Minimum
@@ -237,49 +403,60 @@ export class ScreenshotHelper {
         $bmp.Dispose()
         `;
 
-        // Execute PowerShell
-        await execFileAsync("powershell", [
-          "-NoProfile",
-          "-ExecutionPolicy",
-          "Bypass",
-          "-Command",
-          psScript,
-        ]);
+      await execFileAsync("powershell", [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        psScript,
+      ]);
 
-        // Check if file exists and read it
+      if (fs.existsSync(tempFile)) {
+        const buffer = await fs.promises.readFile(tempFile);
+        console.log(
+          `Method 1 successful, screenshot size: ${buffer.length} bytes`
+        );
+
+        try {
+          await fs.promises.unlink(tempFile);
+        } catch (cleanupErr) {
+          console.warn("Failed to clean up PowerShell temp file:", cleanupErr);
+        }
+
+        return buffer;
+      }
+
+      throw new Error("PowerShell screenshot file not created");
+    } catch (psError) {
+      console.warn("Windows screenshot Method 1 failed:", psError);
+
+      // Method 2: Try screenshot-desktop when available in non-bundled environments.
+      try {
+        const tempFile = path.join(this.tempDir, `sd-temp-${uuidv4()}.png`);
+        console.log(
+          `Attempting screenshot-desktop capture (Method 2): ${tempFile}`
+        );
+
+        await screenshot({ filename: tempFile });
+
         if (fs.existsSync(tempFile)) {
           const buffer = await fs.promises.readFile(tempFile);
           console.log(
             `Method 2 successful, screenshot size: ${buffer.length} bytes`
           );
 
-          // Cleanup
           try {
             await fs.promises.unlink(tempFile);
-          } catch (err) {
-            console.warn("Failed to clean up PowerShell temp file:", err);
+          } catch (cleanupErr) {
+            console.warn("Failed to clean up temp file:", cleanupErr);
           }
 
           return buffer;
-        } else {
-          throw new Error("PowerShell screenshot file not created");
         }
-      } catch (psError) {
-        console.warn("Windows PowerShell screenshot failed:", psError);
 
-        // Method 3: Last resort - create a tiny placeholder image
-        console.log(
-          "All screenshot methods failed, creating placeholder image"
-        );
-
-        // Create a 1x1 transparent PNG as fallback
-        const fallbackBuffer = Buffer.from(
-          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
-          "base64"
-        );
-        console.log("Created placeholder image as fallback");
-
-        // Show the error but return a valid buffer so the app doesn't crash
+        throw new Error("Screenshot file not created");
+      } catch (error) {
+        console.warn("Windows screenshot Method 2 failed:", error);
         throw new Error(
           "Could not capture screenshot with any method. Please check your Windows security settings and try again."
         );
@@ -294,78 +471,89 @@ export class ScreenshotHelper {
     console.log("Taking screenshot in view:", this.view);
     hideMainWindow();
 
-    // Increased delay for window hiding on Windows
-    const hideDelay = process.platform === "win32" ? 500 : 300;
-    await new Promise((resolve) => setTimeout(resolve, hideDelay));
+    await new Promise((resolve) => setTimeout(resolve, this.getHideDelay()));
 
-    let screenshotPath = "";
+    let screenshotBuffer: Buffer | null = null;
     try {
-      // Get screenshot buffer using cross-platform method
-      const screenshotBuffer = await this.captureScreenshot();
+      screenshotBuffer = await this.captureScreenshot();
 
       if (!screenshotBuffer || screenshotBuffer.length === 0) {
         throw new Error("Screenshot capture returned empty buffer");
-      }
-
-      // Save and manage the screenshot based on current view
-      if (this.view === "queue") {
-        screenshotPath = path.join(this.screenshotDir, `${uuidv4()}.png`);
-        const screenshotDir = path.dirname(screenshotPath);
-        if (!fs.existsSync(screenshotDir)) {
-          fs.mkdirSync(screenshotDir, { recursive: true });
-        }
-        await fs.promises.writeFile(screenshotPath, screenshotBuffer);
-        console.log("Adding screenshot to main queue:", screenshotPath);
-        this.screenshotQueue.push(screenshotPath);
-        if (this.screenshotQueue.length > this.MAX_SCREENSHOTS) {
-          const removedPath = this.screenshotQueue.shift();
-          if (removedPath) {
-            try {
-              await fs.promises.unlink(removedPath);
-              console.log(
-                "Removed old screenshot from main queue:",
-                removedPath
-              );
-            } catch (error) {
-              console.error("Error removing old screenshot:", error);
-            }
-          }
-        }
-      } else {
-        // In solutions view, only add to extra queue
-        screenshotPath = path.join(this.extraScreenshotDir, `${uuidv4()}.png`);
-        const screenshotDir = path.dirname(screenshotPath);
-        if (!fs.existsSync(screenshotDir)) {
-          fs.mkdirSync(screenshotDir, { recursive: true });
-        }
-        await fs.promises.writeFile(screenshotPath, screenshotBuffer);
-        console.log("Adding screenshot to extra queue:", screenshotPath);
-        this.extraScreenshotQueue.push(screenshotPath);
-        if (this.extraScreenshotQueue.length > this.MAX_SCREENSHOTS) {
-          const removedPath = this.extraScreenshotQueue.shift();
-          if (removedPath) {
-            try {
-              await fs.promises.unlink(removedPath);
-              console.log(
-                "Removed old screenshot from extra queue:",
-                removedPath
-              );
-            } catch (error) {
-              console.error("Error removing old screenshot:", error);
-            }
-          }
-        }
       }
     } catch (error) {
       console.error("Screenshot error:", error);
       throw error;
     } finally {
-      // Increased delay for showing window again
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      await new Promise((resolve) => setTimeout(resolve, this.getRestoreDelay()));
       showMainWindow();
     }
 
-    return screenshotPath;
+    if (!screenshotBuffer || screenshotBuffer.length === 0) {
+      throw new Error("Screenshot capture returned empty buffer");
+    }
+
+    return this.storeScreenshotBuffer(screenshotBuffer);
+  }
+
+  public async takeRegionScreenshot(
+    selection: ScreenRegionSelection,
+    showMainWindow: () => void
+  ): Promise<string> {
+    let screenshotBuffer: Buffer | null = null;
+
+    try {
+      const displayBuffer = await this.captureDisplayScreenshot(
+        selection.captureDisplayIndex
+      );
+      screenshotBuffer = this.cropScreenshotBuffer(displayBuffer, selection);
+
+      if (!screenshotBuffer || screenshotBuffer.length === 0) {
+        throw new Error("Region screenshot capture returned empty buffer");
+      }
+    } catch (error) {
+      console.error("Region screenshot error:", error);
+      throw error;
+    } finally {
+      await new Promise((resolve) => setTimeout(resolve, this.getRestoreDelay()));
+      showMainWindow();
+    }
+
+    if (!screenshotBuffer || screenshotBuffer.length === 0) {
+      throw new Error("Region screenshot capture returned empty buffer");
+    }
+
+    return this.storeScreenshotBuffer(screenshotBuffer);
+  }
+
+  public async captureEphemeralScreenshot(
+    hideMainWindow: () => void,
+    showMainWindow: () => void
+  ): Promise<{ data: string; preview: string }> {
+    hideMainWindow();
+
+    await new Promise((resolve) => setTimeout(resolve, this.getHideDelay()));
+
+    let screenshotBuffer: Buffer | null = null;
+    try {
+      screenshotBuffer = await this.captureScreenshot();
+
+      if (!screenshotBuffer || screenshotBuffer.length === 0) {
+        throw new Error("Screenshot capture returned empty buffer");
+      }
+    } finally {
+      await new Promise((resolve) => setTimeout(resolve, this.getRestoreDelay()));
+      showMainWindow();
+    }
+
+    if (!screenshotBuffer || screenshotBuffer.length === 0) {
+      throw new Error("Screenshot capture returned empty buffer");
+    }
+
+    const base64 = screenshotBuffer.toString("base64");
+    return {
+      data: base64,
+      preview: `data:image/png;base64,${base64}`,
+    };
   }
 
   public async getImagePreview(filepath: string): Promise<string> {

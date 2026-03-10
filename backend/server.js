@@ -7,6 +7,10 @@ const dotenv = require("dotenv");
 const { Client } = require("pg");
 const Stripe = require("stripe");
 const { getBuiltInStripeConfig } = require("./builtInBillingConfig");
+const schemaSql = require("./schemaText");
+
+const CURRENT_DIR =
+  typeof __dirname === "string" ? __dirname : process.cwd();
 
 loadEnvVariables();
 
@@ -25,35 +29,64 @@ const builtInStripeConfig = shouldUseBuiltInStripeConfig()
       publicUrl: "",
       billingReturnUrl: "",
     };
+const IS_RENDER = process.env.RENDER === "true";
 const PLATFORM_PORT = normalizePort(process.env.PORT);
 
 const HOST =
-  PLATFORM_PORT != null
+  PLATFORM_PORT != null || IS_RENDER
     ? "0.0.0.0"
     : process.env.BACKEND_HOST || process.env.HOST || "127.0.0.1";
-const PORT = PLATFORM_PORT || normalizePort(process.env.BACKEND_PORT) || 8787;
-const PUBLIC_DIR = path.join(__dirname, "public");
-const SCHEMA_PATH = path.join(__dirname, "schema.sql");
+const PORT =
+  PLATFORM_PORT ||
+  normalizePort(process.env.BACKEND_PORT) ||
+  (IS_RENDER ? 10000 : 8787);
+const PUBLIC_DIR = path.join(CURRENT_DIR, "public");
 const MIGRATE_ONLY = process.argv.includes("--migrate-only");
 const TOKEN_SECRET =
-  process.env.BACKEND_TOKEN_SECRET || "interview-coder-dev-secret";
+  process.env.BACKEND_TOKEN_SECRET || "cheatbit-dev-secret";
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "admin@example.com";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "change-me-now";
 const DATABASE_URL =
   process.env.DATABASE_URL ||
   process.env.POSTGRES_URL ||
-  "postgresql://postgres:postgres@127.0.0.1:5432/interview_coder";
+  "postgresql://postgres:postgres@127.0.0.1:5432/cheatbit";
 const USE_SSL =
   process.env.DATABASE_SSL === "true" || process.env.PGSSLMODE === "require";
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+const DODO_PAYMENTS_API_KEY = resolveConfiguredString(
+  process.env.DODO_PAYMENTS_API_KEY,
+  process.env.DODO_API_KEY
+);
+const DODO_WEBHOOK_SECRET = resolveConfiguredString(
+  process.env.DODO_PAYMENTS_WEBHOOK_SECRET,
+  process.env.DODO_WEBHOOK_SECRET
+);
+const DODO_PRODUCT_ID = resolveConfiguredString(process.env.DODO_PRODUCT_ID);
+const DODO_PRODUCT_NAME =
+  resolveConfiguredString(process.env.DODO_PRODUCT_NAME) ||
+  "Sylica AI Unlimited";
+const DODO_MONTHLY_PRICE_USD = normalizePositiveNumber(
+  process.env.DODO_MONTHLY_PRICE_USD,
+  20
+);
+const DODO_ENVIRONMENT = normalizeDodoEnvironment(
+  process.env.DODO_PAYMENTS_ENVIRONMENT || process.env.DODO_ENVIRONMENT
+);
+const DODO_API_BASE_URL =
+  DODO_ENVIRONMENT === "test_mode"
+    ? "https://test.dodopayments.com"
+    : "https://live.dodopayments.com";
 const STRIPE_SECRET_KEY = resolveConfiguredString(
   process.env.STRIPE_SECRET_KEY,
   builtInStripeConfig.secretKey
 );
-const STRIPE_WEBHOOK_SECRET = resolveConfiguredString(
+const STRIPE_WEBHOOK_SECRETS = resolveConfiguredString(
   process.env.STRIPE_WEBHOOK_SECRET,
   builtInStripeConfig.webhookSecret
-);
+)
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
 const STRIPE_PRICE_ID = resolveConfiguredString(
   process.env.STRIPE_PRICE_ID,
   builtInStripeConfig.priceId
@@ -63,7 +96,7 @@ const STRIPE_PRODUCT_NAME =
     process.env.STRIPE_PRODUCT_NAME,
     builtInStripeConfig.productName
   ) ||
-  "CheatBit Unlimited";
+  "Sylica AI Unlimited";
 const STRIPE_MONTHLY_PRICE_USD = normalizePositiveNumber(
   process.env.STRIPE_MONTHLY_PRICE_USD,
   normalizePositiveNumber(builtInStripeConfig.monthlyPriceUsd, 20)
@@ -86,15 +119,29 @@ const BILLING_RETURN_URL = (
 ).replace(/\/$/, "");
 
 const PLAN_LIMITS = {
-  free: { solveDaily: 20, debugDaily: 8, requestsPerHour: 40 },
+  free: { solveDaily: 20, debugDaily: 20, requestsPerHour: 20 },
   pro: { solveDaily: 1_000_000, debugDaily: 1_000_000, requestsPerHour: 1_000_000 },
   enterprise: { solveDaily: 2000, debugDaily: 800, requestsPerHour: 1200 },
 };
+const dodoBillingEnabled = Boolean(DODO_PAYMENTS_API_KEY);
 const stripe = STRIPE_SECRET_KEY ? Stripe(STRIPE_SECRET_KEY) : null;
-const stripeWebhookConfigured = Boolean(stripe && STRIPE_WEBHOOK_SECRET);
+const stripeWebhookConfigured = Boolean(stripe && STRIPE_WEBHOOK_SECRETS.length > 0);
+const activeBillingProvider = dodoBillingEnabled
+  ? "dodo"
+  : stripe
+    ? "stripe"
+    : "manual";
+const BILLING_PRODUCT_NAME =
+  activeBillingProvider === "dodo" ? DODO_PRODUCT_NAME : STRIPE_PRODUCT_NAME;
+const BILLING_MONTHLY_PRICE_USD =
+  activeBillingProvider === "dodo"
+    ? DODO_MONTHLY_PRICE_USD
+    : STRIPE_MONTHLY_PRICE_USD;
 let databaseInitialized = false;
 let workerInitializationPromise = null;
 let nodeStartupPromise = null;
+let dodoProductIdPromise = null;
+let standardWebhooksModulePromise = null;
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -116,7 +163,7 @@ const server = http.createServer(async (req, res) => {
       const row = nowResult.rows[0];
       sendJson(res, 200, {
         ok: true,
-        service: "cheatbit-backend",
+        service: "sylica-ai-backend",
         now: toIso(row.now),
         database: row.database_name,
       });
@@ -145,21 +192,34 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && pathname === "/billing/return") {
-      if (url.searchParams.get("status") === "success") {
-        const checkoutSessionId = String(
-          url.searchParams.get("session_id") || ""
-        ).trim();
+      try {
+        if (activeBillingProvider === "dodo") {
+          const subscriptionId = String(
+            url.searchParams.get("subscription_id") || ""
+          ).trim();
+          const paymentId = String(
+            url.searchParams.get("payment_id") || ""
+          ).trim();
 
-        if (checkoutSessionId && stripe) {
-          try {
+          if (subscriptionId) {
+            await syncDodoSubscriptionById(subscriptionId);
+          } else if (paymentId) {
+            await syncDodoPaymentById(paymentId);
+          }
+        } else if (url.searchParams.get("status") === "success") {
+          const checkoutSessionId = String(
+            url.searchParams.get("session_id") || ""
+          ).trim();
+
+          if (checkoutSessionId && stripe) {
             await syncCheckoutSessionById(checkoutSessionId);
-          } catch (error) {
-            console.error(
-              "Failed to sync Stripe checkout session on billing return:",
-              error
-            );
           }
         }
+      } catch (error) {
+        console.error(
+          `Failed to sync ${activeBillingProvider} checkout session on billing return:`,
+          error
+        );
       }
 
       serveBillingReturnPage(res, {
@@ -169,7 +229,62 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && pathname === "/api/billing/webhook") {
-      if (!stripe || !STRIPE_WEBHOOK_SECRET) {
+      const rawBody = await parseRawBody(req);
+
+      if (activeBillingProvider === "dodo") {
+        if (!DODO_WEBHOOK_SECRET) {
+          sendJson(res, 503, {
+            error: "Dodo Payments webhooks are not configured on this backend.",
+          });
+          return;
+        }
+
+        let event;
+        try {
+          event = await verifyDodoWebhook(rawBody, req.headers);
+        } catch (error) {
+          console.error("Failed to verify Dodo webhook signature:", {
+            message:
+              error instanceof Error
+                ? error.message
+                : "Invalid Dodo Payments webhook signature.",
+            hasWebhookId: Boolean(req.headers["webhook-id"]),
+            hasWebhookSignature: Boolean(req.headers["webhook-signature"]),
+            hasWebhookTimestamp: Boolean(req.headers["webhook-timestamp"]),
+          });
+          sendJson(res, 400, {
+            error:
+              error instanceof Error
+                ? error.message
+                : "Invalid Dodo Payments webhook signature.",
+          });
+          return;
+        }
+
+        try {
+          await handleDodoWebhookEvent(event);
+        } catch (error) {
+          console.error("Failed to process Dodo webhook event:", {
+            type: String(event?.type || ""),
+            message:
+              error instanceof Error
+                ? error.message
+                : "Unknown Dodo webhook processing error.",
+          });
+          sendJson(res, 500, {
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to process Dodo Payments webhook.",
+          });
+          return;
+        }
+
+        sendJson(res, 200, { received: true });
+        return;
+      }
+
+      if (!stripe || STRIPE_WEBHOOK_SECRETS.length === 0) {
         sendJson(res, 503, {
           error: "Stripe webhooks are not configured on this backend.",
         });
@@ -182,16 +297,21 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const rawBody = await parseRawBody(req);
-
       let event;
-      try {
-        event = stripe.webhooks.constructEvent(
-          rawBody,
-          signature,
-          STRIPE_WEBHOOK_SECRET
-        );
-      } catch (error) {
+      for (const webhookSecret of STRIPE_WEBHOOK_SECRETS) {
+        try {
+          event = stripe.webhooks.constructEvent(
+            rawBody,
+            signature,
+            webhookSecret
+          );
+          break;
+        } catch (_error) {
+          // Keep trying until one of the configured webhook secrets validates.
+        }
+      }
+
+      if (!event) {
         sendJson(res, 400, {
           error: "Invalid Stripe webhook signature.",
         });
@@ -293,6 +413,95 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "GET" && pathname === "/api/chat/threads") {
+      const auth = await requireUser(req);
+      if (!auth.ok) {
+        sendJson(res, auth.status, { error: auth.error });
+        return;
+      }
+
+      const requestedMode = String(url.searchParams.get("mode") || "general");
+      if (!isChatMode(requestedMode)) {
+        sendJson(res, 400, { error: "A valid chat mode is required." });
+        return;
+      }
+
+      const threads = await listChatThreads(auth.user.id, requestedMode);
+      sendJson(res, 200, { threads });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/chat/threads") {
+      const auth = await requireUser(req);
+      if (!auth.ok) {
+        sendJson(res, auth.status, { error: auth.error });
+        return;
+      }
+
+      const body = await parseJsonBody(req);
+      const mode = isChatMode(body.mode) ? body.mode : "general";
+      const thread = await createChatThread({
+        id: createId("thr"),
+        userId: auth.user.id,
+        mode,
+        title: summarizeChatTitle(body.title),
+      });
+
+      sendJson(res, 201, { thread });
+      return;
+    }
+
+    const chatMessagesMatch = pathname.match(/^\/api\/chat\/threads\/([^/]+)\/messages$/);
+    if (chatMessagesMatch) {
+      const auth = await requireUser(req);
+      if (!auth.ok) {
+        sendJson(res, auth.status, { error: auth.error });
+        return;
+      }
+
+      const threadId = decodeURIComponent(chatMessagesMatch[1]);
+      const thread = await getChatThreadForUser(threadId, auth.user.id);
+
+      if (!thread) {
+        sendJson(res, 404, { error: "Chat thread not found." });
+        return;
+      }
+
+      if (req.method === "GET") {
+        const messages = await listChatMessages(threadId, auth.user.id);
+        sendJson(res, 200, { thread, messages });
+        return;
+      }
+
+      if (req.method === "POST") {
+        const body = await parseJsonBody(req);
+        const role = isChatRole(body.role) ? body.role : null;
+        const content = normalizeChatContent(body.content);
+
+        if (!role || !content) {
+          sendJson(res, 400, {
+            error: "A valid role and non-empty message content are required.",
+          });
+          return;
+        }
+
+        const message = await appendChatMessage({
+          id: createId("msg"),
+          threadId,
+          userId: auth.user.id,
+          role,
+          content,
+        });
+        const updatedThread = await getChatThreadForUser(threadId, auth.user.id);
+
+        sendJson(res, 201, {
+          thread: updatedThread,
+          message,
+        });
+        return;
+      }
+    }
+
     if (req.method === "GET" && pathname === "/api/usage/summary") {
       const auth = await requireUser(req);
       if (!auth.ok) {
@@ -347,14 +556,17 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      if (!stripe) {
+      if (activeBillingProvider === "manual") {
         sendJson(res, 503, {
-          error: "Stripe billing is not configured on this backend.",
+          error: "Billing is not configured on this backend.",
         });
         return;
       }
 
-      const checkoutSession = await createStripeCheckoutSession(auth.user);
+      const checkoutSession =
+        activeBillingProvider === "dodo"
+          ? await createDodoCheckoutSession(auth.user)
+          : await createStripeCheckoutSession(auth.user);
       sendJson(res, 200, { url: checkoutSession.url });
       return;
     }
@@ -366,14 +578,17 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      if (!stripe) {
+      if (activeBillingProvider === "manual") {
         sendJson(res, 503, {
-          error: "Stripe billing is not configured on this backend.",
+          error: "Billing is not configured on this backend.",
         });
         return;
       }
 
-      const portalSession = await createStripePortalSession(auth.user);
+      const portalSession =
+        activeBillingProvider === "dodo"
+          ? await createDodoPortalSession(auth.user)
+          : await createStripePortalSession(auth.user);
       sendJson(res, 200, { url: portalSession.url });
       return;
     }
@@ -508,7 +723,6 @@ if (require.main === module) {
 }
 
 async function initializeDatabase() {
-  const schemaSql = fs.readFileSync(SCHEMA_PATH, "utf8");
   await query(schemaSql);
   await seedAdmin();
   databaseInitialized = true;
@@ -540,7 +754,7 @@ async function startNodeServer() {
 
     if (MIGRATE_ONLY) {
       console.log(
-        `CheatBit PostgreSQL migration complete: ${describeDatabaseTarget()}`
+        `Sylica AI PostgreSQL migration complete: ${describeDatabaseTarget()}`
       );
       return;
     }
@@ -551,17 +765,21 @@ async function startNodeServer() {
         server.listen(PORT, HOST, () => {
           server.removeListener("error", reject);
           console.log(
-            `CheatBit backend listening on http://${HOST}:${PORT} (dashboard at /admin)`
+            `Sylica AI backend listening on http://${HOST}:${PORT} (dashboard at /admin)`
           );
           console.log(`PostgreSQL: ${describeDatabaseTarget()}`);
           console.log(`Admin login: ${ADMIN_EMAIL}`);
-          if (stripe) {
+          if (activeBillingProvider === "dodo") {
+            console.log(
+              `Dodo Payments billing: checkout enabled${DODO_WEBHOOK_SECRET ? " with webhook sync" : " without webhook sync"}`
+            );
+          } else if (stripe) {
             console.log(
               `Stripe billing: checkout enabled${stripeWebhookConfigured ? " with webhook sync" : " without webhook sync"}`
             );
           } else {
             console.warn(
-              "Stripe billing disabled. Set STRIPE_SECRET_KEY in .env."
+              "Billing disabled. Set DODO_PAYMENTS_API_KEY or STRIPE_SECRET_KEY in .env."
             );
           }
           resolve();
@@ -576,8 +794,8 @@ async function startNodeServer() {
 function loadEnvVariables() {
   const candidatePaths = [
     path.join(process.cwd(), ".env"),
-    path.join(__dirname, ".env"),
-    path.join(__dirname, "..", ".env"),
+    path.join(CURRENT_DIR, ".env"),
+    path.join(CURRENT_DIR, "..", ".env"),
     typeof process.resourcesPath === "string"
       ? path.join(process.resourcesPath, ".env")
       : null,
@@ -603,6 +821,14 @@ function describeDatabaseTarget() {
 
 function shouldUseBuiltInStripeConfig() {
   if (WORKER_RUNTIME) {
+    return false;
+  }
+
+  if (
+    process.env.DODO_PAYMENTS_API_KEY ||
+    process.env.DODO_API_KEY ||
+    process.env.DISABLE_STRIPE_BILLING === "true"
+  ) {
     return false;
   }
 
@@ -719,11 +945,11 @@ function serveBillingReturnPage(res, options) {
       : "Billing portal closed";
   const description =
     status === "success"
-      ? "Your CheatBit subscription has been updated. Return to the app and refresh the dashboard."
+      ? "Your Sylica AI subscription has been updated. Return to the app and refresh the dashboard."
       : status === "cancelled"
-      ? "The Stripe checkout was cancelled. You can return to the app and try again at any time."
-      : "You can return to CheatBit now.";
-  const appUrl = `interview-coder://billing/return?status=${encodeURIComponent(
+      ? "The checkout was cancelled. You can return to the app and try again at any time."
+      : "You can return to Sylica AI now.";
+  const appUrl = `sylica-ai://billing/return?status=${encodeURIComponent(
     status
   )}`;
   const html = `<!doctype html>
@@ -783,7 +1009,7 @@ function serveBillingReturnPage(res, options) {
     <main>
       <h1>${escapeHtml(title)}</h1>
       <p>${escapeHtml(description)}</p>
-      <a href="${escapeHtml(appUrl)}">Return to CheatBit</a>
+      <a href="${escapeHtml(appUrl)}">Return to Sylica AI</a>
       <div class="hint">If the app does not open automatically, use the button above and then refresh the dashboard once.</div>
     </main>
     <script>
@@ -799,6 +1025,396 @@ function serveBillingReturnPage(res, options) {
     "Content-Length": Buffer.byteLength(html),
   });
   res.end(html);
+}
+
+async function createDodoCheckoutSession(user) {
+  if (!dodoBillingEnabled) {
+    throw new Error("Dodo Payments is not configured on this backend.");
+  }
+
+  const productId = await resolveDodoProductId();
+  const session = await dodoApiRequest("POST", "/checkouts", {
+    product_cart: [
+      {
+        product_id: productId,
+        quantity: 1,
+      },
+    ],
+    customer: {
+      email: user.email,
+      name: user.name,
+    },
+    return_url: BILLING_RETURN_URL,
+    metadata: {
+      appUserId: user.id,
+      appUserEmail: user.email,
+    },
+  });
+
+  const checkoutUrl = String(
+    session.checkout_url || session.payment_link || session.url || ""
+  ).trim();
+  if (!checkoutUrl) {
+    throw new Error("Dodo Payments did not return a checkout URL.");
+  }
+
+  return { url: checkoutUrl };
+}
+
+async function createDodoPortalSession(user) {
+  if (!dodoBillingEnabled) {
+    throw new Error("Dodo Payments is not configured on this backend.");
+  }
+
+  const customerId = String(user.dodoCustomerId || "").trim();
+  if (!customerId) {
+    throw new Error(
+      "No Dodo customer was found for this account yet. Complete checkout once before opening billing."
+    );
+  }
+
+  const session = await dodoApiRequest(
+    "POST",
+    `/customers/${encodeURIComponent(customerId)}/customer-portal/session`
+  );
+  const portalUrl = String(
+    session.link || session.url || session.customer_portal_url || ""
+  ).trim();
+
+  if (!portalUrl) {
+    throw new Error("Dodo Payments did not return a billing portal URL.");
+  }
+
+  return { url: portalUrl };
+}
+
+async function verifyDodoWebhook(rawBody, headers) {
+  if (!DODO_WEBHOOK_SECRET) {
+    throw new Error("Dodo Payments webhook secret is missing.");
+  }
+
+  const webhookHeaders = {
+    "webhook-id": String(headers["webhook-id"] || ""),
+    "webhook-signature": String(headers["webhook-signature"] || ""),
+    "webhook-timestamp": String(headers["webhook-timestamp"] || ""),
+  };
+
+  if (
+    !webhookHeaders["webhook-id"] ||
+    !webhookHeaders["webhook-signature"] ||
+    !webhookHeaders["webhook-timestamp"]
+  ) {
+    throw new Error("Missing Dodo Payments webhook verification headers.");
+  }
+
+  if (!standardWebhooksModulePromise) {
+    standardWebhooksModulePromise = import("standardwebhooks");
+  }
+
+  const { Webhook } = await standardWebhooksModulePromise;
+  const verifier = new Webhook(DODO_WEBHOOK_SECRET);
+  const payload = verifier.verify(rawBody.toString("utf8"), webhookHeaders);
+  return typeof payload === "string" ? JSON.parse(payload) : payload;
+}
+
+async function handleDodoWebhookEvent(event) {
+  const eventType = String(event?.type || "");
+  const payload = event?.data || {};
+
+  if (eventType.startsWith("subscription.")) {
+    await syncDodoSubscriptionObject(payload);
+    return;
+  }
+
+  if (eventType.startsWith("payment.")) {
+    const subscriptionId = extractDodoId(
+      payload.subscription_id,
+      payload.subscription?.subscription_id,
+      payload.subscription?.id
+    );
+
+    if (subscriptionId) {
+      await syncDodoSubscriptionById(subscriptionId);
+      return;
+    }
+
+    const paymentId = extractDodoId(payload.payment_id, payload.id);
+    if (paymentId) {
+      await syncDodoPaymentById(paymentId);
+    }
+  }
+}
+
+async function syncDodoPaymentById(paymentId, hintedUserId = null) {
+  if (!dodoBillingEnabled || !paymentId) {
+    return null;
+  }
+
+  const payment = await dodoApiRequest(
+    "GET",
+    `/payments/${encodeURIComponent(paymentId)}`
+  );
+  const subscriptionId = extractDodoId(
+    payment.subscription_id,
+    payment.subscription?.subscription_id,
+    payment.subscription?.id
+  );
+  const customerId = extractDodoId(
+    payment.customer_id,
+    payment.customer?.customer_id,
+    payment.customer?.id
+  );
+  const metadataUserId =
+    payment.metadata?.appUserId || payment.metadata?.app_user_id || hintedUserId;
+
+  if (subscriptionId) {
+    return syncDodoSubscriptionById(subscriptionId, metadataUserId, customerId);
+  }
+
+  if (customerId && metadataUserId) {
+    return updateUserBillingState(metadataUserId, {
+      dodoCustomerId: customerId,
+      subscriptionSource: "dodo",
+    });
+  }
+
+  return null;
+}
+
+async function syncDodoSubscriptionById(
+  subscriptionId,
+  hintedUserId = null,
+  hintedCustomerId = null
+) {
+  if (!dodoBillingEnabled || !subscriptionId) {
+    return null;
+  }
+
+  const subscription = await dodoApiRequest(
+    "GET",
+    `/subscriptions/${encodeURIComponent(subscriptionId)}`
+  );
+  return syncDodoSubscriptionObject(subscription, hintedUserId, hintedCustomerId);
+}
+
+async function syncDodoSubscriptionObject(
+  subscription,
+  hintedUserId = null,
+  hintedCustomerId = null
+) {
+  const subscriptionId = extractDodoId(
+    subscription.subscription_id,
+    subscription.id
+  );
+  const customerId = extractDodoId(
+    hintedCustomerId,
+    subscription.customer_id,
+    subscription.customer?.customer_id,
+    subscription.customer?.id
+  );
+  const customerEmail = normalizeEmail(
+    subscription.customer?.email || subscription.customer_email || ""
+  );
+  let user = hintedUserId ? await getUserById(hintedUserId) : null;
+
+  if (!user && subscription.metadata?.appUserId) {
+    user = await getUserById(subscription.metadata.appUserId);
+  }
+  if (!user && customerId) {
+    user = await getUserByDodoCustomerId(customerId);
+  }
+  if (!user && subscriptionId) {
+    user = await getUserByDodoSubscriptionId(subscriptionId);
+  }
+  if (!user && customerEmail) {
+    user = await getUserByEmail(customerEmail);
+  }
+
+  if (!user) {
+    console.warn(
+      `Dodo subscription ${subscriptionId || "(unknown)"} could not be matched to an app user.`
+    );
+    return null;
+  }
+
+  const mappedStatus = mapDodoSubscriptionStatus(subscription.status);
+  const activePlan =
+    mappedStatus === "active" || mappedStatus === "trial" || mappedStatus === "past_due"
+      ? "pro"
+      : "free";
+
+  return updateUserBillingState(user.id, {
+    subscriptionPlan: activePlan,
+    subscriptionStatus: mappedStatus,
+    subscriptionSource: activePlan === "pro" ? "dodo" : "manual",
+    rateLimits: activePlan === "pro" ? PLAN_LIMITS.pro : PLAN_LIMITS.free,
+    subscriptionStartedAt:
+      parseDodoDate(
+        subscription.current_period_start,
+        subscription.billing_cycle_anchor,
+        subscription.created_at
+      ) ||
+      user.subscriptionStartedAt ||
+      new Date(),
+    subscriptionRenewsAt: parseDodoDate(
+      subscription.current_period_end,
+      subscription.next_billing_date,
+      subscription.renews_at
+    ),
+    dodoCustomerId: customerId,
+    dodoSubscriptionId: subscriptionId,
+    dodoProductId: extractDodoId(
+      subscription.product_id,
+      subscription.product?.product_id,
+      subscription.product?.id
+    ),
+    cancelAtPeriodEnd: Boolean(
+      subscription.cancel_at_period_end ||
+        subscription.cancel_at_next_billing_date ||
+        subscription.cancelled_at
+    ),
+  });
+}
+
+function mapDodoSubscriptionStatus(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+
+  if (normalized === "active") {
+    return "active";
+  }
+
+  if (
+    normalized === "trialing" ||
+    normalized === "trial" ||
+    normalized === "pending"
+  ) {
+    return "trial";
+  }
+
+  if (normalized === "past_due" || normalized === "on_hold") {
+    return "past_due";
+  }
+
+  if (normalized === "failed" || normalized === "suspended") {
+    return "suspended";
+  }
+
+  return "cancelled";
+}
+
+async function resolveDodoProductId() {
+  if (DODO_PRODUCT_ID) {
+    return DODO_PRODUCT_ID;
+  }
+
+  if (!dodoProductIdPromise) {
+    dodoProductIdPromise = (async () => {
+      const response = await dodoApiRequest(
+        "GET",
+        "/products?page_size=100&recurring=true"
+      );
+      const products = Array.isArray(response.items)
+        ? response.items
+        : Array.isArray(response.data)
+          ? response.data
+          : [];
+
+      if (products.length === 1) {
+        const onlyProductId = extractDodoId(
+          products[0].product_id,
+          products[0].id
+        );
+        if (onlyProductId) {
+          return onlyProductId;
+        }
+      }
+
+      throw new Error(
+        "Set DODO_PRODUCT_ID in backend env, or keep exactly one recurring product in Dodo Payments."
+      );
+    })().catch((error) => {
+      dodoProductIdPromise = null;
+      throw error;
+    });
+  }
+
+  return dodoProductIdPromise;
+}
+
+async function dodoApiRequest(method, requestPath, body) {
+  if (!DODO_PAYMENTS_API_KEY) {
+    throw new Error("Dodo Payments API key is missing.");
+  }
+
+  const response = await fetch(`${DODO_API_BASE_URL}${requestPath}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${DODO_PAYMENTS_API_KEY}`,
+      Accept: "application/json",
+      ...(body ? { "Content-Type": "application/json" } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  const responseText = await response.text();
+  const data = responseText ? safeParseJson(responseText) : null;
+
+  if (!response.ok) {
+    const apiMessage =
+      data?.message ||
+      data?.error?.message ||
+      data?.detail ||
+      data?.error ||
+      `Dodo Payments request failed with status ${response.status}.`;
+    throw new Error(String(apiMessage));
+  }
+
+  return data || {};
+}
+
+function parseDodoDate(...values) {
+  for (const value of values) {
+    if (!value) {
+      continue;
+    }
+
+    const date = new Date(value);
+    if (!Number.isNaN(date.getTime())) {
+      return date;
+    }
+  }
+
+  return null;
+}
+
+function extractDodoId(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+
+    if (value && typeof value === "object") {
+      const nested =
+        value.id ||
+        value.subscription_id ||
+        value.customer_id ||
+        value.product_id ||
+        "";
+      if (typeof nested === "string" && nested.trim()) {
+        return nested.trim();
+      }
+    }
+  }
+
+  return "";
+}
+
+function safeParseJson(value) {
+  try {
+    return JSON.parse(value);
+  } catch (_error) {
+    return null;
+  }
 }
 
 async function createStripeCheckoutSession(user) {
@@ -1211,6 +1827,34 @@ async function getUserByStripeSubscriptionId(subscriptionId) {
   return result.rows[0] ? mapUserRow(result.rows[0]) : null;
 }
 
+async function getUserByDodoCustomerId(customerId) {
+  const result = await query(
+    `
+      SELECT *
+      FROM app_users
+      WHERE dodo_customer_id = $1
+      LIMIT 1
+    `,
+    [customerId]
+  );
+
+  return result.rows[0] ? mapUserRow(result.rows[0]) : null;
+}
+
+async function getUserByDodoSubscriptionId(subscriptionId) {
+  const result = await query(
+    `
+      SELECT *
+      FROM app_users
+      WHERE dodo_subscription_id = $1
+      LIMIT 1
+    `,
+    [subscriptionId]
+  );
+
+  return result.rows[0] ? mapUserRow(result.rows[0]) : null;
+}
+
 async function createUser(input) {
   const result = await query(
     `
@@ -1331,6 +1975,9 @@ async function updateUserBillingState(userId, input) {
         stripe_subscription_id = $11,
         stripe_price_id = $12,
         cancel_at_period_end = $13,
+        dodo_customer_id = $14,
+        dodo_subscription_id = $15,
+        dodo_product_id = $16,
         updated_at = NOW()
       WHERE id = $1
       RETURNING *
@@ -1371,6 +2018,13 @@ async function updateUserBillingState(userId, input) {
       hasField("cancelAtPeriodEnd")
         ? Boolean(input.cancelAtPeriodEnd)
         : existing.cancelAtPeriodEnd,
+      hasField("dodoCustomerId")
+        ? input.dodoCustomerId
+        : existing.dodoCustomerId,
+      hasField("dodoSubscriptionId")
+        ? input.dodoSubscriptionId
+        : existing.dodoSubscriptionId,
+      hasField("dodoProductId") ? input.dodoProductId : existing.dodoProductId,
     ]
   );
 
@@ -1431,6 +2085,9 @@ function mapUserRow(row) {
     stripeCustomerId: row.stripe_customer_id || null,
     stripeSubscriptionId: row.stripe_subscription_id || null,
     stripePriceId: row.stripe_price_id || null,
+    dodoCustomerId: row.dodo_customer_id || null,
+    dodoSubscriptionId: row.dodo_subscription_id || null,
+    dodoProductId: row.dodo_product_id || null,
     cancelAtPeriodEnd: Boolean(row.cancel_at_period_end),
     rateLimits: {
       solveDaily: asNumber(row.solve_daily_limit),
@@ -1449,32 +2106,242 @@ function mapUserRow(row) {
   };
 }
 
-function buildBillingSummary(user) {
+function mapChatThreadRow(row) {
   return {
-    provider: stripe ? "stripe" : "manual",
-    pricePerMonthUsd: STRIPE_MONTHLY_PRICE_USD,
-    unlimited: isUnlimitedSubscriber(user),
-    checkoutEnabled: Boolean(stripe),
-    canManageBilling: Boolean(stripe && user.stripeCustomerId),
-    cancelAtPeriodEnd: Boolean(user.cancelAtPeriodEnd),
-    statusMessage: getStripeBillingStatusMessage(user),
+    id: row.id,
+    userId: row.user_id,
+    mode: row.mode,
+    title: row.title,
+    preview: row.preview || "",
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+    lastMessageAt: toIso(row.last_message_at),
   };
 }
 
-function getStripeBillingStatusMessage(user) {
-  if (!stripe) {
-    return "Stripe is off until a secret key is set in backend/builtInBillingConfig.js or STRIPE_SECRET_KEY in .env.";
+function mapChatMessageRow(row) {
+  return {
+    id: row.id,
+    threadId: row.thread_id,
+    userId: row.user_id,
+    role: row.role,
+    content: row.content,
+    createdAt: toIso(row.created_at),
+  };
+}
+
+async function listChatThreads(userId, mode) {
+  const requestedModes =
+    mode === "general"
+      ? ["general", "live_interview", "computer_use"]
+      : [mode];
+  const result = await query(
+    `
+      SELECT
+        t.id,
+        t.user_id,
+        t.mode,
+        t.title,
+        t.created_at,
+        t.updated_at,
+        t.last_message_at,
+        COALESCE(last_message.content, '') AS preview
+      FROM chat_threads t
+      LEFT JOIN LATERAL (
+        SELECT content
+        FROM chat_messages
+        WHERE thread_id = t.id
+        ORDER BY created_at DESC
+        LIMIT 1
+      ) AS last_message
+        ON TRUE
+      WHERE t.user_id = $1
+        AND t.mode = ANY($2::text[])
+      ORDER BY t.last_message_at DESC, t.created_at DESC
+      LIMIT 40
+    `,
+    [userId, requestedModes]
+  );
+
+  return result.rows.map(mapChatThreadRow);
+}
+
+async function getChatThreadForUser(threadId, userId) {
+  const result = await query(
+    `
+      SELECT
+        t.id,
+        t.user_id,
+        t.mode,
+        t.title,
+        t.created_at,
+        t.updated_at,
+        t.last_message_at,
+        COALESCE(last_message.content, '') AS preview
+      FROM chat_threads t
+      LEFT JOIN LATERAL (
+        SELECT content
+        FROM chat_messages
+        WHERE thread_id = t.id
+        ORDER BY created_at DESC
+        LIMIT 1
+      ) AS last_message
+        ON TRUE
+      WHERE t.id = $1
+        AND t.user_id = $2
+      LIMIT 1
+    `,
+    [threadId, userId]
+  );
+
+  return result.rows[0] ? mapChatThreadRow(result.rows[0]) : null;
+}
+
+async function createChatThread(input) {
+  const title = summarizeChatTitle(input.title);
+  const result = await query(
+    `
+      INSERT INTO chat_threads (
+        id,
+        user_id,
+        mode,
+        title,
+        created_at,
+        updated_at,
+        last_message_at
+      )
+      VALUES ($1, $2, $3, $4, NOW(), NOW(), NOW())
+      RETURNING
+        id,
+        user_id,
+        mode,
+        title,
+        created_at,
+        updated_at,
+        last_message_at,
+        ''::text AS preview
+    `,
+    [input.id, input.userId, input.mode, title]
+  );
+
+  return mapChatThreadRow(result.rows[0]);
+}
+
+async function listChatMessages(threadId, userId) {
+  const result = await query(
+    `
+      SELECT id, thread_id, user_id, role, content, created_at
+      FROM chat_messages
+      WHERE thread_id = $1
+        AND user_id = $2
+      ORDER BY created_at ASC
+      LIMIT 300
+    `,
+    [threadId, userId]
+  );
+
+  return result.rows.map(mapChatMessageRow);
+}
+
+async function appendChatMessage(input) {
+  const content = normalizeChatContent(input.content);
+  if (!content) {
+    throw new Error("Chat message content cannot be empty.");
   }
 
-  if (isUnlimitedSubscriber(user)) {
-    return "Unlimited solve/debug access is active through Stripe.";
+  const createdAt = new Date();
+  const result = await query(
+    `
+      INSERT INTO chat_messages (id, thread_id, user_id, role, content, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING id, thread_id, user_id, role, content, created_at
+    `,
+    [input.id, input.threadId, input.userId, input.role, content, createdAt]
+  );
+
+  const nextTitle =
+    input.role === "user" ? summarizeChatTitle(content) : null;
+
+  await query(
+    `
+      UPDATE chat_threads
+      SET
+        title = CASE
+          WHEN $3::text IS NOT NULL
+            AND (title = 'New chat' OR title = '')
+          THEN $3::text
+          ELSE title
+        END,
+        updated_at = NOW(),
+        last_message_at = $4
+      WHERE id = $1
+        AND user_id = $2
+    `,
+    [input.threadId, input.userId, nextTitle, createdAt]
+  );
+
+  return mapChatMessageRow(result.rows[0]);
+}
+
+function summarizeChatTitle(value) {
+  const normalized = normalizeChatContent(value)
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) {
+    return "New chat";
   }
 
-  if (!stripeWebhookConfigured) {
-    return `$${STRIPE_MONTHLY_PRICE_USD}/month checkout is live. Add STRIPE_WEBHOOK_SECRET for automatic subscription sync.`;
+  if (normalized.length <= 56) {
+    return normalized;
   }
 
-  return `$${STRIPE_MONTHLY_PRICE_USD}/month unlocks unlimited use.`;
+  return `${normalized.slice(0, 53).trimEnd()}...`;
+}
+
+function normalizeChatContent(value) {
+  return String(value || "").trim().slice(0, 16_000);
+}
+
+function buildBillingSummary(user) {
+  return {
+    provider: activeBillingProvider,
+    pricePerMonthUsd: BILLING_MONTHLY_PRICE_USD,
+    unlimited: isUnlimitedSubscriber(user),
+    checkoutEnabled: activeBillingProvider !== "manual",
+    canManageBilling:
+      (activeBillingProvider === "stripe" && Boolean(stripe && user.stripeCustomerId)) ||
+      (activeBillingProvider === "dodo" && Boolean(user.dodoCustomerId)),
+    cancelAtPeriodEnd: Boolean(user.cancelAtPeriodEnd),
+    statusMessage: getBillingStatusMessage(user),
+  };
+}
+
+function getBillingStatusMessage(user) {
+  if (activeBillingProvider === "dodo") {
+    if (isUnlimitedSubscriber(user)) {
+      return "Unlimited access is active through Dodo Payments.";
+    }
+
+    if (!DODO_WEBHOOK_SECRET) {
+      return `$${BILLING_MONTHLY_PRICE_USD}/month checkout is live. Add DODO_PAYMENTS_WEBHOOK_SECRET for automatic subscription sync.`;
+    }
+
+    return `$${BILLING_MONTHLY_PRICE_USD}/month unlocks unlimited use through Dodo Payments.`;
+  }
+
+  if (activeBillingProvider === "stripe") {
+    if (isUnlimitedSubscriber(user)) {
+      return "Unlimited access is active through Stripe.";
+    }
+
+    if (!stripeWebhookConfigured) {
+      return `$${BILLING_MONTHLY_PRICE_USD}/month checkout is live. Add STRIPE_WEBHOOK_SECRET for automatic subscription sync.`;
+    }
+
+    return `$${BILLING_MONTHLY_PRICE_USD}/month unlocks unlimited use.`;
+  }
+
+  return "Billing is off until Dodo Payments or Stripe is configured in backend env.";
 }
 
 function resolveConfiguredString(...values) {
@@ -1499,6 +2366,8 @@ function normalizeConfiguredString(value) {
     lower.includes("replace_me") ||
     lower.includes("your_") ||
     lower.includes("paste_") ||
+    lower.includes("dodo_api_key_here") ||
+    lower.includes("dodo_webhook_secret_here") ||
     lower === "sk_test_replace_me" ||
     lower === "whsec_replace_me"
   ) {
@@ -1544,18 +2413,25 @@ async function buildUsageSnapshot(user) {
   const row = result.rows[0];
   const solvesToday = asNumber(row.solves_today);
   const debugToday = asNumber(row.debug_today);
+  const requestsToday = solvesToday + debugToday;
   const requestsThisHour = asNumber(row.requests_this_hour);
+  const solveDailyLimit = getSolveDailyLimit(user);
+  const debugDailyLimit = getDebugDailyLimit(user);
+  const requestsDailyLimit = getDailyRequestLimit(user);
+  const requestsHourlyLimit = getHourlyRequestLimit(user);
 
   return {
     solvesToday,
     debugToday,
     screenshotsToday: asNumber(row.screenshots_today),
+    requestsToday,
     requestsThisHour,
-    remainingSolveDaily: Math.max(0, user.rateLimits.solveDaily - solvesToday),
-    remainingDebugDaily: Math.max(0, user.rateLimits.debugDaily - debugToday),
+    remainingRequestsToday: Math.max(0, requestsDailyLimit - requestsToday),
+    remainingSolveDaily: Math.max(0, solveDailyLimit - solvesToday),
+    remainingDebugDaily: Math.max(0, debugDailyLimit - debugToday),
     remainingRequestsThisHour: Math.max(
       0,
-      user.rateLimits.requestsPerHour - requestsThisHour
+      requestsHourlyLimit - requestsThisHour
     ),
     totalSolveCount: asNumber(row.total_solve_count),
     totalDebugCount: asNumber(row.total_debug_count),
@@ -1668,13 +2544,41 @@ async function evaluateUsage(user, action) {
     };
   }
 
+  if (action === "live_interview") {
+    if (isUnlimitedSubscriber(user)) {
+      return { allowed: true };
+    }
+
+    return {
+      allowed: false,
+      statusCode: 403,
+      error: "Live Interview is available on the Pro plan.",
+    };
+  }
+
+  if (action === "computer_use") {
+    if (isUnlimitedSubscriber(user)) {
+      return { allowed: true };
+    }
+
+    return {
+      allowed: false,
+      statusCode: 403,
+      error: "Computer Use is available on the Pro plan.",
+    };
+  }
+
   if (isUnlimitedSubscriber(user)) {
     return { allowed: true };
   }
 
   const usage = await buildUsageSnapshot(user);
+  const requestsDailyLimit = getDailyRequestLimit(user);
+  const requestsHourlyLimit = getHourlyRequestLimit(user);
+  const solveDailyLimit = getSolveDailyLimit(user);
+  const debugDailyLimit = getDebugDailyLimit(user);
 
-  if (usage.requestsThisHour >= user.rateLimits.requestsPerHour) {
+  if (usage.requestsThisHour >= requestsHourlyLimit) {
     return {
       allowed: false,
       statusCode: 429,
@@ -1682,7 +2586,15 @@ async function evaluateUsage(user, action) {
     };
   }
 
-  if (action === "solve" && usage.solvesToday >= user.rateLimits.solveDaily) {
+  if (usage.requestsToday >= requestsDailyLimit) {
+    return {
+      allowed: false,
+      statusCode: 429,
+      error: "Daily request limit reached for this account.",
+    };
+  }
+
+  if (action === "solve" && usage.solvesToday >= solveDailyLimit) {
     return {
       allowed: false,
       statusCode: 429,
@@ -1690,7 +2602,7 @@ async function evaluateUsage(user, action) {
     };
   }
 
-  if (action === "debug" && usage.debugToday >= user.rateLimits.debugDaily) {
+  if (action === "debug" && usage.debugToday >= debugDailyLimit) {
     return {
       allowed: false,
       statusCode: 429,
@@ -2001,7 +2913,26 @@ function isStatus(value) {
 }
 
 function isAction(value) {
-  return value === "solve" || value === "debug" || value === "screenshot";
+  return (
+    value === "solve" ||
+    value === "debug" ||
+    value === "screenshot" ||
+    value === "live_interview" ||
+    value === "computer_use"
+  );
+}
+
+function isChatMode(value) {
+  return (
+    value === "general" ||
+    value === "follow_up" ||
+    value === "live_interview" ||
+    value === "computer_use"
+  );
+}
+
+function isChatRole(value) {
+  return value === "user" || value === "assistant";
 }
 
 function isUnlimitedSubscriber(user) {
@@ -2009,6 +2940,38 @@ function isUnlimitedSubscriber(user) {
     (user.subscriptionPlan === "pro" || user.subscriptionPlan === "enterprise") &&
     (user.subscriptionStatus === "active" || user.subscriptionStatus === "trial")
   );
+}
+
+function getSolveDailyLimit(user) {
+  if (user.subscriptionPlan === "free") {
+    return PLAN_LIMITS.free.solveDaily;
+  }
+
+  return Math.max(1, asNumber(user.rateLimits.solveDaily));
+}
+
+function getDebugDailyLimit(user) {
+  if (user.subscriptionPlan === "free") {
+    return PLAN_LIMITS.free.debugDaily;
+  }
+
+  return Math.max(1, asNumber(user.rateLimits.debugDaily));
+}
+
+function getDailyRequestLimit(user) {
+  if (user.subscriptionPlan === "free") {
+    return 20;
+  }
+
+  return Math.max(getSolveDailyLimit(user), getDebugDailyLimit(user));
+}
+
+function getHourlyRequestLimit(user) {
+  if (user.subscriptionPlan === "free") {
+    return PLAN_LIMITS.free.requestsPerHour;
+  }
+
+  return Math.max(1, asNumber(user.rateLimits.requestsPerHour));
 }
 
 function normalizeBillingReturnStatus(value) {
@@ -2026,6 +2989,12 @@ function normalizePositiveNumber(value, fallback) {
   }
 
   return parsed;
+}
+
+function normalizeDodoEnvironment(value) {
+  return String(value || "").trim().toLowerCase() === "test_mode"
+    ? "test_mode"
+    : "live_mode";
 }
 
 function normalizePort(value) {

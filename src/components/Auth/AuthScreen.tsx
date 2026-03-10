@@ -3,6 +3,7 @@ import { Button } from "../ui/button"
 import { Input } from "../ui/input"
 import { updateWindowToElement } from "../../utils/contentSize"
 import type { AuthState } from "../../../shared/backendAuth"
+import { CheatbitMark } from "../Brand/CheatbitMark"
 
 interface AuthScreenProps {
   initialError?: string
@@ -81,14 +82,17 @@ export function AuthScreen({
                 <span className="inline-flex rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] uppercase tracking-[0.24em] text-[#7df9c7]">
                   Account Required
                 </span>
-                <div>
-                  <h1 className="text-3xl font-semibold tracking-[-0.04em] text-white">
-                    CheatBit
-                  </h1>
-                  <p className="mt-2 max-w-md text-sm leading-6 text-white/65">
-                    Sign in to use CheatBit. Your screenshots, solves, follow-up
-                    chat, subscription, and usage history stay tied to your account.
-                  </p>
+                <div className="flex items-start gap-3">
+                  <CheatbitMark className="h-12 w-12 rounded-[20px]" />
+                  <div>
+                    <h1 className="text-3xl font-semibold tracking-[-0.04em] text-white">
+                      Sylica AI
+                    </h1>
+                    <p className="mt-2 max-w-md text-sm leading-6 text-white/65">
+                      Sign in to use Sylica AI. Your screenshots, solves, follow-up
+                      chat, subscription, and usage history stay tied to your account.
+                    </p>
+                  </div>
                 </div>
               </div>
 
@@ -157,8 +161,8 @@ export function AuthScreen({
                 </h2>
                 <p className="text-sm text-white/55">
                   {mode === "login"
-                    ? "Use your CheatBit account to continue with your saved activity and subscription."
-                    : "Create your CheatBit account to track usage, billing, and access in one place."}
+                    ? "Use your Sylica AI account to continue with your saved activity and subscription."
+                    : "Create your Sylica AI account to track usage, billing, and access in one place."}
                 </p>
               </div>
 
