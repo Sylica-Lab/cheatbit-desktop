@@ -10,6 +10,7 @@ import {
   EMPTY_COMPUTER_USE_STATE,
   type LiveInterviewState,
   type PersistedChatMessage,
+  type TextFollowUpStreamEvent,
   EMPTY_LIVE_INTERVIEW_STATE,
 } from "../../../shared/followUpChat"
 import { useToast } from "../../contexts/toast"
@@ -27,6 +28,7 @@ interface AssistantChatProps {
     id: string
     task: string
   } | null
+  onComputerTaskRequestConsumed?: () => void
   placeholder: string
   maxHeightClassName?: string
   className?: string
@@ -446,6 +448,7 @@ export function AssistantChat({
   mode,
   currentContext = "",
   computerTaskRequest = null,
+  onComputerTaskRequestConsumed,
   placeholder,
   maxHeightClassName = "max-h-[18rem]",
   className = "",
@@ -482,6 +485,8 @@ export function AssistantChat({
   const livePcmSampleCountRef = useRef(0)
   const liveAudioStoppingRef = useRef(false)
   const lastComputerTaskRequestIdRef = useRef<string | null>(null)
+  const activeTextFollowUpRequestIdRef = useRef<string | null>(null)
+  const activeTextFollowUpMessageIdRef = useRef<string | null>(null)
   const isLiveSessionActive = isPersistedMode && liveState.status !== "idle"
   const isComputerUseSessionActive =
     isPersistedMode &&
@@ -489,6 +494,39 @@ export function AssistantChat({
       computerUseState.status === "running" ||
       computerUseState.status === "waiting_for_secret" ||
       computerUseState.status === "stopping")
+  const inputMaxHeight = mode === "follow_up" ? 84 : 136
+  const isCompactFollowUpComposer = mode === "follow_up" && !isLiveSessionActive
+
+  const updatePendingAssistantMessage = useCallback(
+    (
+      messageId: string,
+      content: string,
+      options?: {
+        pending?: boolean
+        error?: boolean
+      }
+    ) => {
+      setMessages((previousMessages) => {
+        const nextMessages = previousMessages.map((message) =>
+          message.id === messageId
+            ? {
+                ...message,
+                content,
+                pending: options?.pending ?? message.pending,
+                error: options?.error ?? false,
+              }
+            : message
+        )
+
+        if (!isPersistedMode) {
+          queryClient.setQueryData(queryKey, nextMessages)
+        }
+
+        return nextMessages
+      })
+    },
+    [isPersistedMode, queryClient, queryKey]
+  )
 
   const stopLiveAudioCapture = useCallback(() => {
     liveAudioStoppingRef.current = true
@@ -779,7 +817,12 @@ export function AssistantChat({
         }
 
         setThreads(response.data.threads)
-        const nextThreadId = response.data.threads[0]?.id || null
+        const nextThreadId =
+          mode === "general"
+            ? response.data.threads.find((thread) => thread.mode === "general")?.id ||
+              response.data.threads[0]?.id ||
+              null
+            : response.data.threads[0]?.id || null
         setActiveThreadId(nextThreadId)
         setIsHistoryLoading(false)
       }
@@ -810,6 +853,36 @@ export function AssistantChat({
       unsubscribe()
     }
   }, [isPersistedMode, mode, queryClient, queryKey, showToast])
+
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.onTextFollowUpStream(
+      (streamEvent: TextFollowUpStreamEvent) => {
+        if (streamEvent.requestId !== activeTextFollowUpRequestIdRef.current) {
+          return
+        }
+
+        const pendingMessageId = activeTextFollowUpMessageIdRef.current
+        if (!pendingMessageId) {
+          return
+        }
+
+        if (streamEvent.content.trim().length > 0) {
+          updatePendingAssistantMessage(pendingMessageId, streamEvent.content, {
+            pending: !streamEvent.done,
+          })
+        }
+
+        if (streamEvent.done) {
+          activeTextFollowUpRequestIdRef.current = null
+          activeTextFollowUpMessageIdRef.current = null
+        }
+      }
+    )
+
+    return () => {
+      unsubscribe()
+    }
+  }, [updatePendingAssistantMessage])
 
   useEffect(() => {
     if (!isPersistedMode) {
@@ -930,9 +1003,9 @@ export function AssistantChat({
     inputRef.current.style.height = "0px"
     inputRef.current.style.height = `${Math.min(
       inputRef.current.scrollHeight,
-      136
+      inputMaxHeight
     )}px`
-  }, [input])
+  }, [input, inputMaxHeight])
 
   useEffect(() => {
     if (!computerTaskRequest || !isPersistedMode) {
@@ -944,8 +1017,9 @@ export function AssistantChat({
     }
 
     lastComputerTaskRequestIdRef.current = computerTaskRequest.id
+    onComputerTaskRequestConsumed?.()
     void startComputerUseTask(computerTaskRequest.task)
-  }, [computerTaskRequest, isPersistedMode])
+  }, [computerTaskRequest, isPersistedMode, onComputerTaskRequestConsumed])
 
   useEffect(() => {
     if (
@@ -1000,8 +1074,11 @@ export function AssistantChat({
     computerUseState.currentAction,
     computerUseState.latestError,
     computerUseState.status,
-    computerUseState.threadId,
+      computerUseState.threadId,
   ])
+
+  const activePersistedThread = threads.find((thread) => thread.id === activeThreadId) || null
+  const isSelectedComputerThread = activePersistedThread?.mode === "computer_use"
 
   const persistMessages = (nextMessages: FollowUpChatMessage[]) => {
     if (!isPersistedMode) {
@@ -1322,6 +1399,10 @@ export function AssistantChat({
     setIsSending(true)
 
     try {
+      const requestId = `follow-up-${pendingAssistantMessage.id}`
+      activeTextFollowUpRequestIdRef.current = requestId
+      activeTextFollowUpMessageIdRef.current = pendingAssistantMessage.id
+
       let threadId = activeThreadId
       if (isPersistedMode && !threadId) {
         const threadResponse = await window.electronAPI.createChatThread({
@@ -1360,6 +1441,7 @@ export function AssistantChat({
       }
 
       const response = await window.electronAPI.submitTextFollowUp({
+        requestId,
         message: trimmedInput,
         currentContext,
         chatHistory,
@@ -1398,6 +1480,8 @@ export function AssistantChat({
 
       persistMessages(resolvedMessages)
     } catch (error) {
+      activeTextFollowUpRequestIdRef.current = null
+      activeTextFollowUpMessageIdRef.current = null
       const message =
         error instanceof Error
           ? error.message
@@ -1416,6 +1500,8 @@ export function AssistantChat({
       persistMessages(failedMessages)
       showToast(mode === "general" ? "Chat Failed" : "Follow-up Failed", message, "error")
     } finally {
+      activeTextFollowUpRequestIdRef.current = null
+      activeTextFollowUpMessageIdRef.current = null
       setIsSending(false)
     }
   }
@@ -1423,9 +1509,6 @@ export function AssistantChat({
   const surfaceClassName = className.trim().length
     ? `w-full min-w-0 space-y-3 rounded-[20px] border border-white/10 bg-[linear-gradient(180deg,rgba(14,16,18,0.92),rgba(8,10,12,0.82))] p-3 text-white shadow-[0_20px_44px_rgba(0,0,0,0.35)] ${className}`
     : "w-full min-w-0 space-y-3 rounded-[20px] border border-white/10 bg-[linear-gradient(180deg,rgba(14,16,18,0.92),rgba(8,10,12,0.82))] p-3 text-white shadow-[0_20px_44px_rgba(0,0,0,0.35)]"
-
-  const activePersistedThread = threads.find((thread) => thread.id === activeThreadId) || null
-  const isSelectedComputerThread = activePersistedThread?.mode === "computer_use"
 
   const displayedMessages = useMemo(() => {
     if (!isPersistedMode) {
@@ -1670,7 +1753,7 @@ export function AssistantChat({
           ref={messagesRef}
           className={`${maxHeightClassName} space-y-2 overflow-y-auto pr-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden`}
         >
-          {displayedMessages.map((message) => {
+          {displayedMessages.map((message, index) => {
             const isLiveSuggestionMessage =
               message.id === `live-answer-${liveState.threadId || ""}`
             const isComputerUseMessage =
@@ -1754,7 +1837,13 @@ export function AssistantChat({
         <div className="text-[11px] text-white/40">Loading chat...</div>
       )}
 
-      <div className="flex items-end gap-2 rounded-[16px] border border-white/10 bg-black/[0.65] px-3 py-2">
+      <div
+        className={
+          isCompactFollowUpComposer
+            ? "flex items-end gap-2 rounded-[14px] bg-white/[0.04] px-2.5 py-1.5"
+            : "flex items-end gap-2 rounded-[16px] border border-white/10 bg-black/[0.65] px-3 py-2"
+        }
+      >
         <textarea
           ref={inputRef}
           value={input}
@@ -1770,7 +1859,11 @@ export function AssistantChat({
           rows={1}
           placeholder={inputPlaceholder}
           disabled={isSelectedComputerThread}
-          className="max-h-[136px] min-h-[24px] flex-1 resize-none bg-transparent py-1 text-[12px] leading-[1.45] text-white outline-none placeholder:text-white/28"
+          className={
+            isCompactFollowUpComposer
+              ? "max-h-[84px] min-h-[20px] flex-1 resize-none bg-transparent py-0.5 text-[11px] leading-[1.35] text-white outline-none placeholder:text-white/24"
+              : "max-h-[136px] min-h-[24px] flex-1 resize-none bg-transparent py-1 text-[12px] leading-[1.45] text-white outline-none placeholder:text-white/28"
+          }
         />
         <Button
           type="button"
@@ -1793,7 +1886,11 @@ export function AssistantChat({
                 ? "Send message"
                 : "Send follow-up"
           }
-          className="sylica-send-button h-9 w-9 rounded-full bg-[#7df9c7] text-black hover:bg-[#97ffd3]"
+          className={
+            isCompactFollowUpComposer
+              ? "sylica-send-button h-8 w-8 rounded-full bg-[#7df9c7] text-black hover:bg-[#97ffd3]"
+              : "sylica-send-button h-9 w-9 rounded-full bg-[#7df9c7] text-black hover:bg-[#97ffd3]"
+          }
         >
           {isSending ? "..." : <SendHorizontal className="h-4 w-4" />}
         </Button>

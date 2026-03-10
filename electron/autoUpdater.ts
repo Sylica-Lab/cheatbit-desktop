@@ -1,3 +1,4 @@
+import path from "node:path"
 import { app, BrowserWindow, ipcMain } from "electron"
 import log from "electron-log"
 import {
@@ -19,9 +20,23 @@ let desktopUpdateState: DesktopUpdateState = {
   ...EMPTY_DESKTOP_UPDATE_STATE,
 }
 let updateCheckInterval: NodeJS.Timeout | null = null
+let startupCheckTimeout: NodeJS.Timeout | null = null
+let isAutoUpdaterInitialized = false
 
 function isWindowsUpdaterSupported(): boolean {
-  return app.isPackaged && process.platform === "win32"
+  return process.platform === "win32" && app.isPackaged
+}
+
+function getUnsupportedUpdaterReason(): string | null {
+  if (process.platform !== "win32") {
+    return `platform ${process.platform}`
+  }
+
+  if (!app.isPackaged) {
+    return "app is not packaged"
+  }
+
+  return null
 }
 
 function normalizeReleaseNotes(
@@ -254,11 +269,26 @@ function registerUpdateIpcHandlers(): void {
 export function initAutoUpdater() {
   console.log("Initializing auto-updater...")
 
+  if (isAutoUpdaterInitialized) {
+    console.log("Auto-updater already initialized")
+    return
+  }
+
   registerUpdateIpcHandlers()
 
-  if (!isWindowsUpdaterSupported()) {
-    console.log("Skipping auto-updater in unsupported environment")
+  const unsupportedReason = getUnsupportedUpdaterReason()
+  if (unsupportedReason) {
+    console.log(`Skipping auto-updater: ${unsupportedReason}`)
     return
+  }
+
+  isAutoUpdaterInitialized = true
+
+  if (!app.isPackaged) {
+    const devConfigPath = path.join(app.getAppPath(), "dev-app-update.yml")
+    autoUpdater.forceDevUpdateConfig = true
+    autoUpdater.updateConfigPath = devConfigPath
+    console.log(`Auto-updater running in local test mode using ${devConfigPath}`)
   }
 
   autoUpdater.autoDownload = false
@@ -274,7 +304,15 @@ export function initAutoUpdater() {
   log.transports.file.level = "debug"
 
   registerAutoUpdaterEvents()
-  void checkForUpdates("startup")
+
+  if (startupCheckTimeout) {
+    clearTimeout(startupCheckTimeout)
+  }
+
+  startupCheckTimeout = setTimeout(() => {
+    startupCheckTimeout = null
+    void checkForUpdates("startup")
+  }, app.isPackaged ? 250 : 1500)
 
   if (updateCheckInterval) {
     clearInterval(updateCheckInterval)

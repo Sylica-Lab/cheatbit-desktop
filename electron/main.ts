@@ -63,7 +63,9 @@ function detectWindowsOpaqueFallback(): boolean {
   }
 }
 
-const shouldUseWindowsOpaqueFallback = detectWindowsOpaqueFallback()
+const shouldUseWindowsOpaqueFallback =
+  process.env.SYLICA_FORCE_OPAQUE_WINDOW === "1" ||
+  detectWindowsOpaqueFallback()
 
 app.setName(APP_NAME)
 if (process.platform === "win32") {
@@ -553,13 +555,17 @@ if (!gotTheLock) {
   app.quit()
 } else {
   app.on("second-instance", (event, commandLine) => {
-    // Someone tried to run a second instance, we should focus our window.
-    if (state.mainWindow) {
+    console.log("second-instance event received:", commandLine)
+
+    if (!state.mainWindow) {
+      void createWindow()
+    } else {
       if (state.mainWindow.isMinimized()) state.mainWindow.restore()
       state.mainWindow.focus()
-
-      // Protocol handler removed - no longer using auth callbacks
     }
+
+    const protocolUrl = commandLine.find((arg) => isAppProtocolUrl(arg))
+    handleProtocolUrl(protocolUrl)
 
     if (commandLine.includes("--uninstall-flow")) {
       showUninstallOffboarding()
@@ -889,17 +895,26 @@ function moveWindowVertical(updateFn: (y: number) => number): void {
 function setWindowDimensions(width: number, height: number): void {
   if (!state.mainWindow?.isDestroyed()) {
     const [currentX, currentY] = state.mainWindow.getPosition()
-    const primaryDisplay = screen.getPrimaryDisplay()
-    const workArea = primaryDisplay.workAreaSize
+    const currentBounds = state.mainWindow.getBounds()
+    const targetDisplay = screen.getDisplayMatching({
+      x: currentX,
+      y: currentY,
+      width: currentBounds.width,
+      height: currentBounds.height,
+    })
+    const workArea = targetDisplay.workArea
     const clampedWidth = Math.max(1, Math.min(Math.ceil(width), workArea.width))
     const clampedHeight = Math.max(
       1,
       Math.min(Math.ceil(height), workArea.height)
     )
-    const nextX = Math.max(0, Math.min(currentX, workArea.width - clampedWidth))
+    const nextX = Math.max(
+      workArea.x,
+      Math.min(currentX, workArea.x + workArea.width - clampedWidth)
+    )
     const nextY = Math.max(
-      0,
-      Math.min(currentY, workArea.height - clampedHeight)
+      workArea.y,
+      Math.min(currentY, workArea.y + workArea.height - clampedHeight)
     )
 
     state.mainWindow.setBounds({
@@ -1035,39 +1050,14 @@ app.on("open-url", (event, url) => {
   handleProtocolUrl(url)
 })
 
-// Handle second instance (removed auth callback handling)
-app.on("second-instance", (event, commandLine) => {
-  console.log("second-instance event received:", commandLine)
-  
-  // Focus or create the main window
-  if (!state.mainWindow) {
-    createWindow()
-  } else {
-    if (state.mainWindow.isMinimized()) state.mainWindow.restore()
-    state.mainWindow.focus()
-  }
-
-  const protocolUrl = commandLine.find((arg) => isAppProtocolUrl(arg))
-  handleProtocolUrl(protocolUrl)
-
-  if (commandLine.includes("--uninstall-flow")) {
-    showUninstallOffboarding()
+app.on("window-all-closed", () => {
+  state.liveInterviewHelper?.shutdown()
+  state.browserAgentController?.shutdown()
+  if (process.platform !== "darwin") {
+    app.quit()
+    state.mainWindow = null
   }
 })
-
-// Prevent multiple instances of the app
-if (!app.requestSingleInstanceLock()) {
-  app.quit()
-} else {
-app.on("window-all-closed", () => {
-    state.liveInterviewHelper?.shutdown()
-    state.browserAgentController?.shutdown()
-    if (process.platform !== "darwin") {
-      app.quit()
-      state.mainWindow = null
-    }
-  })
-}
 
 app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) {

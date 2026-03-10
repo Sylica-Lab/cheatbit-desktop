@@ -95,6 +95,10 @@ export interface LiveInterviewTurnResult {
   error?: string;
 }
 
+interface TextFollowUpProcessingOptions {
+  onStream?: (content: string) => void;
+}
+
 const LIVE_AUDIO_TRANSCRIPTION_MODEL = "openai/whisper-large-v3"
 const LIVE_INTERVIEW_MAX_TOKENS = 520
 const LIVE_AUDIO_INTERVIEW_MAX_TOKENS = 420
@@ -186,6 +190,96 @@ export class ProcessingHelper {
 
   private parseJsonResponse<T>(text: string): T {
     return JSON.parse(this.stripCodeFences(text)) as T;
+  }
+
+  private extractStreamingJsonStringField(
+    text: string,
+    fieldName: string
+  ): string | null {
+    const match = new RegExp(`"${fieldName}"\\s*:\\s*"`, "i").exec(text)
+    if (!match) {
+      return null
+    }
+
+    let index = match.index + match[0].length
+    let value = ""
+    let escaped = false
+
+    while (index < text.length) {
+      const character = text[index]
+      index += 1
+
+      if (escaped) {
+        switch (character) {
+          case "n":
+            value += "\n"
+            break
+          case "r":
+            value += "\r"
+            break
+          case "t":
+            value += "\t"
+            break
+          case "\\":
+            value += "\\"
+            break
+          case "\"":
+            value += "\""
+            break
+          default:
+            value += character
+            break
+        }
+        escaped = false
+        continue
+      }
+
+      if (character === "\\") {
+        escaped = true
+        continue
+      }
+
+      if (character === "\"") {
+        break
+      }
+
+      value += character
+    }
+
+    return value
+  }
+
+  private extractStreamingJsonBooleanField(
+    text: string,
+    fieldName: string
+  ): boolean | null {
+    const match = new RegExp(`"${fieldName}"\\s*:\\s*(true|false)`, "i").exec(text)
+    if (!match) {
+      return null
+    }
+
+    return match[1].toLowerCase() === "true"
+  }
+
+  private extractStreamingSolutionPreview(
+    text: string,
+    fallbackQuestionType?: string
+  ): { content: string; isCodeResponse: boolean } | null {
+    const answer = this.extractStreamingJsonStringField(text, "answer") || ""
+    const code = this.extractStreamingJsonStringField(text, "code") || ""
+    const isCodeResponse =
+      this.extractStreamingJsonBooleanField(text, "is_code_response") ??
+      (fallbackQuestionType === "coding" && code.trim().length > 0)
+
+    const content = isCodeResponse ? code || answer : answer || code
+    if (!content.trim()) {
+      return null
+    }
+
+    return {
+      content,
+      isCodeResponse,
+    }
   }
 
   private buildExtractionInstruction(language: string): string {
@@ -1522,6 +1616,23 @@ Instructions:
           : "N/A - Not applicable"),
     };
   }
+
+  private emitSolutionStream(data: {
+    content: string
+    isCodeResponse: boolean
+    done?: boolean
+  }) {
+    const mainWindow = this.deps.getMainWindow()
+    if (!mainWindow) {
+      return
+    }
+
+    mainWindow.webContents.send("solution-stream", {
+      content: data.content,
+      isCodeResponse: data.isCodeResponse,
+      done: Boolean(data.done),
+    })
+  }
   
   /**
    * Initialize or reinitialize the AI client with current config
@@ -2238,23 +2349,77 @@ Instructions:
         }
         
         // Send to the configured text model
-        const solutionResponse = await this.openaiClient.chat.completions.create({
+        const solutionRequest = {
           model:
             config.solutionModel ||
             this.getDefaultModelForStage(config.apiProvider, "solutionModel"),
           messages: [
             {
-              role: "system",
+              role: "system" as const,
               content:
                 "You are a high-accuracy assistant for coding, academics, multiple-choice questions, and general problem solving. Return valid JSON only."
             },
-            { role: "user", content: promptText }
+            { role: "user" as const, content: promptText }
           ],
           max_tokens: 4000,
           temperature: 0.2
-        });
+        };
 
-        responseContent = solutionResponse.choices[0].message.content;
+        let streamedResponseContent = "";
+
+        try {
+          const solutionStream = await this.openaiClient.chat.completions.create(
+            {
+              ...solutionRequest,
+              stream: true,
+            },
+            { signal }
+          );
+
+          for await (const chunk of solutionStream) {
+            if (signal.aborted) {
+              break;
+            }
+
+            const deltaText = chunk.choices?.[0]?.delta?.content;
+            if (typeof deltaText !== "string" || deltaText.length === 0) {
+              continue;
+            }
+
+            streamedResponseContent += deltaText;
+            const preview = this.extractStreamingSolutionPreview(
+              streamedResponseContent,
+              problemInfo.question_type
+            );
+
+            if (preview) {
+              this.emitSolutionStream({
+                content: preview.content,
+                isCodeResponse: preview.isCodeResponse,
+              });
+            }
+          }
+        } catch (streamError) {
+          if (axios.isCancel(streamError)) {
+            throw streamError;
+          }
+
+          console.warn(
+            "Falling back to non-streaming solution generation.",
+            streamError
+          );
+        }
+
+        if (streamedResponseContent.trim()) {
+          responseContent = streamedResponseContent;
+        } else {
+          const solutionResponse = await this.openaiClient.chat.completions.create(
+            solutionRequest,
+            { signal }
+          );
+
+          responseContent = solutionResponse.choices[0].message.content;
+        }
       } else if (config.apiProvider === "gemini")  {
         // Gemini processing
         if (!this.geminiApiKey) {
@@ -2364,6 +2529,12 @@ Instructions:
         this.parseJsonResponse<StructuredSolutionResponse>(responseContent),
         problemInfo.question_type
       );
+
+      this.emitSolutionStream({
+        content: formattedResponse.code || formattedResponse.answer,
+        isCodeResponse: Boolean(formattedResponse.is_code_response),
+        done: true,
+      });
 
       return { success: true, data: formattedResponse };
     } catch (error: any) {
@@ -2641,7 +2812,8 @@ Instructions:
   }
 
   public async processTextFollowUp(
-    request: TextFollowUpRequest
+    request: TextFollowUpRequest,
+    options: TextFollowUpProcessingOptions = {}
   ): Promise<{ success: true; data: TextFollowUpResponse } | { success: false; error: string }> {
     const message = request.message.trim()
     const mode: AssistantChatMode =
@@ -2725,18 +2897,18 @@ Instructions:
           : config.debuggingModel ||
             this.getDefaultModelForStage(config.apiProvider, "debuggingModel")
 
-        const response = await this.openaiClient.chat.completions.create({
+        const baseRequest = {
           model: selectedModel,
           messages: [
             {
-              role: "system",
+              role: "system" as const,
               content:
                 mode === "general"
                   ? "You are a precise, practical desktop AI assistant."
                   : "You are a precise follow-up assistant for coding, academic, MCQ, and general reasoning questions.",
             },
             {
-              role: "user",
+              role: "user" as const,
               content: screenCapture
                 ? [
                     {
@@ -2755,9 +2927,53 @@ Instructions:
           ],
           max_tokens: 2200,
           temperature: 0.2,
-        })
+        }
 
-        reply = response.choices[0].message.content || ""
+        if (options.onStream) {
+          try {
+            const stream = await this.openaiClient.chat.completions.create(
+              {
+                ...baseRequest,
+                stream: true,
+              },
+              { signal }
+            )
+
+            let streamedReply = ""
+
+            for await (const chunk of stream) {
+              if (signal.aborted) {
+                break
+              }
+
+              const deltaText = chunk.choices?.[0]?.delta?.content
+              if (typeof deltaText === "string" && deltaText.length > 0) {
+                streamedReply += deltaText
+                options.onStream(streamedReply)
+              }
+            }
+
+            reply = streamedReply
+          } catch (streamError) {
+            if (axios.isCancel(streamError)) {
+              throw streamError
+            }
+
+            console.warn(
+              "Falling back to non-streaming follow-up response.",
+              streamError
+            )
+          }
+        }
+
+        if (!reply.trim()) {
+          const response = await this.openaiClient.chat.completions.create(
+            baseRequest,
+            { signal }
+          )
+
+          reply = response.choices[0].message.content || ""
+        }
       } else if (config.apiProvider === "gemini") {
         if (!this.geminiApiKey) {
           return {

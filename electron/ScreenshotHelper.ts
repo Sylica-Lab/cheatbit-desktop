@@ -163,6 +163,10 @@ export class ScreenshotHelper {
     return process.platform === "win32" ? 90 : 60;
   }
 
+  private getEarlyRestoreDelay(): number {
+    return process.platform === "win32" ? 80 : 0;
+  }
+
   private getOrderedCaptureDisplays(displays: Array<Record<string, any>>) {
     if (process.platform === "darwin") {
       return displays;
@@ -352,17 +356,20 @@ export class ScreenshotHelper {
     return screenshotPath;
   }
 
-  private async captureScreenshot(): Promise<Buffer> {
+  private async captureScreenshot(
+    onCaptureStarted?: () => void
+  ): Promise<Buffer> {
     try {
       console.log("Starting screenshot capture...");
 
       // For Windows, try multiple methods
       if (process.platform === "win32") {
-        return await this.captureWindowsScreenshot();
+        return await this.captureWindowsScreenshot(onCaptureStarted);
       }
 
       // For macOS and Linux, use buffer directly
       console.log("Taking screenshot on non-Windows platform");
+      onCaptureStarted?.();
       const buffer = await screenshot({ format: "png" });
       console.log(
         `Screenshot captured successfully, size: ${buffer.length} bytes`
@@ -377,7 +384,9 @@ export class ScreenshotHelper {
   /**
    * Windows-specific screenshot capture with multiple fallback mechanisms
    */
-  private async captureWindowsScreenshot(): Promise<Buffer> {
+  private async captureWindowsScreenshot(
+    onCaptureStarted?: () => void
+  ): Promise<Buffer> {
     console.log("Attempting Windows screenshot with multiple methods");
 
     // Method 1: PowerShell capture is the most reliable in the bundled app.
@@ -403,13 +412,15 @@ export class ScreenshotHelper {
         $bmp.Dispose()
         `;
 
-      await execFileAsync("powershell", [
+      const capturePromise = execFileAsync("powershell", [
         "-NoProfile",
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
         psScript,
       ]);
+      onCaptureStarted?.();
+      await capturePromise;
 
       if (fs.existsSync(tempFile)) {
         const buffer = await fs.promises.readFile(tempFile);
@@ -437,7 +448,9 @@ export class ScreenshotHelper {
           `Attempting screenshot-desktop capture (Method 2): ${tempFile}`
         );
 
-        await screenshot({ filename: tempFile });
+        const capturePromise = screenshot({ filename: tempFile });
+        onCaptureStarted?.();
+        await capturePromise;
 
         if (fs.existsSync(tempFile)) {
           const buffer = await fs.promises.readFile(tempFile);
@@ -473,9 +486,23 @@ export class ScreenshotHelper {
 
     await new Promise((resolve) => setTimeout(resolve, this.getHideDelay()));
 
+    let restoreScheduled = false;
+    const scheduleRestore = (delay: number) => {
+      if (restoreScheduled) {
+        return;
+      }
+
+      restoreScheduled = true;
+      setTimeout(() => {
+        showMainWindow();
+      }, delay);
+    };
+
     let screenshotBuffer: Buffer | null = null;
     try {
-      screenshotBuffer = await this.captureScreenshot();
+      screenshotBuffer = await this.captureScreenshot(() => {
+        scheduleRestore(this.getEarlyRestoreDelay());
+      });
 
       if (!screenshotBuffer || screenshotBuffer.length === 0) {
         throw new Error("Screenshot capture returned empty buffer");
@@ -484,8 +511,7 @@ export class ScreenshotHelper {
       console.error("Screenshot error:", error);
       throw error;
     } finally {
-      await new Promise((resolve) => setTimeout(resolve, this.getRestoreDelay()));
-      showMainWindow();
+      scheduleRestore(this.getRestoreDelay());
     }
 
     if (!screenshotBuffer || screenshotBuffer.length === 0) {
@@ -533,16 +559,29 @@ export class ScreenshotHelper {
 
     await new Promise((resolve) => setTimeout(resolve, this.getHideDelay()));
 
+    let restoreScheduled = false;
+    const scheduleRestore = (delay: number) => {
+      if (restoreScheduled) {
+        return;
+      }
+
+      restoreScheduled = true;
+      setTimeout(() => {
+        showMainWindow();
+      }, delay);
+    };
+
     let screenshotBuffer: Buffer | null = null;
     try {
-      screenshotBuffer = await this.captureScreenshot();
+      screenshotBuffer = await this.captureScreenshot(() => {
+        scheduleRestore(this.getEarlyRestoreDelay());
+      });
 
       if (!screenshotBuffer || screenshotBuffer.length === 0) {
         throw new Error("Screenshot capture returned empty buffer");
       }
     } finally {
-      await new Promise((resolve) => setTimeout(resolve, this.getRestoreDelay()));
-      showMainWindow();
+      scheduleRestore(this.getRestoreDelay());
     }
 
     if (!screenshotBuffer || screenshotBuffer.length === 0) {
@@ -579,15 +618,12 @@ export class ScreenshotHelper {
         await fs.promises.unlink(path);
       }
 
-      if (this.view === "queue") {
-        this.screenshotQueue = this.screenshotQueue.filter(
-          (filePath) => filePath !== path
-        );
-      } else {
-        this.extraScreenshotQueue = this.extraScreenshotQueue.filter(
-          (filePath) => filePath !== path
-        );
-      }
+      this.screenshotQueue = this.screenshotQueue.filter(
+        (filePath) => filePath !== path
+      );
+      this.extraScreenshotQueue = this.extraScreenshotQueue.filter(
+        (filePath) => filePath !== path
+      );
       return { success: true };
     } catch (error) {
       console.error("Error deleting file:", error);

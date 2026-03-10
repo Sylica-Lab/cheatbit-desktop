@@ -18,6 +18,7 @@ import type {
   LiveInterviewTranscriptData,
   PersistedChatMessage,
   TextFollowUpRequest,
+  TextFollowUpStreamEvent,
   TextFollowUpResponse
 } from "../shared/followUpChat"
 import type { DesktopUpdateState } from "../shared/desktopUpdates"
@@ -119,6 +120,9 @@ interface ElectronAPI {
   ) => Promise<
     { success: true; data: TextFollowUpResponse } | { success: false; error: string }
   >
+  onTextFollowUpStream: (
+    callback: (event: TextFollowUpStreamEvent) => void
+  ) => () => void
   openSubscriptionPortal: (authData: {
     id: string
     email: string
@@ -148,6 +152,7 @@ interface ElectronAPI {
   onProcessingNoScreenshots: (callback: () => void) => () => void
   onProblemExtracted: (callback: (data: any) => void) => () => void
   onSolutionSuccess: (callback: (data: any) => void) => () => void
+  onSolutionStream: (callback: (data: any) => void) => () => void
   onUnauthorized: (callback: () => void) => () => void
   onLiveInterviewState: (
     callback: (state: LiveInterviewState) => void

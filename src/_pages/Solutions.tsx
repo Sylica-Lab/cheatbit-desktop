@@ -4,8 +4,6 @@ import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter"
 import { dracula } from "react-syntax-highlighter/dist/esm/styles/prism"
 
-import ScreenshotQueue from "../components/Queue/ScreenshotQueue"
-
 import { ProblemStatementData } from "../types/solutions"
 import SolutionCommands from "../components/Solutions/SolutionCommands"
 import Debug from "./Debug"
@@ -204,6 +202,8 @@ const Solutions: React.FC<SolutionsProps> = ({
   const [problemStatementData, setProblemStatementData] =
     useState<ProblemStatementData | null>(null)
   const [solutionData, setSolutionData] = useState<string | null>(null)
+  const [streamingSolutionData, setStreamingSolutionData] = useState<string | null>(null)
+  const [streamingIsCodeResponse, setStreamingIsCodeResponse] = useState(true)
   const [isCodeResponse, setIsCodeResponse] = useState(true)
   const [thoughtsData, setThoughtsData] = useState<string[] | null>(null)
   const [timeComplexityData, setTimeComplexityData] = useState<string | null>(
@@ -226,6 +226,8 @@ const Solutions: React.FC<SolutionsProps> = ({
   }
 
   const [extraScreenshots, setExtraScreenshots] = useState<Screenshot[]>([])
+  const displayedSolutionData = solutionData || streamingSolutionData
+  const displayedIsCodeResponse = solutionData ? isCodeResponse : streamingIsCodeResponse
 
   useEffect(() => {
     const fetchScreenshots = async () => {
@@ -315,6 +317,8 @@ const Solutions: React.FC<SolutionsProps> = ({
       window.electronAPI.onSolutionStart(() => {
         // Every time processing starts, reset relevant states
         setSolutionData(null)
+        setStreamingSolutionData(null)
+        setStreamingIsCodeResponse(true)
         setThoughtsData(null)
         setTimeComplexityData(null)
         setSpaceComplexityData(null)
@@ -325,10 +329,19 @@ const Solutions: React.FC<SolutionsProps> = ({
       window.electronAPI.onProblemExtracted((data) => {
         queryClient.setQueryData(["problem_statement"], data)
       }),
+      window.electronAPI.onSolutionStream((data) => {
+        if (!data || typeof data.content !== "string") {
+          return
+        }
+
+        setStreamingSolutionData(data.content)
+        setStreamingIsCodeResponse(Boolean(data.isCodeResponse))
+      }),
       //if there was an error processing the initial solution
       window.electronAPI.onSolutionError((error: string) => {
         const toastCopy = getProcessingToastCopy(error)
         showToast(toastCopy.title, toastCopy.message, "error")
+        setStreamingSolutionData(null)
         // Reset solutions in the cache (even though this shouldn't ever happen) and complexities to previous states
         const solution = queryClient.getQueryData(["solution"]) as {
           code: string
@@ -366,6 +379,7 @@ const Solutions: React.FC<SolutionsProps> = ({
 
         queryClient.setQueryData(["solution"], solutionData)
         setSolutionData(solutionData.code || solutionData.answer || null)
+        setStreamingSolutionData(null)
         setIsCodeResponse(solutionData.is_code_response ?? true)
         setThoughtsData(solutionData.thoughts || null)
         setTimeComplexityData(solutionData.time_complexity || null)
@@ -375,13 +389,14 @@ const Solutions: React.FC<SolutionsProps> = ({
         const fetchScreenshots = async () => {
           try {
             const existing = await window.electronAPI.getScreenshots()
-            const screenshots =
-              existing.previews?.map((p) => ({
+            const screenshots = (Array.isArray(existing) ? existing : []).map(
+              (p) => ({
                 id: p.path,
                 path: p.path,
                 preview: p.preview,
                 timestamp: Date.now()
-              })) || []
+              })
+            )
             setExtraScreenshots(screenshots)
           } catch (error) {
             console.error("Error loading extra screenshots:", error)
@@ -468,36 +483,6 @@ const Solutions: React.FC<SolutionsProps> = ({
     setTooltipHeight(height)
   }
 
-  const handleDeleteExtraScreenshot = async (index: number) => {
-    const screenshotToDelete = extraScreenshots[index]
-
-    try {
-      const response = await window.electronAPI.deleteScreenshot(
-        screenshotToDelete.path
-      )
-
-      if (response.success) {
-        // Fetch and update screenshots after successful deletion
-        const existing = await window.electronAPI.getScreenshots()
-        const screenshots = (Array.isArray(existing) ? existing : []).map(
-          (p) => ({
-            id: p.path,
-            path: p.path,
-            preview: p.preview,
-            timestamp: Date.now()
-          })
-        )
-        setExtraScreenshots(screenshots)
-      } else {
-        console.error("Failed to delete extra screenshot:", response.error)
-        showToast("Error", "Failed to delete the screenshot", "error")
-      }
-    } catch (error) {
-      console.error("Error deleting extra screenshot:", error)
-      showToast("Error", "Failed to delete the screenshot", "error")
-    }
-  }
-
   const followUpContext = [
     problemStatementData?.problem_statement
       ? `Original prompt:\n${problemStatementData.problem_statement}`
@@ -535,21 +520,6 @@ const Solutions: React.FC<SolutionsProps> = ({
           className="relative inline-flex flex-col items-start bg-transparent"
         >
           <div className="space-y-3 px-4 py-3">
-          {/* Conditionally render the screenshot queue if solutionData is available */}
-          {solutionData && (
-            <div className="bg-transparent w-fit">
-              <div className="pb-3">
-                <div className="space-y-3">
-                  <ScreenshotQueue
-                    isLoading={debugProcessing}
-                    screenshots={extraScreenshots}
-                    onDeleteScreenshot={handleDeleteExtraScreenshot}
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-
           {/* Navbar of commands with the SolutionsHelper */}
           <SolutionCommands
             onTooltipVisibilityChange={handleTooltipVisibilityChange}
@@ -567,7 +537,7 @@ const Solutions: React.FC<SolutionsProps> = ({
           <div className="text-sm text-black bg-black/60 rounded-md">
             <div className="rounded-lg overflow-hidden">
               <div className="px-4 py-3 space-y-4 max-w-full">
-                {!solutionData && (
+                {!displayedSolutionData && (
                   <>
                     <ContentSection
                       title={
@@ -618,7 +588,7 @@ const Solutions: React.FC<SolutionsProps> = ({
                   </>
                 )}
 
-                {solutionData && (
+                {displayedSolutionData && (
                   <>
                     <ContentSection
                       title={`My Thoughts (${COMMAND_KEY} + Arrow keys to scroll)`}
@@ -643,11 +613,11 @@ const Solutions: React.FC<SolutionsProps> = ({
                     />
 
                     <SolutionSection
-                      title={isCodeResponse ? "Solution" : "Answer"}
-                      content={solutionData}
-                      isLoading={!solutionData}
+                      title={displayedIsCodeResponse ? "Solution" : "Answer"}
+                      content={displayedSolutionData}
+                      isLoading={!displayedSolutionData}
                       currentLanguage={currentLanguage}
-                      isCodeResponse={isCodeResponse}
+                      isCodeResponse={displayedIsCodeResponse}
                     />
 
                     {(
@@ -663,7 +633,7 @@ const Solutions: React.FC<SolutionsProps> = ({
                       />
                     )}
 
-                    <FollowUpChat currentContext={followUpContext} />
+                    {solutionData && <FollowUpChat currentContext={followUpContext} />}
                   </>
                 )}
               </div>

@@ -10,6 +10,7 @@ import { backendClient } from "./BackendClient"
 import type { UsageAction } from "../shared/backendAuth"
 import type {
   AssistantChatMode,
+  ChatThreadSummary,
   ComputerUseResumeData,
   ComputerUseStartData,
   ComputerUseState,
@@ -19,7 +20,10 @@ import type {
   LiveInterviewStartData,
   LiveInterviewState,
   LiveInterviewTranscriptData,
+  TextFollowUpStreamEvent,
 } from "../shared/followUpChat"
+
+const TEXT_FOLLOW_UP_STREAM_EVENT = "text-follow-up-stream"
 
 export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
   console.log("Initializing IPC handlers")
@@ -654,9 +658,10 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     }
   })
 
-  ipcMain.handle("submit-text-follow-up", async (_event, payload) => {
+  ipcMain.handle("submit-text-follow-up", async (event, payload) => {
     const message = String(payload?.message || "").trim()
     const currentContext = String(payload?.currentContext || "").trim()
+    const requestId = String(payload?.requestId || "").trim()
     const mode: AssistantChatMode =
       payload?.mode === "general" ? "general" : "follow_up"
     const chatHistory = Array.isArray(payload?.chatHistory)
@@ -710,14 +715,41 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
       }
     }
 
-    const result = await deps.processingHelper?.processTextFollowUp({
-      message,
-      currentContext,
-      chatHistory,
-      mode,
-    })
+    const emitStreamEvent = (streamEvent: TextFollowUpStreamEvent) => {
+      event.sender.send(TEXT_FOLLOW_UP_STREAM_EVENT, streamEvent)
+    }
+
+    const result = await deps.processingHelper?.processTextFollowUp(
+      {
+        requestId,
+        message,
+        currentContext,
+        chatHistory,
+        mode,
+      },
+      {
+        onStream:
+          requestId.length > 0
+            ? (content) => {
+                emitStreamEvent({
+                  requestId,
+                  content,
+                  done: false,
+                })
+              }
+            : undefined,
+      }
+    )
 
     if (!result) {
+      if (requestId) {
+        emitStreamEvent({
+          requestId,
+          content: "",
+          done: true,
+          error: "Failed to generate a follow-up response.",
+        })
+      }
       return {
         success: false as const,
         error: "Failed to generate a follow-up response.",
@@ -725,10 +757,26 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     }
 
     if (result.success === false) {
+      if (requestId) {
+        emitStreamEvent({
+          requestId,
+          content: "",
+          done: true,
+          error: result.error || "Failed to generate a follow-up response.",
+        })
+      }
       return {
         success: false as const,
         error: result.error || "Failed to generate a follow-up response.",
       }
+    }
+
+    if (requestId) {
+      emitStreamEvent({
+        requestId,
+        content: result.data.reply,
+        done: true,
+      })
     }
 
     return {
@@ -874,8 +922,9 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
         )
       } else {
         const extraQueue = deps.getExtraScreenshotQueue()
+        const queue = [...deps.getScreenshotQueue(), ...extraQueue]
         previews = await Promise.all(
-          extraQueue.map(async (path) => ({
+          queue.map(async (path) => ({
             path,
             preview: await deps.getImagePreview(path)
           }))
@@ -1131,9 +1180,12 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
   // Delete last screenshot handler
   ipcMain.handle("delete-last-screenshot", async () => {
     try {
-      const queue = deps.getView() === "queue" 
-        ? deps.getScreenshotQueue() 
-        : deps.getExtraScreenshotQueue()
+      const queue =
+        deps.getView() === "queue"
+          ? deps.getScreenshotQueue()
+          : deps.getExtraScreenshotQueue().length > 0
+            ? deps.getExtraScreenshotQueue()
+            : deps.getScreenshotQueue()
       
       if (queue.length === 0) {
         return { success: false, error: "No screenshots to delete" }

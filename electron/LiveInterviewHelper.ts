@@ -62,6 +62,18 @@ interface ActiveLiveInterviewSession {
   timer: NodeJS.Timeout | null
 }
 
+export interface LiveInterviewContextSnapshot {
+  threadId: string
+  status: LiveInterviewState["status"]
+  transcript: string
+  focusedTranscript: string
+  latestAnswer: string
+  latestTranscript: string
+  instructions: string[]
+  startedAt: string
+  lastUpdatedAt: string | null
+}
+
 export class LiveInterviewHelper {
   private readonly deps: LiveInterviewHelperDeps
   private session: ActiveLiveInterviewSession | null = null
@@ -77,6 +89,29 @@ export class LiveInterviewHelper {
 
   public hasActiveSession(): boolean {
     return this.session !== null
+  }
+
+  public getContextSnapshot(): LiveInterviewContextSnapshot | null {
+    const session = this.session
+    if (!session) {
+      return null
+    }
+
+    const transcript = this.getEffectiveTranscript(session)
+
+    return {
+      threadId: session.thread.id,
+      status: this.state.status,
+      transcript,
+      focusedTranscript: this.getFocusedRefreshTranscript(transcript),
+      latestAnswer: session.latestAnswer,
+      latestTranscript: session.latestTranscript,
+      instructions: session.instructions
+        .map((message) => message.content.trim())
+        .filter(Boolean),
+      startedAt: session.startedAt,
+      lastUpdatedAt: session.lastUpdatedAt,
+    }
   }
 
   public async startSession(): Promise<

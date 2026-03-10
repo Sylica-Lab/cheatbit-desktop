@@ -20,6 +20,7 @@ export interface FollowUpChatTurn {
 }
 
 export interface TextFollowUpRequest {
+  requestId?: string;
   message: string;
   currentContext: string;
   chatHistory?: FollowUpChatTurn[];
@@ -28,6 +29,13 @@ export interface TextFollowUpRequest {
 
 export interface TextFollowUpResponse {
   reply: string;
+}
+
+export interface TextFollowUpStreamEvent {
+  requestId: string;
+  content: string;
+  done: boolean;
+  error?: string;
 }
 
 export interface FollowUpChatMessage extends FollowUpChatTurn {

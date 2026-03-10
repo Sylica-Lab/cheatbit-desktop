@@ -18,6 +18,7 @@ import type {
   LiveInterviewTranscriptData,
   PersistedChatMessage,
   TextFollowUpRequest,
+  TextFollowUpStreamEvent,
   TextFollowUpResponse
 } from "../shared/followUpChat"
 import type { DesktopUpdateState } from "../shared/desktopUpdates"
@@ -44,6 +45,8 @@ export const PROCESSING_EVENTS = {
 
 const LIVE_INTERVIEW_STATE_EVENT = "live-interview-state"
 const COMPUTER_USE_STATE_EVENT = "computer-use-state"
+const TEXT_FOLLOW_UP_STREAM_EVENT = "text-follow-up-stream"
+const SOLUTION_STREAM_EVENT = "solution-stream"
 const DESKTOP_UPDATE_STATE_EVENT = "updates:state"
 const SHOW_UNINSTALL_OFFBOARDING_EVENT = "show-uninstall-offboarding"
 
@@ -140,6 +143,13 @@ const electronAPI = {
     ipcRenderer.invoke("submit-text-follow-up", payload) as Promise<
       { success: true; data: TextFollowUpResponse } | { success: false; error: string }
     >,
+  onTextFollowUpStream: (callback: (event: TextFollowUpStreamEvent) => void) => {
+    const subscription = (_: unknown, event: TextFollowUpStreamEvent) => callback(event)
+    ipcRenderer.on(TEXT_FOLLOW_UP_STREAM_EVENT, subscription)
+    return () => {
+      ipcRenderer.removeListener(TEXT_FOLLOW_UP_STREAM_EVENT, subscription)
+    }
+  },
   // Original methods
   openSubscriptionPortal: async (authData: { id: string; email: string }) => {
     return ipcRenderer.invoke("open-subscription-portal", authData)
@@ -256,6 +266,13 @@ const electronAPI = {
         PROCESSING_EVENTS.SOLUTION_SUCCESS,
         subscription
       )
+    }
+  },
+  onSolutionStream: (callback: (data: any) => void) => {
+    const subscription = (_: unknown, data: any) => callback(data)
+    ipcRenderer.on(SOLUTION_STREAM_EVENT, subscription)
+    return () => {
+      ipcRenderer.removeListener(SOLUTION_STREAM_EVENT, subscription)
     }
   },
   onUnauthorized: (callback: () => void) => {

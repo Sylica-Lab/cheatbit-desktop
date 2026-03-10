@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process"
+import crypto from "node:crypto"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -112,6 +113,8 @@ interface ActiveComputerUseSession {
   waitingForSecret: boolean
   launchedChrome: boolean
   ownsBrowserProcess: boolean
+  lastPageSignature: string | null
+  lastPageSummary: string
 }
 
 interface ActionExecutionResult {
@@ -128,6 +131,21 @@ interface BrowserEvaluateSnapshot {
   canvasCount: number
   embedCount: number
   inputCount: number
+}
+
+export interface BrowserAgentContextSnapshot {
+  threadId: string
+  status: ComputerUseState["status"]
+  task: string
+  currentUrl: string
+  currentTitle: string
+  currentAction: string
+  stepCount: number
+  needsSecretInput: boolean
+  latestError: string
+  pageSignature: string | null
+  pageSummary: string
+  extractedNotes: string[]
 }
 
 function wait(ms: number) {
@@ -375,6 +393,8 @@ export class BrowserAgentController {
         waitingForSecret: false,
         launchedChrome: false,
         ownsBrowserProcess: false,
+        lastPageSignature: null,
+        lastPageSummary: "",
       }
 
       this.updateState({
@@ -517,6 +537,28 @@ export class BrowserAgentController {
     this.resetState()
   }
 
+  public getContextSnapshot(): BrowserAgentContextSnapshot | null {
+    const session = this.session
+    if (!session) {
+      return null
+    }
+
+    return {
+      threadId: session.thread.id,
+      status: this.state.status,
+      task: session.task,
+      currentUrl: session.currentUrl,
+      currentTitle: session.currentTitle,
+      currentAction: session.currentAction,
+      stepCount: session.stepCount,
+      needsSecretInput: session.needsSecretInput,
+      latestError: session.latestError,
+      pageSignature: session.lastPageSignature,
+      pageSummary: session.lastPageSummary,
+      extractedNotes: session.extractedNotes.slice(-3),
+    }
+  }
+
   private clearSession(): void {
     this.session = null
   }
@@ -560,6 +602,42 @@ export class BrowserAgentController {
     return this.isCurrentSession(session) && !session?.isStopping
   }
 
+  private hashValue(value: string): string {
+    return crypto.createHash("sha1").update(value).digest("hex")
+  }
+
+  private buildBrowserPageSignature(snapshot: BrowserSnapshot): string {
+    return this.hashValue(
+      JSON.stringify({
+        url: snapshot.url,
+        title: snapshot.title,
+        headings: snapshot.headings.slice(0, 4),
+        bodyText: snapshot.bodyText.slice(0, 420),
+        selectedText: snapshot.selectedText,
+        activeElement: snapshot.activeElement,
+        pageKind: snapshot.pageKind,
+        interactiveTargets: snapshot.interactiveTargets
+          .slice(0, 6)
+          .map((target) => ({
+            id: target.targetId,
+            text: target.text,
+            label: target.label,
+            placeholder: target.placeholder,
+            href: target.href,
+          })),
+      })
+    )
+  }
+
+  private buildBrowserPageSummary(snapshot: BrowserSnapshot): string {
+    const headingLine =
+      snapshot.headings.length > 0
+        ? snapshot.headings.slice(0, 2).join(" · ")
+        : snapshot.title
+    const textPreview = snapshot.bodyText.trim().replace(/\s+/g, " ").slice(0, 180)
+    return [headingLine, textPreview].filter(Boolean).join(" — ").trim()
+  }
+
   private async runSession(session: ActiveComputerUseSession): Promise<void> {
     if (!this.canContinueSession(session)) {
       return
@@ -597,6 +675,8 @@ export class BrowserAgentController {
         }
         session.currentUrl = snapshot.url
         session.currentTitle = snapshot.title
+        session.lastPageSignature = this.buildBrowserPageSignature(snapshot)
+        session.lastPageSummary = this.buildBrowserPageSummary(snapshot)
         this.updateState({
           status: "running",
           threadId: session.thread.id,

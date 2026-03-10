@@ -303,7 +303,12 @@ const Queue: React.FC<QueueProps> = ({
                   onDeleteScreenshot={handleDeleteScreenshot}
                 />
               ) : (
-                <GeneralChatPanel computerTaskRequest={computerTaskRequest} />
+                <GeneralChatPanel
+                  computerTaskRequest={computerTaskRequest}
+                  onComputerTaskRequestConsumed={() => {
+                    setComputerTaskRequest(null)
+                  }}
+                />
               )}
             </div>
           )}
