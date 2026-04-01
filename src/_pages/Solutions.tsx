@@ -26,18 +26,18 @@ export const ContentSection = ({
   content: React.ReactNode
   isLoading: boolean
 }) => (
-  <div className="space-y-2">
-    <h2 className="text-[13px] font-medium text-white tracking-wide">
+  <div className="sylica-liquid-panel min-w-0 space-y-1.5 rounded-[18px] p-3">
+    <h2 className="text-[10px] font-semibold uppercase tracking-[0.18em] text-white/52">
       {title}
     </h2>
     {isLoading ? (
-      <div className="mt-4 flex">
+      <div className="mt-2 flex">
         <p className="text-xs bg-gradient-to-r from-gray-300 via-gray-100 to-gray-300 bg-clip-text text-transparent animate-pulse">
           Analyzing the question...
         </p>
       </div>
     ) : (
-      <div className="text-[13px] leading-[1.4] text-gray-100">
+      <div className="text-[12px] leading-[1.45] text-gray-100">
         {content}
       </div>
     )}
@@ -68,13 +68,13 @@ const SolutionSection = ({
   }
 
   return (
-    <div className="space-y-2 relative">
-      <h2 className="text-[13px] font-medium text-white tracking-wide">
+    <div className="sylica-liquid-panel relative min-w-0 space-y-1.5 rounded-[18px] p-3">
+      <h2 className="text-[10px] font-semibold uppercase tracking-[0.18em] text-white/52">
         {title}
       </h2>
       {isLoading ? (
         <div className="space-y-1.5">
-          <div className="mt-4 flex">
+          <div className="mt-2 flex">
             <p className="text-xs bg-gradient-to-r from-gray-300 via-gray-100 to-gray-300 bg-clip-text text-transparent animate-pulse">
               Loading solutions...
             </p>
@@ -84,7 +84,7 @@ const SolutionSection = ({
         <div className="relative">
           <button
             onClick={copyToClipboard}
-            className="absolute top-2 right-2 text-xs text-white bg-white/10 hover:bg-white/20 rounded px-2 py-1 transition"
+            className="sylica-glass-chip absolute right-2 top-2 rounded-[10px] px-2 py-1 text-[10px] text-white transition hover:bg-white/20"
           >
             {copied ? "Copied!" : "Copy"}
           </button>
@@ -95,9 +95,11 @@ const SolutionSection = ({
               style={dracula}
               customStyle={{
                 margin: 0,
-                padding: "1rem",
-                width: "fit-content",
-                minWidth: "100%",
+                padding: "0.75rem",
+                width: "100%",
+                maxWidth: "100%",
+                minWidth: "0",
+                boxSizing: "border-box",
                 overflowX: "auto",
                 backgroundColor: "rgba(22, 27, 34, 0.5)"
               }}
@@ -105,7 +107,7 @@ const SolutionSection = ({
               {content as string}
             </SyntaxHighlighter>
           ) : (
-            <div className="rounded-md bg-white/5 p-4 text-[13px] leading-[1.5] text-gray-100 whitespace-pre-wrap">
+            <div className="rounded-[14px] bg-white/[0.06] p-3 text-[12px] leading-[1.5] text-gray-100 whitespace-pre-wrap">
               {content}
             </div>
           )}
@@ -145,8 +147,8 @@ export const ComplexitySection = ({
   const formattedSpaceComplexity = formatComplexity(spaceComplexity);
   
   return (
-    <div className="space-y-2">
-      <h2 className="text-[13px] font-medium text-white tracking-wide">
+    <div className="sylica-liquid-panel space-y-1.5 rounded-[18px] p-3">
+      <h2 className="text-[10px] font-semibold uppercase tracking-[0.18em] text-white/52">
         Complexity
       </h2>
       {isLoading ? (
@@ -154,8 +156,8 @@ export const ComplexitySection = ({
           Calculating complexity...
         </p>
       ) : (
-        <div className="space-y-3">
-          <div className="text-[13px] leading-[1.4] text-gray-100 bg-white/5 rounded-md p-3">
+        <div className="grid grid-cols-2 gap-2">
+          <div className="text-[12px] leading-[1.35] text-gray-100 bg-white/[0.06] rounded-[14px] p-2.5">
             <div className="flex items-start gap-2">
               <div className="w-1 h-1 rounded-full bg-blue-400/80 mt-2 shrink-0" />
               <div>
@@ -163,7 +165,7 @@ export const ComplexitySection = ({
               </div>
             </div>
           </div>
-          <div className="text-[13px] leading-[1.4] text-gray-100 bg-white/5 rounded-md p-3">
+          <div className="text-[12px] leading-[1.35] text-gray-100 bg-white/[0.06] rounded-[14px] p-2.5">
             <div className="flex items-start gap-2">
               <div className="w-1 h-1 rounded-full bg-blue-400/80 mt-2 shrink-0" />
               <div>
@@ -197,6 +199,7 @@ const Solutions: React.FC<SolutionsProps> = ({
 }) => {
   const queryClient = useQueryClient()
   const contentRef = useRef<HTMLDivElement>(null)
+  const commandBarRef = useRef<HTMLDivElement>(null)
 
   const [debugProcessing, setDebugProcessing] = useState(false)
   const [problemStatementData, setProblemStatementData] =
@@ -215,6 +218,7 @@ const Solutions: React.FC<SolutionsProps> = ({
 
   const [isTooltipVisible, setIsTooltipVisible] = useState(false)
   const [tooltipHeight, setTooltipHeight] = useState(0)
+  const [contentWidth, setContentWidth] = useState<number | null>(null)
 
   const [isResetting, setIsResetting] = useState(false)
 
@@ -228,6 +232,27 @@ const Solutions: React.FC<SolutionsProps> = ({
   const [extraScreenshots, setExtraScreenshots] = useState<Screenshot[]>([])
   const displayedSolutionData = solutionData || streamingSolutionData
   const displayedIsCodeResponse = solutionData ? isCodeResponse : streamingIsCodeResponse
+
+  useEffect(() => {
+    const updateWidth = () => {
+      if (!commandBarRef.current) return
+      const nextWidth = Math.ceil(commandBarRef.current.getBoundingClientRect().width)
+      setContentWidth((currentWidth) =>
+        currentWidth === nextWidth ? currentWidth : nextWidth
+      )
+    }
+
+    updateWidth()
+
+    const observer = new ResizeObserver(updateWidth)
+    if (commandBarRef.current) {
+      observer.observe(commandBarRef.current)
+    }
+
+    return () => {
+      observer.disconnect()
+    }
+  }, [])
 
   useEffect(() => {
     const fetchScreenshots = async () => {
@@ -517,26 +542,38 @@ const Solutions: React.FC<SolutionsProps> = ({
       ) : (
         <div
           ref={contentRef}
-          className="relative inline-flex flex-col items-start bg-transparent"
+          className="relative inline-flex min-w-0 flex-col items-start bg-transparent"
         >
-          <div className="space-y-3 px-4 py-3">
+          <div className="space-y-2.5 px-1 py-1">
           {/* Navbar of commands with the SolutionsHelper */}
-          <SolutionCommands
-            onTooltipVisibilityChange={handleTooltipVisibilityChange}
-            isProcessing={!problemStatementData || !solutionData}
-            extraScreenshots={extraScreenshots}
-            credits={credits}
-            currentLanguage={currentLanguage}
-            setLanguage={setLanguage}
-            desktopUpdateState={desktopUpdateState}
-            onDownloadUpdate={onDownloadUpdate}
-            onInstallUpdate={onInstallUpdate}
-          />
+          <div ref={commandBarRef} className="w-fit">
+            <SolutionCommands
+              onTooltipVisibilityChange={handleTooltipVisibilityChange}
+              isProcessing={!problemStatementData || !solutionData}
+              extraScreenshots={extraScreenshots}
+              credits={credits}
+              currentLanguage={currentLanguage}
+              setLanguage={setLanguage}
+              desktopUpdateState={desktopUpdateState}
+              onDownloadUpdate={onDownloadUpdate}
+              onInstallUpdate={onInstallUpdate}
+            />
+          </div>
 
           {/* Main Content - Modified width constraints */}
-          <div className="text-sm text-black bg-black/60 rounded-md">
-            <div className="rounded-lg overflow-hidden">
-              <div className="px-4 py-3 space-y-4 max-w-full">
+          <div
+            className="sylica-liquid-shell overflow-hidden rounded-[28px] text-sm text-white"
+            style={
+              contentWidth
+                ? {
+                    width: `${contentWidth}px`,
+                    maxWidth: `${contentWidth}px`,
+                  }
+                : undefined
+            }
+          >
+            <div className="overflow-hidden rounded-[28px]">
+              <div className="min-w-0 max-w-full space-y-3 px-3 py-3">
                 {!displayedSolutionData && (
                   <>
                     <ContentSection
@@ -552,11 +589,11 @@ const Solutions: React.FC<SolutionsProps> = ({
                             <div>{problemStatementData.problem_statement}</div>
                             {problemStatementData.sub_questions &&
                               problemStatementData.sub_questions.length > 1 && (
-                                <div className="rounded-md bg-white/5 p-3">
-                                  <div className="mb-2 text-[12px] font-medium uppercase tracking-wide text-white/70">
+                                <div className="sylica-liquid-panel rounded-[14px] p-2.5">
+                                  <div className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-white/70">
                                     Detected Questions
                                   </div>
-                                  <div className="space-y-2">
+                                  <div className="space-y-1.5">
                                     {problemStatementData.sub_questions.map(
                                       (question, index) => (
                                         <div
@@ -579,7 +616,7 @@ const Solutions: React.FC<SolutionsProps> = ({
                       isLoading={!problemStatementData}
                     />
                     {problemStatementData && (
-                      <div className="mt-4 flex">
+                      <div className="mt-2 flex">
                         <p className="text-xs bg-gradient-to-r from-gray-300 via-gray-100 to-gray-300 bg-clip-text text-transparent animate-pulse">
                           Generating the answer...
                         </p>

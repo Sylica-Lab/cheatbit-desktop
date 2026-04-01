@@ -13,6 +13,18 @@ import type {
   FollowUpRole,
   PersistedChatMessage,
 } from "../shared/followUpChat"
+import type {
+  CreatePhonePairingSessionResponse,
+  PhonePairingSessionSummary,
+  PhoneRelayEventSummary,
+} from "../shared/phoneRelay"
+import type {
+  ConnectedAppIntegration,
+  IntegrationAssistantChatTurn,
+  IntegrationAssistantResponse,
+  IntegrationConnectResponse,
+  IntegrationProvider,
+} from "../shared/integrations"
 
 const DEFAULT_BACKEND_URL = "https://cheat.trybookai.com"
 const BACKEND_URL =
@@ -58,6 +70,26 @@ interface ChatMessageResponse {
   thread: ChatThreadSummary
   message: PersistedChatMessage
 }
+
+interface PhonePairingResponse {
+  pairing: PhonePairingSessionSummary
+}
+
+interface PhoneDevicesResponse {
+  devices: PhonePairingSessionSummary[]
+}
+
+interface PhoneEventsResponse {
+  events: PhoneRelayEventSummary[]
+}
+
+interface IntegrationsResponse {
+  integrations: ConnectedAppIntegration[]
+}
+
+interface IntegrationAssistantApiResponse extends IntegrationAssistantResponse {}
+
+interface IntegrationConnectApiResponse extends IntegrationConnectResponse {}
 
 class BackendRequestError extends Error {
   public readonly status?: number
@@ -310,6 +342,162 @@ export class BackendClient {
     )
   }
 
+  public async createPhonePairingSession(input?: {
+    desktopDeviceName?: string
+  }): Promise<CreatePhonePairingSessionResponse> {
+    const session = this.getStoredSession()
+    if (!session?.token) {
+      throw new Error("Please log in before pairing a phone.")
+    }
+
+    return this.request<CreatePhonePairingSessionResponse>(
+      "/api/phone/pairing-sessions",
+      {
+        method: "POST",
+        token: session.token,
+        body: {
+          desktopDeviceName: input?.desktopDeviceName,
+        },
+      }
+    )
+  }
+
+  public async getPhonePairingSession(
+    pairingId: string
+  ): Promise<PhonePairingSessionSummary> {
+    const session = this.getStoredSession()
+    if (!session?.token) {
+      throw new Error("Please log in before checking phone pairing.")
+    }
+
+    const response = await this.request<PhonePairingResponse>(
+      `/api/phone/pairing-sessions/${encodeURIComponent(pairingId)}`,
+      {
+        method: "GET",
+        token: session.token,
+      }
+    )
+
+    return response.pairing
+  }
+
+  public async listPhoneDevices(): Promise<PhonePairingSessionSummary[]> {
+    const session = this.getStoredSession()
+    if (!session?.token) {
+      throw new Error("Please log in before loading paired phones.")
+    }
+
+    const response = await this.request<PhoneDevicesResponse>("/api/phone/devices", {
+      method: "GET",
+      token: session.token,
+    })
+
+    return response.devices
+  }
+
+  public async listPhoneEvents(input?: {
+    pairingId?: string
+    after?: string | null
+  }): Promise<PhoneRelayEventSummary[]> {
+    const session = this.getStoredSession()
+    if (!session?.token) {
+      throw new Error("Please log in before loading phone relay events.")
+    }
+
+    const query = new URLSearchParams()
+    if (input?.pairingId) {
+      query.set("pairingId", input.pairingId)
+    }
+    if (input?.after) {
+      query.set("after", input.after)
+    }
+
+    const suffix = query.toString() ? `?${query.toString()}` : ""
+    const response = await this.request<PhoneEventsResponse>(
+      `/api/phone/events${suffix}`,
+      {
+        method: "GET",
+        token: session.token,
+      }
+    )
+
+    return response.events
+  }
+
+  public async listIntegrations(): Promise<ConnectedAppIntegration[]> {
+    const session = this.getStoredSession()
+    if (!session?.token) {
+      throw new Error("Please log in before loading connected apps.")
+    }
+
+    const response = await this.request<IntegrationsResponse>("/api/integrations", {
+      method: "GET",
+      token: session.token,
+    })
+
+    return response.integrations
+  }
+
+  public async createIntegrationConnectSession(
+    provider: IntegrationProvider
+  ): Promise<IntegrationConnectResponse> {
+    const session = this.getStoredSession()
+    if (!session?.token) {
+      throw new Error("Please log in before connecting an app.")
+    }
+
+    return this.request<IntegrationConnectApiResponse>(
+      `/api/integrations/${encodeURIComponent(provider)}/connect`,
+      {
+        method: "POST",
+        token: session.token,
+      }
+    )
+  }
+
+  public async disconnectIntegration(provider: IntegrationProvider): Promise<void> {
+    const session = this.getStoredSession()
+    if (!session?.token) {
+      throw new Error("Please log in before disconnecting an app.")
+    }
+
+    await this.request<{ success: boolean }>(
+      `/api/integrations/${encodeURIComponent(provider)}`,
+      {
+        method: "DELETE",
+        token: session.token,
+      }
+    )
+  }
+
+  public looksLikeIntegrationAssistantRequest(message: string): boolean {
+    return /\b(gmail|calendar|notion)\b/i.test(
+      String(message || "")
+    )
+  }
+
+  public async runIntegrationAssistantAction(input: {
+    message: string
+    chatHistory?: IntegrationAssistantChatTurn[]
+  }): Promise<IntegrationAssistantResponse> {
+    const session = this.getStoredSession()
+    if (!session?.token) {
+      throw new Error("Please log in before using connected apps.")
+    }
+
+    return this.request<IntegrationAssistantApiResponse>(
+      "/api/integrations/assistant-action",
+      {
+        method: "POST",
+        token: session.token,
+        body: {
+          message: input.message,
+          chatHistory: input.chatHistory || [],
+        },
+      }
+    )
+  }
+
   private setStoredSession(session: AuthSession | null): void {
     store.set("authSession", session)
   }
@@ -321,7 +509,7 @@ export class BackendClient {
   private async request<T>(
     pathname: string,
     options: {
-      method: "GET" | "POST" | "PATCH"
+      method: "GET" | "POST" | "PATCH" | "DELETE"
       token?: string
       body?: unknown
     }

@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "sylica-ai-backend": "file:.."
+  }
+}

@@ -41,6 +41,21 @@ const PORT =
   normalizePort(process.env.BACKEND_PORT) ||
   (IS_RENDER ? 10000 : 8787);
 const PUBLIC_DIR = path.join(CURRENT_DIR, "public");
+const MARKETING_PUBLIC_DIR = path.join(CURRENT_DIR, "..", "landing-static");
+const MARKETING_PAGE_ROUTE_MAP = new Map([
+  ["/", "index.html"],
+  ["/blog", "blog/index.html"],
+  ["/blogs", "blogs/index.html"],
+  ["/changelog", "changelog/index.html"],
+  ["/privacy", "privacy/index.html"],
+  ["/research", "research/index.html"],
+  ["/researches", "research/index.html"],
+  ["/security", "security/index.html"],
+  ["/terms", "terms/index.html"],
+  ["/tos", "terms/index.html"],
+  ["/terms-of-service", "terms/index.html"],
+  ["/privacy-policy", "privacy/index.html"],
+]);
 const MIGRATE_ONLY = process.argv.includes("--migrate-only");
 const TOKEN_SECRET =
   process.env.BACKEND_TOKEN_SECRET || "cheatbit-dev-secret";
@@ -76,6 +91,14 @@ const DODO_API_BASE_URL =
   DODO_ENVIRONMENT === "test_mode"
     ? "https://test.dodopayments.com"
     : "https://live.dodopayments.com";
+const TOGETHER_API_KEY = resolveConfiguredString(process.env.TOGETHER_API_KEY);
+const MOBILE_CHAT_MODEL =
+  resolveConfiguredString(process.env.MOBILE_CHAT_MODEL) ||
+  "moonshotai/Kimi-K2.5";
+const PHONE_PAIRING_TTL_MS = 10 * 60 * 1000;
+const PHONE_RELAY_QR_VERSION = 1;
+const PHONE_RELAY_EVENT_TYPES = new Set(["clipboard", "otp", "link", "note"]);
+const PHONE_RELAY_SOURCES = new Set(["mobile", "desktop"]);
 const STRIPE_SECRET_KEY = resolveConfiguredString(
   process.env.STRIPE_SECRET_KEY,
   builtInStripeConfig.secretKey
@@ -117,6 +140,32 @@ const BILLING_RETURN_URL = (
   ) ||
   `${BACKEND_PUBLIC_URL}/billing/return`
 ).replace(/\/$/, "");
+const GOOGLE_OAUTH_CLIENT_ID = resolveConfiguredString(
+  process.env.GOOGLE_OAUTH_CLIENT_ID
+);
+const GOOGLE_OAUTH_CLIENT_SECRET = resolveConfiguredString(
+  process.env.GOOGLE_OAUTH_CLIENT_SECRET
+);
+const NOTION_CLIENT_ID = resolveConfiguredString(process.env.NOTION_CLIENT_ID);
+const NOTION_CLIENT_SECRET = resolveConfiguredString(
+  process.env.NOTION_CLIENT_SECRET
+);
+const GOOGLE_OAUTH_REDIRECT_URI = `${BACKEND_PUBLIC_URL}/api/integrations/google/callback`;
+const NOTION_OAUTH_REDIRECT_URI = `${BACKEND_PUBLIC_URL}/api/integrations/notion/callback`;
+const INTEGRATION_ENCRYPTION_SECRET = resolveConfiguredString(
+  process.env.INTEGRATION_ENCRYPTION_SECRET,
+  TOKEN_SECRET
+);
+const GOOGLE_OAUTH_SCOPES = [
+  "openid",
+  "email",
+  "profile",
+  "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/gmail.compose",
+  "https://www.googleapis.com/auth/gmail.send",
+  "https://www.googleapis.com/auth/calendar.events",
+];
+const NOTION_API_VERSION = "2025-09-03";
 
 const PLAN_LIMITS = {
   free: { solveDaily: 20, debugDaily: 20, requestsPerHour: 20 },
@@ -155,6 +204,10 @@ const server = http.createServer(async (req, res) => {
 
     const url = new URL(req.url || "/", `http://${req.headers.host || HOST}`);
     const pathname = url.pathname;
+    const normalizedPath =
+      pathname.length > 1 && pathname.endsWith("/")
+        ? pathname.slice(0, -1)
+        : pathname;
 
     if (req.method === "GET" && pathname === "/health") {
       const nowResult = await query(
@@ -170,10 +223,52 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if ((req.method === "GET" || req.method === "HEAD") &&
-        (pathname === "/" || pathname === "/admin")) {
+    if (req.method === "GET" && pathname === "/api/researches") {
+      const researches = await listPublishedResearchPosts(50);
+      sendJson(res, 200, { researches });
+      return;
+    }
+
+    if (
+      (req.method === "GET" || req.method === "HEAD") &&
+      (pathname === "/admin" ||
+        pathname === "/dashboard" ||
+        pathname === "/dashboard.html")
+    ) {
       serveStatic(res, "dashboard.html", undefined, req.method === "HEAD");
       return;
+    }
+
+    if (req.method === "GET" || req.method === "HEAD") {
+      const marketingPageFile = MARKETING_PAGE_ROUTE_MAP.get(normalizedPath);
+      if (marketingPageFile) {
+        serveMarketingStatic(
+          res,
+          marketingPageFile,
+          undefined,
+          req.method === "HEAD"
+        );
+        return;
+      }
+
+      const marketingAssetPath = resolveStaticFilePath(
+        MARKETING_PUBLIC_DIR,
+        pathname.slice(1)
+      );
+      if (
+        marketingAssetPath &&
+        fs.existsSync(marketingAssetPath) &&
+        fs.statSync(marketingAssetPath).isFile()
+      ) {
+        serveStaticFile(
+          res,
+          marketingAssetPath,
+          pathname,
+          undefined,
+          req.method === "HEAD"
+        );
+        return;
+      }
     }
 
     if ((req.method === "GET" || req.method === "HEAD") && pathname === "/admin.css") {
@@ -413,6 +508,456 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "GET" && pathname === "/api/integrations/google/callback") {
+      const code = String(url.searchParams.get("code") || "").trim();
+      const state = String(url.searchParams.get("state") || "").trim();
+      const errorCode = String(url.searchParams.get("error") || "").trim();
+
+      if (errorCode) {
+        serveIntegrationCallbackPage(res, {
+          ok: false,
+          title: "Google connection cancelled",
+          description:
+            "Google did not finish the connection. Return to Sylica AI and try again.",
+        });
+        return;
+      }
+
+      if (!code || !state) {
+        serveIntegrationCallbackPage(res, {
+          ok: false,
+          title: "Google connection failed",
+          description: "Missing OAuth code or state.",
+        });
+        return;
+      }
+
+      try {
+        const statePayload = verifyIntegrationStateToken(state, "google");
+        if (!statePayload) {
+          throw new Error("This Google connection link is no longer valid.");
+        }
+
+        const tokenPayload = await exchangeGoogleAuthorizationCode(code);
+        const profile = await fetchGoogleProfile(tokenPayload.access_token);
+        await upsertUserIntegration({
+          userId: statePayload.sub,
+          provider: "google",
+          accessToken: tokenPayload.access_token,
+          refreshToken: tokenPayload.refresh_token || null,
+          tokenType: tokenPayload.token_type || "Bearer",
+          scopes: normalizeScopes(
+            tokenPayload.scope
+              ? tokenPayload.scope.split(/\s+/g)
+              : GOOGLE_OAUTH_SCOPES
+          ),
+          accessTokenExpiresAt:
+            typeof tokenPayload.expires_in === "number"
+              ? new Date(Date.now() + tokenPayload.expires_in * 1000)
+              : null,
+          externalAccountId: profile.id || null,
+          externalAccountEmail: profile.email || null,
+          externalAccountName:
+            profile.name || profile.given_name || profile.email || null,
+          metadata: {
+            picture: profile.picture || null,
+          },
+        });
+
+        serveIntegrationCallbackPage(res, {
+          ok: true,
+          title: "Google connected",
+          description:
+            "Gmail and Google Calendar are now connected. Return to Sylica AI and refresh the account dashboard.",
+        });
+      } catch (error) {
+        console.error("Google OAuth callback failed:", error);
+        serveIntegrationCallbackPage(res, {
+          ok: false,
+          title: "Google connection failed",
+          description:
+            error instanceof Error
+              ? error.message
+              : "Failed to connect Google.",
+        });
+      }
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/integrations/notion/callback") {
+      const code = String(url.searchParams.get("code") || "").trim();
+      const state = String(url.searchParams.get("state") || "").trim();
+      const errorCode = String(url.searchParams.get("error") || "").trim();
+
+      if (errorCode) {
+        serveIntegrationCallbackPage(res, {
+          ok: false,
+          title: "Notion connection cancelled",
+          description:
+            "Notion did not finish the connection. Return to Sylica AI and try again.",
+        });
+        return;
+      }
+
+      if (!code || !state) {
+        serveIntegrationCallbackPage(res, {
+          ok: false,
+          title: "Notion connection failed",
+          description: "Missing OAuth code or state.",
+        });
+        return;
+      }
+
+      try {
+        const statePayload = verifyIntegrationStateToken(state, "notion");
+        if (!statePayload) {
+          throw new Error("This Notion connection link is no longer valid.");
+        }
+
+        const tokenPayload = await exchangeNotionAuthorizationCode(code);
+        await upsertUserIntegration({
+          userId: statePayload.sub,
+          provider: "notion",
+          accessToken: tokenPayload.access_token,
+          refreshToken: tokenPayload.refresh_token || null,
+          tokenType: tokenPayload.token_type || "Bearer",
+          scopes: [],
+          accessTokenExpiresAt:
+            typeof tokenPayload.expires_in === "number"
+              ? new Date(Date.now() + tokenPayload.expires_in * 1000)
+              : null,
+          externalAccountId: tokenPayload.workspace_id || tokenPayload.bot_id || null,
+          externalAccountEmail: null,
+          externalAccountName: tokenPayload.workspace_name || null,
+          metadata: {
+            workspaceId: tokenPayload.workspace_id || null,
+            workspaceName: tokenPayload.workspace_name || null,
+            workspaceIcon: tokenPayload.workspace_icon || null,
+            ownerType: tokenPayload.owner?.type || null,
+            botId: tokenPayload.bot_id || null,
+          },
+        });
+
+        serveIntegrationCallbackPage(res, {
+          ok: true,
+          title: "Notion connected",
+          description:
+            "Notion is now connected. Return to Sylica AI and refresh the account dashboard.",
+        });
+      } catch (error) {
+        console.error("Notion OAuth callback failed:", error);
+        serveIntegrationCallbackPage(res, {
+          ok: false,
+          title: "Notion connection failed",
+          description:
+            error instanceof Error
+              ? error.message
+              : "Failed to connect Notion.",
+        });
+      }
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/integrations") {
+      const auth = await requireUser(req);
+      if (!auth.ok) {
+        sendJson(res, auth.status, { error: auth.error });
+        return;
+      }
+
+      const integrations = await listAppIntegrations(auth.user.id);
+      sendJson(res, 200, { integrations });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/integrations/assistant-action") {
+      const auth = await requireUser(req);
+      if (!auth.ok) {
+        sendJson(res, auth.status, { error: auth.error });
+        return;
+      }
+
+      const body = await parseJsonBody(req);
+      const message = normalizeChatContent(body.message);
+      const chatHistory = Array.isArray(body.chatHistory)
+        ? body.chatHistory
+            .filter(
+              (entry) =>
+                entry &&
+                (entry.role === "user" || entry.role === "assistant") &&
+                typeof entry.content === "string"
+            )
+            .map((entry) => ({
+              role: entry.role,
+              content: normalizeChatContent(entry.content),
+            }))
+            .filter((entry) => entry.content)
+            .slice(-10)
+        : [];
+
+      if (!message) {
+        sendJson(res, 400, { error: "A message is required." });
+        return;
+      }
+
+      const response = await handleIntegrationAssistantAction(auth.user, {
+        message,
+        chatHistory,
+      });
+      sendJson(res, 200, response);
+      return;
+    }
+
+    const integrationConnectMatch = pathname.match(/^\/api\/integrations\/([^/]+)\/connect$/);
+    if (req.method === "POST" && integrationConnectMatch) {
+      const auth = await requireUser(req);
+      if (!auth.ok) {
+        sendJson(res, auth.status, { error: auth.error });
+        return;
+      }
+
+      const provider = normalizeIntegrationProvider(integrationConnectMatch[1]);
+      if (!provider) {
+        sendJson(res, 400, { error: "A valid integration provider is required." });
+        return;
+      }
+
+      const urlValue = createIntegrationConnectUrl(auth.user.id, provider);
+      sendJson(res, 200, { provider, url: urlValue });
+      return;
+    }
+
+    const integrationDeleteMatch = pathname.match(/^\/api\/integrations\/([^/]+)$/);
+    if (req.method === "DELETE" && integrationDeleteMatch) {
+      const auth = await requireUser(req);
+      if (!auth.ok) {
+        sendJson(res, auth.status, { error: auth.error });
+        return;
+      }
+
+      const provider = normalizeIntegrationProvider(integrationDeleteMatch[1]);
+      if (!provider) {
+        sendJson(res, 400, { error: "A valid integration provider is required." });
+        return;
+      }
+
+      await deleteUserIntegration(auth.user.id, provider);
+      sendJson(res, 200, { success: true });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/phone/pairing-sessions") {
+      const auth = await requireUser(req);
+      if (!auth.ok) {
+        sendJson(res, auth.status, { error: auth.error });
+        return;
+      }
+
+      const body = await parseJsonBody(req);
+      await expirePhonePairingSessions(auth.user.id);
+
+      const pairingToken = createPhonePairingToken();
+      const pairing = await createPhonePairingSession({
+        id: createId("pair"),
+        userId: auth.user.id,
+        pairingTokenHash: hashPhonePairingToken(pairingToken),
+        desktopDeviceName: normalizePhoneDeviceName(
+          body.desktopDeviceName,
+          "Sylica Desktop"
+        ),
+        expiresAt: new Date(Date.now() + PHONE_PAIRING_TTL_MS),
+      });
+
+      sendJson(res, 201, {
+        pairing,
+        manualCode: `${pairing.id}:${pairingToken}`,
+        qrPayload: {
+          type: "sylica-phone-pair",
+          version: PHONE_RELAY_QR_VERSION,
+          apiBaseUrl: BACKEND_PUBLIC_URL,
+          pairingId: pairing.id,
+          pairingToken,
+        },
+      });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/phone/pairing-sessions/complete") {
+      const auth = await requireUser(req);
+      if (!auth.ok) {
+        sendJson(res, auth.status, { error: auth.error });
+        return;
+      }
+
+      const body = await parseJsonBody(req);
+      const pairingId = normalizeIdentifier(body.pairingId, 120);
+      const pairingToken = normalizeIdentifier(
+        body.pairingToken || body.token,
+        256
+      );
+
+      if (!pairingId || !pairingToken) {
+        sendJson(res, 400, {
+          error: "Pairing id and pairing token are required.",
+        });
+        return;
+      }
+
+      await expirePhonePairingSessions(auth.user.id);
+      const pairingRecord = await getPhonePairingSessionRecord(pairingId);
+
+      if (!pairingRecord || pairingRecord.user_id !== auth.user.id) {
+        sendJson(res, 404, { error: "Pairing session not found." });
+        return;
+      }
+
+      if (pairingRecord.status === "paired") {
+        sendJson(res, 200, {
+          pairing: mapPhonePairingRow(pairingRecord),
+        });
+        return;
+      }
+
+      if (pairingRecord.status !== "pending") {
+        sendJson(res, 409, {
+          error: "This pairing session is no longer available.",
+        });
+        return;
+      }
+
+      const expiresAt = toDate(pairingRecord.expires_at);
+      if (!expiresAt || expiresAt.getTime() <= Date.now()) {
+        await markPhonePairingSessionExpired(pairingId);
+        sendJson(res, 410, { error: "This pairing session has expired." });
+        return;
+      }
+
+      if (
+        pairingRecord.pairing_token_hash !==
+        hashPhonePairingToken(pairingToken)
+      ) {
+        sendJson(res, 401, { error: "Invalid pairing token." });
+        return;
+      }
+
+      const pairing = await markPhonePairingSessionPaired({
+        pairingId,
+        mobileDeviceName: normalizePhoneDeviceName(
+          body.mobileDeviceName,
+          "Sylica Mobile"
+        ),
+      });
+
+      sendJson(res, 200, { pairing });
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/phone/devices") {
+      const auth = await requireUser(req);
+      if (!auth.ok) {
+        sendJson(res, auth.status, { error: auth.error });
+        return;
+      }
+
+      await expirePhonePairingSessions(auth.user.id);
+      const devices = await listPhonePairingDevices(auth.user.id);
+      sendJson(res, 200, { devices });
+      return;
+    }
+
+    if (pathname === "/api/phone/events") {
+      const auth = await requireUser(req);
+      if (!auth.ok) {
+        sendJson(res, auth.status, { error: auth.error });
+        return;
+      }
+
+      await expirePhonePairingSessions(auth.user.id);
+
+      if (req.method === "GET") {
+        const pairingId = normalizeIdentifier(url.searchParams.get("pairingId"), 120);
+        const after = parseOptionalIsoDate(url.searchParams.get("after"));
+        const events = await listPhoneRelayEvents(auth.user.id, {
+          pairingId,
+          after,
+          limit: 40,
+        });
+        sendJson(res, 200, { events });
+        return;
+      }
+
+      if (req.method === "POST") {
+        const body = await parseJsonBody(req);
+        const pairingId = normalizeIdentifier(body.pairingId, 120);
+        const eventType = isPhoneRelayEventType(body.eventType)
+          ? body.eventType
+          : null;
+        const source = isPhoneRelaySource(body.source) ? body.source : "mobile";
+
+        if (!pairingId || !eventType) {
+          sendJson(res, 400, {
+            error: "A valid pairing id and relay event type are required.",
+          });
+          return;
+        }
+
+        const pairing = await getPhonePairingSessionForUser(pairingId, auth.user.id);
+        if (!pairing) {
+          sendJson(res, 404, { error: "Paired desktop not found." });
+          return;
+        }
+
+        if (pairing.status !== "paired") {
+          sendJson(res, 409, {
+            error: "This paired desktop is not ready for relay events yet.",
+          });
+          return;
+        }
+
+        const payload = normalizePhoneRelayPayload(eventType, body.payload);
+        if (!payload) {
+          sendJson(res, 400, {
+            error: "Relay event payload is missing required fields.",
+          });
+          return;
+        }
+
+        const event = await createPhoneRelayEvent({
+          id: createId("pev"),
+          userId: auth.user.id,
+          pairingId,
+          source,
+          eventType,
+          payload,
+        });
+
+        await touchPhonePairingSession(pairingId);
+        sendJson(res, 201, { event });
+        return;
+      }
+    }
+
+    const phonePairingMatch = pathname.match(/^\/api\/phone\/pairing-sessions\/([^/]+)$/);
+    if (req.method === "GET" && phonePairingMatch) {
+      const auth = await requireUser(req);
+      if (!auth.ok) {
+        sendJson(res, auth.status, { error: auth.error });
+        return;
+      }
+
+      await expirePhonePairingSessions(auth.user.id);
+      const pairingId = decodeURIComponent(phonePairingMatch[1]);
+      const pairing = await getPhonePairingSessionForUser(pairingId, auth.user.id);
+
+      if (!pairing) {
+        sendJson(res, 404, { error: "Pairing session not found." });
+        return;
+      }
+
+      sendJson(res, 200, { pairing });
+      return;
+    }
+
     if (req.method === "GET" && pathname === "/api/chat/threads") {
       const auth = await requireUser(req);
       if (!auth.ok) {
@@ -448,6 +993,100 @@ const server = http.createServer(async (req, res) => {
       });
 
       sendJson(res, 201, { thread });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/mobile/chat/respond") {
+      const auth = await requireUser(req);
+      if (!auth.ok) {
+        sendJson(res, auth.status, { error: auth.error });
+        return;
+      }
+
+      const body = await parseJsonBody(req);
+      const message = normalizeChatContent(body.message);
+      const requestedThreadId = normalizeChatContent(body.threadId);
+
+      if (!message) {
+        sendJson(res, 400, { error: "A non-empty message is required." });
+        return;
+      }
+
+      const decision = await evaluateUsage(auth.user, "solve");
+      if (!decision.allowed) {
+        await recordUsageEvent(auth.user.id, "solve", false, decision.error);
+        sendJson(res, decision.statusCode || 429, {
+          error: decision.error || "This account cannot send chat messages right now.",
+          usage: await buildUsageSnapshot(auth.user),
+        });
+        return;
+      }
+
+      let thread = requestedThreadId
+        ? await getChatThreadForUser(requestedThreadId, auth.user.id)
+        : null;
+
+      if (thread && thread.mode !== "general") {
+        sendJson(res, 400, {
+          error: "Mobile chat can only continue standard chat threads.",
+        });
+        return;
+      }
+
+      if (!thread) {
+        thread = await createChatThread({
+          id: createId("thr"),
+          userId: auth.user.id,
+          mode: "general",
+          title: summarizeChatTitle(message),
+        });
+      }
+
+      const userMessage = await appendChatMessage({
+        id: createId("msg"),
+        threadId: thread.id,
+        userId: auth.user.id,
+        role: "user",
+        content: message,
+      });
+
+      let assistantReply;
+      try {
+        const recentMessages = await listChatMessages(thread.id, auth.user.id);
+        assistantReply = await generateMobileAssistantReply({
+          user: auth.user,
+          latestMessage: message,
+          recentMessages: recentMessages.slice(-12),
+        });
+      } catch (error) {
+        console.error("Mobile chat reply generation failed:", error);
+        sendJson(res, 503, {
+          error:
+            error instanceof Error
+              ? error.message
+              : "Mobile chat is not available right now.",
+        });
+        return;
+      }
+
+      const assistantMessage = await appendChatMessage({
+        id: createId("msg"),
+        threadId: thread.id,
+        userId: auth.user.id,
+        role: "assistant",
+        content: assistantReply,
+      });
+
+      await recordUsageEvent(auth.user.id, "solve", true, null);
+      const usage = await buildUsageSnapshot(auth.user);
+      const refreshedThread = await getChatThreadForUser(thread.id, auth.user.id);
+
+      sendJson(res, 200, {
+        thread: refreshedThread || thread,
+        userMessage,
+        assistantMessage,
+        usage,
+      });
       return;
     }
 
@@ -642,6 +1281,41 @@ const server = http.createServer(async (req, res) => {
       if (req.method === "GET" && pathname === "/api/admin/events") {
         const events = await getAdminEvents(150);
         sendJson(res, 200, { events });
+        return;
+      }
+
+      if (req.method === "GET" && pathname === "/api/admin/researches") {
+        const researches = await listAdminResearchPosts(100);
+        sendJson(res, 200, { researches });
+        return;
+      }
+
+      if (req.method === "POST" && pathname === "/api/admin/researches") {
+        const body = await parseJsonBody(req);
+        const title = normalizeResearchTitle(body.title);
+        const content = normalizeResearchContent(body.content);
+        const summary = normalizeResearchSummary(body.summary, content);
+        const authorName =
+          normalizeResearchAuthorName(body.authorName) || "Sylica AI Research";
+
+        if (!title || !content || !summary) {
+          sendJson(res, 400, {
+            error: "Title and content are required to publish research.",
+          });
+          return;
+        }
+
+        const research = await createResearchPost({
+          id: createId("res"),
+          slug: await buildUniqueResearchSlug(title),
+          title,
+          summary,
+          content,
+          authorName,
+          createdByAdminId: auth.admin.id,
+        });
+
+        sendJson(res, 201, { research });
         return;
       }
 
@@ -852,7 +1526,10 @@ async function seedAdmin() {
 function addCorsHeaders(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS, HEAD");
+  res.setHeader(
+    "Access-Control-Allow-Methods",
+    "GET, POST, PATCH, DELETE, OPTIONS, HEAD"
+  );
 }
 
 function sendJson(res, statusCode, payload) {
@@ -865,7 +1542,48 @@ function sendJson(res, statusCode, payload) {
 }
 
 function serveStatic(res, fileName, contentType, headOnly = false) {
-  const filePath = path.join(PUBLIC_DIR, fileName);
+  serveStaticFromDir(res, PUBLIC_DIR, fileName, contentType, headOnly);
+}
+
+function serveMarketingStatic(res, fileName, contentType, headOnly = false) {
+  serveStaticFromDir(res, MARKETING_PUBLIC_DIR, fileName, contentType, headOnly);
+}
+
+function serveStaticFromDir(res, rootDir, fileName, contentType, headOnly = false) {
+  const filePath = resolveStaticFilePath(rootDir, fileName);
+  if (!filePath) {
+    sendJson(res, 404, { error: "Static asset not found." });
+    return;
+  }
+
+  serveStaticFile(res, filePath, fileName, contentType, headOnly);
+}
+
+function resolveStaticFilePath(rootDir, fileName) {
+  const normalized = path.posix
+    .normalize(`/${String(fileName || "").replace(/^\/+/, "")}`)
+    .replace(/^\/+/, "");
+
+  if (!normalized || normalized.startsWith("..")) {
+    return null;
+  }
+
+  const resolvedPath = path.join(rootDir, normalized);
+  const relativePath = path.relative(rootDir, resolvedPath);
+  if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+    return null;
+  }
+
+  return resolvedPath;
+}
+
+function serveStaticFile(
+  res,
+  filePath,
+  fileName,
+  contentType,
+  headOnly = false
+) {
   if (!fs.existsSync(filePath)) {
     sendJson(res, 404, { error: "Static asset not found." });
     return;
@@ -1025,6 +1743,116 @@ function serveBillingReturnPage(res, options) {
     "Content-Length": Buffer.byteLength(html),
   });
   res.end(html);
+}
+
+function serveIntegrationCallbackPage(res, options) {
+  const title = options.ok ? options.title || "Connected" : options.title || "Connection failed";
+  const description = options.description || "Return to Sylica AI and refresh the dashboard.";
+  const html = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${escapeHtml(title)}</title>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: #050505;
+        color: white;
+        font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      main {
+        width: min(560px, calc(100vw - 32px));
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 24px;
+        padding: 28px;
+        background:
+          radial-gradient(circle at top left, rgba(125, 249, 199, 0.14), transparent 34%),
+          linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.01));
+        box-shadow: 0 30px 100px rgba(0, 0, 0, 0.48);
+      }
+      h1 {
+        margin: 0 0 10px;
+        font-size: 28px;
+      }
+      p {
+        margin: 0;
+        line-height: 1.6;
+        color: rgba(255, 255, 255, 0.72);
+      }
+      .badge {
+        display: inline-flex;
+        margin-bottom: 14px;
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: ${options.ok ? "rgba(125, 249, 199, 0.16)" : "rgba(248, 113, 113, 0.16)"};
+        color: ${options.ok ? "#7df9c7" : "#fca5a5"};
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="badge">${options.ok ? "Connected" : "Action needed"}</div>
+      <h1>${escapeHtml(title)}</h1>
+      <p>${escapeHtml(description)}</p>
+    </main>
+  </body>
+</html>`;
+
+  res.writeHead(options.ok ? 200 : 400, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Length": Buffer.byteLength(html),
+  });
+  res.end(html);
+}
+
+function encryptSensitiveValue(value) {
+  const text = String(value || "");
+  if (!text) {
+    return "";
+  }
+
+  const key = crypto
+    .createHash("sha256")
+    .update(INTEGRATION_ENCRYPTION_SECRET)
+    .digest();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const encrypted = Buffer.concat([
+    cipher.update(text, "utf8"),
+    cipher.final(),
+  ]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([iv, tag, encrypted]).toString("base64url");
+}
+
+function decryptSensitiveValue(value) {
+  const encoded = String(value || "").trim();
+  if (!encoded) {
+    return "";
+  }
+
+  const raw = Buffer.from(encoded, "base64url");
+  const iv = raw.subarray(0, 12);
+  const tag = raw.subarray(12, 28);
+  const encrypted = raw.subarray(28);
+  const key = crypto
+    .createHash("sha256")
+    .update(INTEGRATION_ENCRYPTION_SECRET)
+    .digest();
+  const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([
+    decipher.update(encrypted),
+    decipher.final(),
+  ]).toString("utf8");
 }
 
 async function createDodoCheckoutSession(user) {
@@ -2048,6 +2876,7 @@ async function buildUserDashboard(user) {
     user: sanitizeUser(user),
     usage: await buildUsageSnapshot(user),
     billing: buildBillingSummary(user),
+    integrations: await listAppIntegrations(user.id),
     recentEvents: await getRecentEvents(user.id, 20),
     dailyActivity: await getDailyActivity(user.id, 7),
   };
@@ -2104,6 +2933,1499 @@ function mapUserRow(row) {
       ? toDate(row.subscription_renews_at)
       : null,
   };
+}
+
+function mapResearchRow(row) {
+  return {
+    id: row.id,
+    slug: row.slug,
+    title: row.title,
+    summary: row.summary,
+    content: row.content,
+    authorName: row.author_name || "Sylica AI Research",
+    createdByAdminId: row.created_by_admin_id || null,
+    publishedAt: toIso(row.published_at),
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+  };
+}
+
+async function listPublishedResearchPosts(limit = 50) {
+  const result = await query(
+    `
+      SELECT *
+      FROM research_posts
+      WHERE published_at IS NOT NULL
+      ORDER BY published_at DESC, created_at DESC
+      LIMIT $1
+    `,
+    [limit]
+  );
+
+  return result.rows.map(mapResearchRow);
+}
+
+async function listAdminResearchPosts(limit = 100) {
+  const result = await query(
+    `
+      SELECT *
+      FROM research_posts
+      ORDER BY published_at DESC, created_at DESC
+      LIMIT $1
+    `,
+    [limit]
+  );
+
+  return result.rows.map(mapResearchRow);
+}
+
+async function createResearchPost(input) {
+  const result = await query(
+    `
+      INSERT INTO research_posts (
+        id,
+        slug,
+        title,
+        summary,
+        content,
+        author_name,
+        created_by_admin_id,
+        published_at,
+        created_at,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW(), NOW())
+      RETURNING *
+    `,
+    [
+      input.id,
+      input.slug,
+      input.title,
+      input.summary,
+      input.content,
+      input.authorName || null,
+      input.createdByAdminId || null,
+    ]
+  );
+
+  return mapResearchRow(result.rows[0]);
+}
+
+function mapUserIntegrationRow(row) {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    provider: row.provider,
+    status: row.status,
+    accessTokenEncrypted: row.access_token_encrypted,
+    refreshTokenEncrypted: row.refresh_token_encrypted || null,
+    tokenType: row.token_type || null,
+    scopes: String(row.scopes || "")
+      .split(/\s+/g)
+      .map((value) => value.trim())
+      .filter(Boolean),
+    accessTokenExpiresAt: row.access_token_expires_at
+      ? toDate(row.access_token_expires_at)
+      : null,
+    externalAccountId: row.external_account_id || null,
+    externalAccountEmail: row.external_account_email || null,
+    externalAccountName: row.external_account_name || null,
+    metadata:
+      row.metadata_json && typeof row.metadata_json === "object"
+        ? row.metadata_json
+        : {},
+    createdAt: toDate(row.created_at),
+    updatedAt: toDate(row.updated_at),
+    lastUsedAt: row.last_used_at ? toDate(row.last_used_at) : null,
+  };
+}
+
+async function listUserIntegrationRows(userId) {
+  const result = await query(
+    `
+      SELECT *
+      FROM user_integrations
+      WHERE user_id = $1
+      ORDER BY updated_at DESC, created_at DESC
+    `,
+    [userId]
+  );
+
+  return result.rows.map(mapUserIntegrationRow);
+}
+
+async function getUserIntegration(userId, provider) {
+  const result = await query(
+    `
+      SELECT *
+      FROM user_integrations
+      WHERE user_id = $1
+        AND provider = $2
+      LIMIT 1
+    `,
+    [userId, provider]
+  );
+
+  return result.rows[0] ? mapUserIntegrationRow(result.rows[0]) : null;
+}
+
+async function upsertUserIntegration(input) {
+  const result = await query(
+    `
+      INSERT INTO user_integrations (
+        id,
+        user_id,
+        provider,
+        status,
+        access_token_encrypted,
+        refresh_token_encrypted,
+        token_type,
+        scopes,
+        access_token_expires_at,
+        external_account_id,
+        external_account_email,
+        external_account_name,
+        metadata_json,
+        created_at,
+        updated_at,
+        last_used_at
+      )
+      VALUES (
+        $1, $2, $3, 'connected', $4, $5, $6, $7, $8,
+        $9, $10, $11, $12::jsonb, NOW(), NOW(), NOW()
+      )
+      ON CONFLICT (user_id, provider)
+      DO UPDATE SET
+        status = 'connected',
+        access_token_encrypted = EXCLUDED.access_token_encrypted,
+        refresh_token_encrypted = COALESCE(
+          EXCLUDED.refresh_token_encrypted,
+          user_integrations.refresh_token_encrypted
+        ),
+        token_type = COALESCE(EXCLUDED.token_type, user_integrations.token_type),
+        scopes = EXCLUDED.scopes,
+        access_token_expires_at = EXCLUDED.access_token_expires_at,
+        external_account_id = COALESCE(
+          EXCLUDED.external_account_id,
+          user_integrations.external_account_id
+        ),
+        external_account_email = COALESCE(
+          EXCLUDED.external_account_email,
+          user_integrations.external_account_email
+        ),
+        external_account_name = COALESCE(
+          EXCLUDED.external_account_name,
+          user_integrations.external_account_name
+        ),
+        metadata_json = EXCLUDED.metadata_json,
+        updated_at = NOW(),
+        last_used_at = NOW()
+      RETURNING *
+    `,
+    [
+      createId("int"),
+      input.userId,
+      input.provider,
+      encryptSensitiveValue(input.accessToken),
+      input.refreshToken ? encryptSensitiveValue(input.refreshToken) : null,
+      input.tokenType || null,
+      normalizeScopes(input.scopes || []),
+      input.accessTokenExpiresAt || null,
+      input.externalAccountId || null,
+      input.externalAccountEmail || null,
+      input.externalAccountName || null,
+      JSON.stringify(input.metadata || {}),
+    ]
+  );
+
+  return mapUserIntegrationRow(result.rows[0]);
+}
+
+async function updateUserIntegrationTokens(id, input) {
+  const result = await query(
+    `
+      UPDATE user_integrations
+      SET
+        status = 'connected',
+        access_token_encrypted = $2,
+        refresh_token_encrypted = COALESCE($3, refresh_token_encrypted),
+        token_type = COALESCE($4, token_type),
+        scopes = CASE
+          WHEN $5::text = '' THEN scopes
+          ELSE $5::text
+        END,
+        access_token_expires_at = $6,
+        updated_at = NOW(),
+        last_used_at = NOW()
+      WHERE id = $1
+      RETURNING *
+    `,
+    [
+      id,
+      encryptSensitiveValue(input.accessToken),
+      input.refreshToken ? encryptSensitiveValue(input.refreshToken) : null,
+      input.tokenType || null,
+      normalizeScopes(input.scopes || []),
+      input.accessTokenExpiresAt || null,
+    ]
+  );
+
+  return result.rows[0] ? mapUserIntegrationRow(result.rows[0]) : null;
+}
+
+async function deleteUserIntegration(userId, provider) {
+  await query(
+    `
+      DELETE FROM user_integrations
+      WHERE user_id = $1
+        AND provider = $2
+    `,
+    [userId, provider]
+  );
+}
+
+async function markUserIntegrationUsed(id) {
+  await query(
+    `
+      UPDATE user_integrations
+      SET
+        last_used_at = NOW(),
+        updated_at = updated_at
+      WHERE id = $1
+    `,
+    [id]
+  );
+}
+
+function isGoogleIntegrationConfigured() {
+  return Boolean(GOOGLE_OAUTH_CLIENT_ID && GOOGLE_OAUTH_CLIENT_SECRET);
+}
+
+function isNotionIntegrationConfigured() {
+  return Boolean(NOTION_CLIENT_ID && NOTION_CLIENT_SECRET);
+}
+
+function normalizeIntegrationProvider(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (
+    normalized === "google" ||
+    normalized === "gmail" ||
+    normalized === "google_calendar" ||
+    normalized === "calendar"
+  ) {
+    return "google";
+  }
+
+  if (normalized === "notion") {
+    return "notion";
+  }
+
+  return null;
+}
+
+function buildConnectedAppIntegration(options) {
+  return {
+    app: options.app,
+    provider: options.provider,
+    label: options.label,
+    connected: Boolean(options.connected),
+    configured: Boolean(options.configured),
+    statusText: options.statusText,
+    accountEmail: options.accountEmail || null,
+    accountName: options.accountName || null,
+    workspaceName: options.workspaceName || null,
+    connectedAt: toIso(options.connectedAt || null),
+    lastSyncedAt: toIso(options.lastSyncedAt || null),
+    supports: Array.isArray(options.supports) ? options.supports : [],
+    sharedConnectionLabel: options.sharedConnectionLabel || null,
+  };
+}
+
+async function listAppIntegrations(userId) {
+  const rows = await listUserIntegrationRows(userId);
+  const google = rows.find((row) => row.provider === "google") || null;
+  const notion = rows.find((row) => row.provider === "notion") || null;
+
+  return [
+    buildConnectedAppIntegration({
+      app: "gmail",
+      provider: "google",
+      label: "Gmail",
+      connected: Boolean(google),
+      configured: isGoogleIntegrationConfigured(),
+      statusText: google
+        ? `Connected as ${google.externalAccountEmail || google.externalAccountName || "your Google account"}.`
+        : isGoogleIntegrationConfigured()
+        ? "Connect Google once to search Gmail and draft or send email."
+        : "Set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET in the backend env.",
+      accountEmail: google?.externalAccountEmail || null,
+      accountName: google?.externalAccountName || null,
+      connectedAt: google?.createdAt || null,
+      lastSyncedAt: google?.updatedAt || null,
+      supports: ["Search recent email", "Draft email", "Send email"],
+      sharedConnectionLabel: "Shared Google connection",
+    }),
+    buildConnectedAppIntegration({
+      app: "google_calendar",
+      provider: "google",
+      label: "Google Calendar",
+      connected: Boolean(google),
+      configured: isGoogleIntegrationConfigured(),
+      statusText: google
+        ? `Connected as ${google.externalAccountEmail || google.externalAccountName || "your Google account"}.`
+        : isGoogleIntegrationConfigured()
+        ? "Connect Google once to list upcoming events and create calendar events."
+        : "Set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET in the backend env.",
+      accountEmail: google?.externalAccountEmail || null,
+      accountName: google?.externalAccountName || null,
+      connectedAt: google?.createdAt || null,
+      lastSyncedAt: google?.updatedAt || null,
+      supports: ["Show upcoming events", "Create calendar events"],
+      sharedConnectionLabel: "Shared Google connection",
+    }),
+    buildConnectedAppIntegration({
+      app: "notion",
+      provider: "notion",
+      label: "Notion",
+      connected: Boolean(notion),
+      configured: isNotionIntegrationConfigured(),
+      statusText: notion
+        ? `Connected to ${notion.metadata?.workspaceName || notion.externalAccountName || "your Notion workspace"}.`
+        : isNotionIntegrationConfigured()
+        ? "Connect Notion to search pages and create workspace pages."
+        : "Set NOTION_CLIENT_ID and NOTION_CLIENT_SECRET in the backend env.",
+      accountEmail: notion?.externalAccountEmail || null,
+      accountName: notion?.externalAccountName || null,
+      workspaceName: notion?.metadata?.workspaceName || notion?.externalAccountName || null,
+      connectedAt: notion?.createdAt || null,
+      lastSyncedAt: notion?.updatedAt || null,
+      supports: ["Search pages", "Create pages"],
+    }),
+  ];
+}
+
+function createIntegrationConnectUrl(userId, provider) {
+  if (provider === "google") {
+    if (!isGoogleIntegrationConfigured()) {
+      throw new Error(
+        "Google OAuth is not configured on the backend. Add GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET."
+      );
+    }
+
+    const params = new URLSearchParams({
+      client_id: GOOGLE_OAUTH_CLIENT_ID,
+      redirect_uri: GOOGLE_OAUTH_REDIRECT_URI,
+      response_type: "code",
+      access_type: "offline",
+      include_granted_scopes: "true",
+      prompt: "consent",
+      scope: GOOGLE_OAUTH_SCOPES.join(" "),
+      state: signIntegrationStateToken(userId, "google"),
+    });
+
+    return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+  }
+
+  if (provider === "notion") {
+    if (!isNotionIntegrationConfigured()) {
+      throw new Error(
+        "Notion OAuth is not configured on the backend. Add NOTION_CLIENT_ID and NOTION_CLIENT_SECRET."
+      );
+    }
+
+    const params = new URLSearchParams({
+      client_id: NOTION_CLIENT_ID,
+      redirect_uri: NOTION_OAUTH_REDIRECT_URI,
+      response_type: "code",
+      owner: "user",
+      state: signIntegrationStateToken(userId, "notion"),
+    });
+
+    return `https://api.notion.com/v1/oauth/authorize?${params.toString()}`;
+  }
+
+  throw new Error("Unsupported integration provider.");
+}
+
+function signIntegrationStateToken(userId, provider) {
+  return signToken(
+    {
+      sub: userId,
+      role: "integration_oauth",
+      provider,
+    },
+    60 * 15
+  );
+}
+
+function verifyIntegrationStateToken(token, provider) {
+  const payload = verifyToken(token);
+  if (!payload || payload.role !== "integration_oauth") {
+    return null;
+  }
+
+  if (payload.provider !== provider) {
+    return null;
+  }
+
+  return payload;
+}
+
+function normalizeScopes(scopes) {
+  return Array.from(
+    new Set(
+      (Array.isArray(scopes) ? scopes : [])
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+    )
+  ).join(" ");
+}
+
+async function exchangeGoogleAuthorizationCode(code) {
+  return requestExternalJson(
+    "https://oauth2.googleapis.com/token",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        code,
+        client_id: GOOGLE_OAUTH_CLIENT_ID,
+        client_secret: GOOGLE_OAUTH_CLIENT_SECRET,
+        redirect_uri: GOOGLE_OAUTH_REDIRECT_URI,
+        grant_type: "authorization_code",
+      }).toString(),
+    },
+    "Failed to exchange the Google authorization code."
+  );
+}
+
+async function refreshGoogleAccessToken(refreshToken) {
+  return requestExternalJson(
+    "https://oauth2.googleapis.com/token",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        client_id: GOOGLE_OAUTH_CLIENT_ID,
+        client_secret: GOOGLE_OAUTH_CLIENT_SECRET,
+        refresh_token: refreshToken,
+        grant_type: "refresh_token",
+      }).toString(),
+    },
+    "Failed to refresh the Google connection."
+  );
+}
+
+async function exchangeNotionAuthorizationCode(code) {
+  return requestExternalJson(
+    "https://api.notion.com/v1/oauth/token",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${Buffer.from(
+          `${NOTION_CLIENT_ID}:${NOTION_CLIENT_SECRET}`
+        ).toString("base64")}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: NOTION_OAUTH_REDIRECT_URI,
+      }),
+    },
+    "Failed to exchange the Notion authorization code."
+  );
+}
+
+async function requestExternalJson(urlValue, options, fallbackMessage) {
+  const response = await fetch(urlValue, options);
+  const text = await response.text();
+  let payload = {};
+
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch (_error) {
+      payload = { raw: text };
+    }
+  }
+
+  if (!response.ok) {
+    const message =
+      payload?.error?.message ||
+      payload?.error_description ||
+      payload?.message ||
+      payload?.error ||
+      payload?.raw ||
+      fallbackMessage;
+    throw new Error(String(message));
+  }
+
+  return payload;
+}
+
+async function fetchGoogleProfile(accessToken) {
+  return requestExternalJson(
+    "https://www.googleapis.com/oauth2/v2/userinfo",
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    },
+    "Failed to load the Google account profile."
+  );
+}
+
+async function getAuthorizedProviderAccess(userId, provider) {
+  let integration = await getUserIntegration(userId, provider);
+  if (!integration) {
+    throw new Error(
+      provider === "google"
+        ? "Connect Google first in the account dashboard."
+        : "Connect Notion first in the account dashboard."
+    );
+  }
+
+  if (
+    integration.provider === "google" &&
+    integration.accessTokenExpiresAt &&
+    integration.accessTokenExpiresAt.getTime() <= Date.now() + 60 * 1000
+  ) {
+    const refreshToken = integration.refreshTokenEncrypted
+      ? decryptSensitiveValue(integration.refreshTokenEncrypted)
+      : "";
+
+    if (!refreshToken) {
+      throw new Error("The Google connection expired. Reconnect Google in the dashboard.");
+    }
+
+    const refreshed = await refreshGoogleAccessToken(refreshToken);
+    integration =
+      (await updateUserIntegrationTokens(integration.id, {
+        accessToken: refreshed.access_token,
+        refreshToken: refreshed.refresh_token || null,
+        tokenType: refreshed.token_type || integration.tokenType,
+        scopes: refreshed.scope
+          ? refreshed.scope.split(/\s+/g)
+          : integration.scopes,
+        accessTokenExpiresAt:
+          typeof refreshed.expires_in === "number"
+            ? new Date(Date.now() + refreshed.expires_in * 1000)
+            : integration.accessTokenExpiresAt,
+      })) || integration;
+  }
+
+  const accessToken = decryptSensitiveValue(integration.accessTokenEncrypted);
+  if (!accessToken) {
+    throw new Error(
+      provider === "google"
+        ? "The Google connection is incomplete. Reconnect Google in the dashboard."
+        : "The Notion connection is incomplete. Reconnect Notion in the dashboard."
+    );
+  }
+
+  await markUserIntegrationUsed(integration.id);
+  return {
+    integration,
+    accessToken,
+  };
+}
+
+async function handleIntegrationAssistantAction(user, input) {
+  const command = parseIntegrationAssistantCommand(input.message);
+  if (!command) {
+    return {
+      handled: false,
+      reply: "",
+      provider: null,
+      app: null,
+    };
+  }
+
+  if (command.provider === "google" && !isGoogleIntegrationConfigured()) {
+    return {
+      handled: true,
+      reply:
+        "Google is not configured on the backend yet. Add GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET, then reconnect from the account dashboard.",
+      provider: "google",
+      app: command.app,
+    };
+  }
+
+  if (command.provider === "notion" && !isNotionIntegrationConfigured()) {
+    return {
+      handled: true,
+      reply:
+        "Notion is not configured on the backend yet. Add NOTION_CLIENT_ID and NOTION_CLIENT_SECRET, then reconnect from the account dashboard.",
+      provider: "notion",
+      app: command.app,
+    };
+  }
+
+  if (
+    command.kind !== "gmail_help" &&
+    command.kind !== "calendar_help" &&
+    command.kind !== "notion_help"
+  ) {
+    const providerIntegration = await getUserIntegration(user.id, command.provider);
+    if (!providerIntegration) {
+      return {
+        handled: true,
+        reply:
+          command.provider === "google"
+            ? "Google is not connected yet. Open Account Dashboard, connect Google, then try the Gmail or Calendar command again."
+            : "Notion is not connected yet. Open Account Dashboard, connect Notion, then try again.",
+        provider: command.provider,
+        app: command.app,
+      };
+    }
+  }
+
+  if (command.kind === "gmail_help") {
+    return {
+      handled: true,
+      reply:
+        'Supported Gmail commands:\n- `Show my latest Gmail messages`\n- `Search Gmail for "invoice"`\n- `Draft Gmail email to alice@example.com subject "Interview follow-up" body "Thanks for your time."`\n- `Send Gmail email to bob@example.com subject "Schedule" body "Can we meet tomorrow?"`',
+      provider: "google",
+      app: "gmail",
+    };
+  }
+
+  if (command.kind === "calendar_help") {
+    return {
+      handled: true,
+      reply:
+        'Supported Calendar commands:\n- `Show my upcoming calendar events`\n- `Show my calendar for tomorrow`\n- `Create calendar event "Team sync" on 2026-03-20 at 3pm for 45 minutes`',
+      provider: "google",
+      app: "google_calendar",
+    };
+  }
+
+  if (command.kind === "notion_help") {
+    return {
+      handled: true,
+      reply:
+        'Supported Notion commands:\n- `Search Notion for onboarding checklist`\n- `Create Notion page "Interview Notes" content "Candidate strengths and risks"`',
+      provider: "notion",
+      app: "notion",
+    };
+  }
+
+  if (command.kind === "gmail_list") {
+    const { accessToken } = await getAuthorizedProviderAccess(user.id, "google");
+    const messages = await listGmailMessages(accessToken, {
+      query: command.query,
+      maxResults: command.maxResults || 5,
+    });
+    return {
+      handled: true,
+      reply: formatGmailMessagesReply(messages, command.query),
+      provider: "google",
+      app: "gmail",
+    };
+  }
+
+  if (command.kind === "gmail_draft" || command.kind === "gmail_send") {
+    const { accessToken } = await getAuthorizedProviderAccess(user.id, "google");
+    const result =
+      command.kind === "gmail_send"
+        ? await sendGmailMessage(accessToken, command)
+        : await createGmailDraft(accessToken, command);
+    return {
+      handled: true,
+      reply:
+        command.kind === "gmail_send"
+          ? `Email sent to ${command.to} with subject "${command.subject}".`
+          : `Draft created for ${command.to} with subject "${command.subject}".${result.id ? ` Draft id: ${result.id}.` : ""}`,
+      provider: "google",
+      app: "gmail",
+    };
+  }
+
+  if (command.kind === "calendar_list") {
+    const { accessToken } = await getAuthorizedProviderAccess(user.id, "google");
+    const events = await listGoogleCalendarEvents(accessToken, command.window);
+    return {
+      handled: true,
+      reply: formatGoogleCalendarReply(events, command.window.label),
+      provider: "google",
+      app: "google_calendar",
+    };
+  }
+
+  if (command.kind === "calendar_create") {
+    const { accessToken } = await getAuthorizedProviderAccess(user.id, "google");
+    const event = await createGoogleCalendarEvent(accessToken, {
+      title: command.title,
+      startDate: command.startDate,
+      endDate: command.endDate,
+    });
+    return {
+      handled: true,
+      reply: `Calendar event "${event.summary || command.title}" created for ${formatCalendarEventTime(
+        event.start
+      )}.${event.htmlLink ? ` Open: ${event.htmlLink}` : ""}`,
+      provider: "google",
+      app: "google_calendar",
+    };
+  }
+
+  if (command.kind === "notion_search") {
+    const { accessToken } = await getAuthorizedProviderAccess(user.id, "notion");
+    const results = await searchNotionPages(accessToken, command.query);
+    return {
+      handled: true,
+      reply: formatNotionSearchReply(results, command.query),
+      provider: "notion",
+      app: "notion",
+    };
+  }
+
+  if (command.kind === "notion_create") {
+    const { accessToken } = await getAuthorizedProviderAccess(user.id, "notion");
+    const page = await createNotionPage(accessToken, {
+      title: command.title,
+      content: command.content,
+    });
+    return {
+      handled: true,
+      reply: `Notion page "${extractNotionPageTitle(page)}" created.${page.url ? ` Open: ${page.url}` : ""}`,
+      provider: "notion",
+      app: "notion",
+    };
+  }
+
+  return {
+    handled: false,
+    reply: "",
+    provider: null,
+    app: null,
+  };
+}
+
+function parseIntegrationAssistantCommand(message) {
+  const emailCommand = parseEmailComposeCommand(message);
+  if (emailCommand) {
+    return emailCommand;
+  }
+
+  const calendarCreate = parseCalendarCreateCommand(message);
+  if (calendarCreate) {
+    return calendarCreate;
+  }
+
+  const notionCreate = parseNotionCreateCommand(message);
+  if (notionCreate) {
+    return notionCreate;
+  }
+
+  if (looksLikeGmailQuery(message)) {
+    return {
+      kind: "gmail_list",
+      provider: "google",
+      app: "gmail",
+      query: extractMailQuery(message),
+      maxResults: 5,
+    };
+  }
+
+  if (looksLikeCalendarList(message)) {
+    return {
+      kind: "calendar_list",
+      provider: "google",
+      app: "google_calendar",
+      window: parseCalendarWindow(message),
+    };
+  }
+
+  if (looksLikeNotionSearch(message)) {
+    return {
+      kind: "notion_search",
+      provider: "notion",
+      app: "notion",
+      query: extractNotionQuery(message),
+    };
+  }
+
+  if (/\b(gmail|inbox)\b/i.test(message)) {
+    return {
+      kind: "gmail_help",
+      provider: "google",
+      app: "gmail",
+    };
+  }
+
+  if (/\bcalendar\b/i.test(message)) {
+    return {
+      kind: "calendar_help",
+      provider: "google",
+      app: "google_calendar",
+    };
+  }
+
+  if (/\bnotion\b/i.test(message)) {
+    return {
+      kind: "notion_help",
+      provider: "notion",
+      app: "notion",
+    };
+  }
+
+  return null;
+}
+
+function parseEmailComposeCommand(message) {
+  const action = /\bsend\b/i.test(message)
+    ? "gmail_send"
+    : /\b(draft|compose|write)\b/i.test(message)
+    ? "gmail_draft"
+    : null;
+  if (!action || !/\b(gmail|inbox)\b/i.test(message)) {
+    return null;
+  }
+
+  const to = extractCommandValue(message, "to", ["subject", "body"]);
+  const subject = extractCommandValue(message, "subject", ["body"]);
+  const body = extractCommandValue(message, "body", []);
+
+  if (!to || !subject || !body) {
+    return {
+      kind: "gmail_help",
+      provider: "google",
+      app: "gmail",
+    };
+  }
+
+  return {
+    kind: action,
+    provider: "google",
+    app: "gmail",
+    to,
+    subject,
+    body,
+  };
+}
+
+function parseCalendarCreateCommand(message) {
+  const isIntent =
+    /\b(create|add|schedule)\b/i.test(message) &&
+    /\bcalendar\b/i.test(message) &&
+    /\b(event|meeting)\b/i.test(message);
+  if (!isIntent) {
+    return null;
+  }
+
+  const title =
+    extractFirstQuotedText(message) ||
+    extractCommandValue(message, "event", ["on", "at", "for"]) ||
+    extractCommandValue(message, "meeting", ["on", "at", "for"]);
+  const dateText =
+    extractCommandValue(message, "on", ["at", "for"]) ||
+    (/\btomorrow\b/i.test(message)
+      ? "tomorrow"
+      : /\btoday\b/i.test(message)
+      ? "today"
+      : "");
+  const timeText = extractCommandValue(message, "at", ["for"]);
+  const durationText = extractCommandValue(message, "for", []);
+  const durationMinutes = parseDurationMinutes(durationText) || 60;
+  const startDate = parseNaturalDateTime(dateText, timeText);
+
+  if (!title || !startDate) {
+    return {
+      kind: "calendar_help",
+      provider: "google",
+      app: "google_calendar",
+    };
+  }
+
+  return {
+    kind: "calendar_create",
+    provider: "google",
+    app: "google_calendar",
+    title,
+    startDate,
+    endDate: new Date(startDate.getTime() + durationMinutes * 60 * 1000),
+  };
+}
+
+function parseNotionCreateCommand(message) {
+  const isIntent =
+    /\b(create|add|make)\b/i.test(message) &&
+    /\bnotion\b/i.test(message) &&
+    /\b(page|doc|note)\b/i.test(message);
+  if (!isIntent) {
+    return null;
+  }
+
+  const title =
+    extractFirstQuotedText(message) ||
+    extractCommandValue(message, "page", ["content"]) ||
+    extractCommandValue(message, "title", ["content"]);
+  const content = extractCommandValue(message, "content", []);
+
+  if (!title) {
+    return {
+      kind: "notion_help",
+      provider: "notion",
+      app: "notion",
+    };
+  }
+
+  return {
+    kind: "notion_create",
+    provider: "notion",
+    app: "notion",
+    title,
+    content,
+  };
+}
+
+function looksLikeGmailQuery(message) {
+  return (
+    /\b(gmail|inbox)\b/i.test(message) &&
+    /\b(show|list|check|recent|latest|search|find|unread|inbox)\b/i.test(message)
+  );
+}
+
+function looksLikeCalendarList(message) {
+  return (
+    /\bcalendar\b/i.test(message) &&
+    /\b(show|list|check|upcoming|next|today|tomorrow|what)\b/i.test(message)
+  );
+}
+
+function looksLikeNotionSearch(message) {
+  return (
+    /\bnotion\b/i.test(message) &&
+    /\b(search|find|look\s+for|open|show)\b/i.test(message)
+  );
+}
+
+function extractMailQuery(message) {
+  if (/\bunread\b/i.test(message)) {
+    return "is:unread";
+  }
+
+  const extracted =
+    extractCommandValue(message, "for", []) ||
+    extractCommandValue(message, "from", []) ||
+    extractCommandValue(message, "about", []) ||
+    extractCommandValue(message, "matching", []);
+  return extracted || "";
+}
+
+function extractNotionQuery(message) {
+  return (
+    extractCommandValue(message, "for", []) ||
+    extractCommandValue(message, "notion", []) ||
+    extractFirstQuotedText(message) ||
+    "recent pages"
+  );
+}
+
+function parseCalendarWindow(message) {
+  const now = new Date();
+  if (/\btomorrow\b/i.test(message)) {
+    const start = new Date(now);
+    start.setDate(start.getDate() + 1);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    return {
+      label: "tomorrow",
+      timeMin: start,
+      timeMax: end,
+      maxResults: 8,
+    };
+  }
+
+  if (/\btoday\b/i.test(message)) {
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    return {
+      label: "today",
+      timeMin: start,
+      timeMax: end,
+      maxResults: 8,
+    };
+  }
+
+  if (/\bnext\s+week\b/i.test(message)) {
+    return {
+      label: "the next 7 days",
+      timeMin: now,
+      timeMax: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),
+      maxResults: 10,
+    };
+  }
+
+  return {
+    label: "upcoming",
+    timeMin: now,
+    timeMax: null,
+    maxResults: 5,
+  };
+}
+
+function extractCommandValue(message, label, nextLabels) {
+  const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const nextBoundary =
+    Array.isArray(nextLabels) && nextLabels.length > 0
+      ? `(?=\\s+(?:${nextLabels
+          .map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+          .join("|")})\\b|$)`
+      : `(?=$)`;
+  const pattern = new RegExp(`\\b${escapedLabel}\\b\\s+([\\s\\S]+?)${nextBoundary}`, "i");
+  const match = message.match(pattern);
+  return sanitizeCommandValue(match?.[1] || "");
+}
+
+function sanitizeCommandValue(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+
+  return trimmed;
+}
+
+function extractFirstQuotedText(value) {
+  const match = String(value || "").match(/"([^"]+)"/);
+  return match ? match[1].trim() : "";
+}
+
+function parseDurationMinutes(value) {
+  const match = String(value || "").match(
+    /(\d+)\s*(minutes|minute|mins|min|hours|hour|hrs|hr)?/i
+  );
+  if (!match) {
+    return null;
+  }
+
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return null;
+  }
+
+  const unit = String(match[2] || "minutes").toLowerCase();
+  if (unit.startsWith("hour") || unit === "hr" || unit === "hrs") {
+    return amount * 60;
+  }
+
+  return amount;
+}
+
+function parseNaturalDateTime(dateText, timeText) {
+  const normalizedTime = String(timeText || "").trim();
+  if (!normalizedTime) {
+    return null;
+  }
+
+  const normalizedDate = String(dateText || "").trim().toLowerCase();
+  const baseDate = new Date();
+
+  if (normalizedDate === "today") {
+    return parseDateWithTime(baseDate, normalizedTime);
+  }
+
+  if (normalizedDate === "tomorrow") {
+    const tomorrow = new Date(baseDate);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return parseDateWithTime(tomorrow, normalizedTime);
+  }
+
+  const parsedDate = new Date(normalizedDate || Date.now());
+  if (Number.isNaN(parsedDate.getTime())) {
+    return null;
+  }
+
+  return parseDateWithTime(parsedDate, normalizedTime);
+}
+
+function parseDateWithTime(dateValue, timeText) {
+  const timeMatch = String(timeText || "")
+    .trim()
+    .match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i);
+  if (!timeMatch) {
+    return null;
+  }
+
+  let hours = Number(timeMatch[1]);
+  const minutes = Number(timeMatch[2] || "0");
+  const meridiem = String(timeMatch[3] || "").toLowerCase();
+
+  if (meridiem === "pm" && hours < 12) {
+    hours += 12;
+  } else if (meridiem === "am" && hours === 12) {
+    hours = 0;
+  }
+
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
+    return null;
+  }
+
+  const date = new Date(dateValue);
+  date.setHours(hours, minutes, 0, 0);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+async function listGmailMessages(accessToken, options = {}) {
+  const params = new URLSearchParams({
+    maxResults: String(options.maxResults || 5),
+  });
+  if (options.query) {
+    params.set("q", options.query);
+  }
+
+  const listResponse = await requestExternalJson(
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages?${params.toString()}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    },
+    "Failed to load Gmail messages."
+  );
+
+  const messageRefs = Array.isArray(listResponse.messages) ? listResponse.messages : [];
+  const messages = await Promise.all(
+    messageRefs.map((item) =>
+      requestExternalJson(
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(
+          item.id
+        )}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`,
+        {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        },
+        "Failed to load a Gmail message."
+      )
+    )
+  );
+
+  return messages.map((message) => ({
+    id: message.id,
+    snippet: message.snippet || "",
+    subject: readGmailHeader(message.payload, "Subject") || "(No subject)",
+    from: readGmailHeader(message.payload, "From") || "Unknown sender",
+    date: readGmailHeader(message.payload, "Date") || "",
+  }));
+}
+
+function readGmailHeader(payload, name) {
+  const headers = Array.isArray(payload?.headers) ? payload.headers : [];
+  const match = headers.find(
+    (header) => String(header?.name || "").toLowerCase() === String(name).toLowerCase()
+  );
+  return match?.value || "";
+}
+
+function buildRawEmailMessage(input) {
+  const mime = [
+    `To: ${input.to}`,
+    `Subject: ${input.subject}`,
+    "Content-Type: text/plain; charset=utf-8",
+    "MIME-Version: 1.0",
+    "",
+    input.body,
+  ].join("\r\n");
+
+  return Buffer.from(mime, "utf8").toString("base64url");
+}
+
+async function createGmailDraft(accessToken, input) {
+  return requestExternalJson(
+    "https://gmail.googleapis.com/gmail/v1/users/me/drafts",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        message: {
+          raw: buildRawEmailMessage(input),
+        },
+      }),
+    },
+    "Failed to create the Gmail draft."
+  );
+}
+
+async function sendGmailMessage(accessToken, input) {
+  return requestExternalJson(
+    "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        raw: buildRawEmailMessage(input),
+      }),
+    },
+    "Failed to send the Gmail message."
+  );
+}
+
+async function listGoogleCalendarEvents(accessToken, window) {
+  const params = new URLSearchParams({
+    singleEvents: "true",
+    orderBy: "startTime",
+    maxResults: String(window.maxResults || 5),
+    timeMin: window.timeMin.toISOString(),
+  });
+  if (window.timeMax) {
+    params.set("timeMax", window.timeMax.toISOString());
+  }
+
+  const response = await requestExternalJson(
+    `https://www.googleapis.com/calendar/v3/calendars/primary/events?${params.toString()}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    },
+    "Failed to load Google Calendar events."
+  );
+
+  return Array.isArray(response.items) ? response.items : [];
+}
+
+async function createGoogleCalendarEvent(accessToken, input) {
+  const timeZone =
+    Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+
+  return requestExternalJson(
+    "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        summary: input.title,
+        start: {
+          dateTime: input.startDate.toISOString(),
+          timeZone,
+        },
+        end: {
+          dateTime: input.endDate.toISOString(),
+          timeZone,
+        },
+      }),
+    },
+    "Failed to create the Google Calendar event."
+  );
+}
+
+async function searchNotionPages(accessToken, queryText) {
+  const response = await requestExternalJson(
+    "https://api.notion.com/v1/search",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+        "Notion-Version": NOTION_API_VERSION,
+      },
+      body: JSON.stringify({
+        query: queryText,
+        filter: {
+          property: "object",
+          value: "page",
+        },
+        page_size: 5,
+      }),
+    },
+    "Failed to search Notion."
+  );
+
+  return Array.isArray(response.results) ? response.results : [];
+}
+
+async function createNotionPage(accessToken, input) {
+  const children = input.content
+    ? [
+        {
+          object: "block",
+          type: "paragraph",
+          paragraph: {
+            rich_text: [
+              {
+                type: "text",
+                text: {
+                  content: String(input.content).slice(0, 1800),
+                },
+              },
+            ],
+          },
+        },
+      ]
+    : [];
+
+  return requestExternalJson(
+    "https://api.notion.com/v1/pages",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+        "Notion-Version": NOTION_API_VERSION,
+      },
+      body: JSON.stringify({
+        parent: {
+          type: "workspace",
+          workspace: true,
+        },
+        properties: {
+          title: {
+            title: [
+              {
+                type: "text",
+                text: {
+                  content: input.title,
+                },
+              },
+            ],
+          },
+        },
+        children,
+      }),
+    },
+    "Failed to create the Notion page."
+  );
+}
+
+function extractNotionPageTitle(page) {
+  const properties = page?.properties && typeof page.properties === "object"
+    ? page.properties
+    : {};
+
+  for (const value of Object.values(properties)) {
+    if (value?.type === "title" && Array.isArray(value.title)) {
+      const title = value.title
+        .map((entry) => entry?.plain_text || entry?.text?.content || "")
+        .join("")
+        .trim();
+      if (title) {
+        return title;
+      }
+    }
+  }
+
+  return "Untitled";
+}
+
+function formatGmailMessagesReply(messages, queryText) {
+  if (!messages.length) {
+    return queryText
+      ? `No Gmail messages matched "${queryText}".`
+      : "No recent Gmail messages were found.";
+  }
+
+  const heading = queryText
+    ? `Here are the Gmail results for "${queryText}":`
+    : "Here are your latest Gmail messages:";
+  return [
+    heading,
+    ...messages.map((message) =>
+      `- **${message.subject}** from ${message.from}${message.date ? ` (${message.date})` : ""}${message.snippet ? ` - ${message.snippet}` : ""}`
+    ),
+  ].join("\n");
+}
+
+function formatGoogleCalendarReply(events, label) {
+  if (!events.length) {
+    return `No Google Calendar events were found for ${label}.`;
+  }
+
+  return [
+    `Here are your Google Calendar events for ${label}:`,
+    ...events.map((event) =>
+      `- **${event.summary || "Untitled event"}** at ${formatCalendarEventTime(
+        event.start
+      )}${event.htmlLink ? ` - ${event.htmlLink}` : ""}`
+    ),
+  ].join("\n");
+}
+
+function formatCalendarEventTime(start) {
+  if (start?.dateTime) {
+    const date = new Date(start.dateTime);
+    return Number.isNaN(date.getTime())
+      ? String(start.dateTime)
+      : date.toLocaleString();
+  }
+
+  if (start?.date) {
+    return String(start.date);
+  }
+
+  return "an unknown time";
+}
+
+function formatNotionSearchReply(results, queryText) {
+  if (!results.length) {
+    return `No Notion pages matched "${queryText}".`;
+  }
+
+  return [
+    `Here are the Notion pages matching "${queryText}":`,
+    ...results.map((page) =>
+      `- **${extractNotionPageTitle(page)}**${page.url ? ` - ${page.url}` : ""}`
+    ),
+  ].join("\n");
+}
+
+async function buildUniqueResearchSlug(title) {
+  const baseSlug = createResearchSlug(title);
+  let slug = baseSlug;
+
+  for (let suffix = 1; suffix <= 50; suffix += 1) {
+    const existing = await query(
+      `
+        SELECT 1
+        FROM research_posts
+        WHERE slug = $1
+        LIMIT 1
+      `,
+      [slug]
+    );
+
+    if (!existing.rows[0]) {
+      return slug;
+    }
+
+    const suffixText = String(suffix + 1);
+    const maxBaseLength = Math.max(24, 96 - suffixText.length - 1);
+    slug = `${baseSlug.slice(0, maxBaseLength).replace(/-+$/g, "")}-${suffixText}`;
+  }
+
+  return `${baseSlug.slice(0, 72).replace(/-+$/g, "")}-${createId("res")
+    .slice(-8)
+    .toLowerCase()}`;
 }
 
 function mapChatThreadRow(row) {
@@ -2283,6 +4605,310 @@ async function appendChatMessage(input) {
   return mapChatMessageRow(result.rows[0]);
 }
 
+function mapPhonePairingRow(row) {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    desktopDeviceName: row.desktop_device_name,
+    mobileDeviceName: row.mobile_device_name || null,
+    status: row.status,
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+    expiresAt: toIso(row.expires_at),
+    pairedAt: toIso(row.paired_at),
+    lastSeenAt: toIso(row.last_seen_at),
+  };
+}
+
+function mapPhoneRelayEventRow(row) {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    pairingId: row.pairing_id,
+    source: row.source,
+    eventType: row.event_type,
+    payload:
+      row.payload_json && typeof row.payload_json === "object"
+        ? row.payload_json
+        : {},
+    createdAt: toIso(row.created_at),
+    pairing: {
+      desktopDeviceName: row.desktop_device_name,
+      mobileDeviceName: row.mobile_device_name || null,
+    },
+  };
+}
+
+async function expirePhonePairingSessions(userId) {
+  if (userId) {
+    await query(
+      `
+        UPDATE phone_pairing_sessions
+        SET
+          status = 'expired',
+          updated_at = NOW()
+        WHERE user_id = $1
+          AND status = 'pending'
+          AND expires_at <= NOW()
+      `,
+      [userId]
+    );
+    return;
+  }
+
+  await query(
+    `
+      UPDATE phone_pairing_sessions
+      SET
+        status = 'expired',
+        updated_at = NOW()
+      WHERE status = 'pending'
+        AND expires_at <= NOW()
+    `
+  );
+}
+
+async function createPhonePairingSession(input) {
+  const result = await query(
+    `
+      INSERT INTO phone_pairing_sessions (
+        id,
+        user_id,
+        pairing_token_hash,
+        desktop_device_name,
+        status,
+        created_at,
+        updated_at,
+        expires_at
+      )
+      VALUES ($1, $2, $3, $4, 'pending', NOW(), NOW(), $5)
+      RETURNING *
+    `,
+    [
+      input.id,
+      input.userId,
+      input.pairingTokenHash,
+      input.desktopDeviceName,
+      input.expiresAt,
+    ]
+  );
+
+  return mapPhonePairingRow(result.rows[0]);
+}
+
+async function getPhonePairingSessionRecord(pairingId) {
+  const result = await query(
+    `
+      SELECT *
+      FROM phone_pairing_sessions
+      WHERE id = $1
+      LIMIT 1
+    `,
+    [pairingId]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function getPhonePairingSessionForUser(pairingId, userId) {
+  const result = await query(
+    `
+      SELECT *
+      FROM phone_pairing_sessions
+      WHERE id = $1
+        AND user_id = $2
+      LIMIT 1
+    `,
+    [pairingId, userId]
+  );
+
+  return result.rows[0] ? mapPhonePairingRow(result.rows[0]) : null;
+}
+
+async function markPhonePairingSessionExpired(pairingId) {
+  await query(
+    `
+      UPDATE phone_pairing_sessions
+      SET
+        status = 'expired',
+        updated_at = NOW()
+      WHERE id = $1
+        AND status = 'pending'
+    `,
+    [pairingId]
+  );
+}
+
+async function markPhonePairingSessionPaired(input) {
+  const result = await query(
+    `
+      UPDATE phone_pairing_sessions
+      SET
+        mobile_device_name = $2,
+        status = 'paired',
+        paired_at = COALESCE(paired_at, NOW()),
+        last_seen_at = NOW(),
+        updated_at = NOW()
+      WHERE id = $1
+      RETURNING *
+    `,
+    [input.pairingId, input.mobileDeviceName]
+  );
+
+  return mapPhonePairingRow(result.rows[0]);
+}
+
+async function touchPhonePairingSession(pairingId) {
+  await query(
+    `
+      UPDATE phone_pairing_sessions
+      SET
+        last_seen_at = NOW(),
+        updated_at = NOW()
+      WHERE id = $1
+    `,
+    [pairingId]
+  );
+}
+
+async function listPhonePairingDevices(userId) {
+  const result = await query(
+    `
+      SELECT *
+      FROM phone_pairing_sessions
+      WHERE user_id = $1
+        AND status = 'paired'
+      ORDER BY last_seen_at DESC NULLS LAST, paired_at DESC NULLS LAST, created_at DESC
+      LIMIT 20
+    `,
+    [userId]
+  );
+
+  return result.rows.map(mapPhonePairingRow);
+}
+
+async function createPhoneRelayEvent(input) {
+  const result = await query(
+    `
+      INSERT INTO phone_relay_events (
+        id,
+        user_id,
+        pairing_id,
+        source,
+        event_type,
+        payload_json,
+        created_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6::jsonb, NOW())
+      RETURNING
+        phone_relay_events.*,
+        (SELECT desktop_device_name FROM phone_pairing_sessions WHERE id = phone_relay_events.pairing_id) AS desktop_device_name,
+        (SELECT mobile_device_name FROM phone_pairing_sessions WHERE id = phone_relay_events.pairing_id) AS mobile_device_name
+    `,
+    [
+      input.id,
+      input.userId,
+      input.pairingId,
+      input.source,
+      input.eventType,
+      JSON.stringify(input.payload),
+    ]
+  );
+
+  return mapPhoneRelayEventRow(result.rows[0]);
+}
+
+async function listPhoneRelayEvents(userId, options = {}) {
+  const params = [userId];
+  const conditions = ["events.user_id = $1"];
+
+  if (options.pairingId) {
+    params.push(options.pairingId);
+    conditions.push(`events.pairing_id = $${params.length}`);
+  }
+
+  if (options.after) {
+    params.push(options.after);
+    conditions.push(`events.created_at > $${params.length}`);
+  }
+
+  params.push(options.limit || 40);
+
+  const result = await query(
+    `
+      SELECT
+        events.*,
+        pairing.desktop_device_name,
+        pairing.mobile_device_name
+      FROM phone_relay_events AS events
+      INNER JOIN phone_pairing_sessions AS pairing
+        ON pairing.id = events.pairing_id
+      WHERE ${conditions.join("\n        AND ")}
+      ORDER BY events.created_at DESC, events.id DESC
+      LIMIT $${params.length}
+    `,
+    params
+  );
+
+  return result.rows.map(mapPhoneRelayEventRow);
+}
+
+async function generateMobileAssistantReply(input) {
+  if (!TOGETHER_API_KEY) {
+    throw new Error(
+      "Mobile chat is not configured. Set TOGETHER_API_KEY in the backend environment."
+    );
+  }
+
+  const messages = [
+    {
+      role: "system",
+      content:
+        "You are Sylica AI on mobile. Be concise, practical, and helpful. Default to short direct answers unless the user clearly asks for depth.",
+    },
+    ...input.recentMessages
+      .filter((message) => message.role === "user" || message.role === "assistant")
+      .map((message) => ({
+        role: message.role,
+        content: message.content,
+      })),
+  ];
+
+  const response = await fetch("https://api.together.xyz/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${TOGETHER_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: MOBILE_CHAT_MODEL,
+      messages,
+      temperature: 0.3,
+      max_tokens: 900,
+    }),
+  });
+
+  if (!response.ok) {
+    let message = "Failed to generate a mobile chat response."
+    try {
+      const errorBody = await response.json()
+      message = errorBody?.error?.message || errorBody?.error || message
+    } catch (_error) {
+      // Ignore invalid error body parsing.
+    }
+
+    throw new Error(message)
+  }
+
+  const payload = await response.json()
+  const reply = String(payload?.choices?.[0]?.message?.content || "").trim()
+  if (!reply) {
+    throw new Error("The mobile chat model returned an empty response.")
+  }
+
+  return reply
+}
+
 function summarizeChatTitle(value) {
   const normalized = normalizeChatContent(value)
     .replace(/\s+/g, " ")
@@ -2300,6 +4926,183 @@ function summarizeChatTitle(value) {
 
 function normalizeChatContent(value) {
   return String(value || "").trim().slice(0, 16_000);
+}
+
+function normalizeResearchTitle(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .slice(0, 180);
+}
+
+function normalizeResearchSummary(value, fallback = "") {
+  const normalized = String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .slice(0, 420);
+  if (normalized) {
+    return normalized;
+  }
+
+  const fallbackText = String(fallback || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!fallbackText) {
+    return "";
+  }
+
+  return fallbackText.length > 280
+    ? `${fallbackText.slice(0, 277).trimEnd()}...`
+    : fallbackText;
+}
+
+function normalizeResearchContent(value) {
+  return String(value || "")
+    .replace(/\r\n/g, "\n")
+    .trim()
+    .slice(0, 80_000);
+}
+
+function normalizeResearchAuthorName(value) {
+  const normalized = String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .slice(0, 100);
+  return normalized || null;
+}
+
+function createResearchSlug(value) {
+  const ascii = String(value || "")
+    .normalize("NFKD")
+    .replace(/[^\x00-\x7F]/g, "");
+  const slug = ascii
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 96);
+
+  return slug || `research-${Date.now().toString(36)}`;
+}
+
+function createPhonePairingToken() {
+  return crypto.randomBytes(18).toString("base64url");
+}
+
+function hashPhonePairingToken(token) {
+  return crypto
+    .createHash("sha256")
+    .update(String(token || ""))
+    .digest("hex");
+}
+
+function normalizeIdentifier(value, maxLength = 120) {
+  return String(value || "").trim().slice(0, maxLength);
+}
+
+function normalizePhoneDeviceName(value, fallback) {
+  const normalized = String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .slice(0, 80);
+  return normalized || fallback;
+}
+
+function isPhoneRelayEventType(value) {
+  return PHONE_RELAY_EVENT_TYPES.has(String(value || ""));
+}
+
+function isPhoneRelaySource(value) {
+  return PHONE_RELAY_SOURCES.has(String(value || ""));
+}
+
+function normalizeOptionalShortText(value, maxLength = 120) {
+  const normalized = String(value || "").trim().slice(0, maxLength);
+  return normalized || null;
+}
+
+function normalizeRelayUrl(value) {
+  const rawValue = String(value || "").trim();
+  if (!rawValue) {
+    return "";
+  }
+
+  try {
+    const parsed = new URL(rawValue);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return "";
+    }
+
+    return parsed.toString().slice(0, 2000);
+  } catch (_error) {
+    return "";
+  }
+}
+
+function normalizePhoneRelayPayload(eventType, payload) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  if (eventType === "clipboard") {
+    const text = normalizeChatContent(payload.text).slice(0, 4000);
+    if (!text) {
+      return null;
+    }
+
+    return { text };
+  }
+
+  if (eventType === "otp") {
+    const code = normalizeIdentifier(payload.code, 64);
+    if (!code) {
+      return null;
+    }
+
+    return {
+      code,
+      label: normalizeOptionalShortText(payload.label, 120),
+    };
+  }
+
+  if (eventType === "link") {
+    const url = normalizeRelayUrl(payload.url);
+    if (!url) {
+      return null;
+    }
+
+    return {
+      url,
+      title: normalizeOptionalShortText(payload.title, 120),
+    };
+  }
+
+  if (eventType === "note") {
+    const text = normalizeChatContent(payload.text).slice(0, 4000);
+    if (!text) {
+      return null;
+    }
+
+    return {
+      text,
+      title: normalizeOptionalShortText(payload.title, 120),
+    };
+  }
+
+  return null;
+}
+
+function parseOptionalIsoDate(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return date;
 }
 
 function buildBillingSummary(user) {

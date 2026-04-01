@@ -17,13 +17,13 @@ const ScreenshotQueue: React.FC<ScreenshotQueueProps> = ({
   onDeleteScreenshot
 }) => {
   if (screenshots.length === 0) {
-    return <></>
+    return null
   }
 
   const displayScreenshots = screenshots.slice(0, 5)
 
   return (
-    <div className="rounded-[18px] border border-white/10 bg-black/[0.82] p-3 shadow-[0_18px_38px_rgba(0,0,0,0.24)] backdrop-blur-md">
+    <div className="sylica-liquid-panel rounded-[24px] p-3">
       <div className="flex gap-3">
         {displayScreenshots.map((screenshot, index) => (
           <ScreenshotItem

@@ -1,30 +1,58 @@
-<svg width="540" height="420" viewBox="0 0 540 420" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect width="540" height="420" rx="36" fill="#F5F8FB"/>
-  <circle cx="96" cy="88" r="76" fill="#E6F0F7"/>
-  <circle cx="444" cy="340" r="88" fill="#DDF7EC"/>
-  <rect x="34" y="28" width="472" height="364" rx="30" fill="#FFFFFF" stroke="#D6E0E8"/>
-  <rect x="58" y="50" width="424" height="34" rx="17" fill="#F3F6F9"/>
-  <rect x="76" y="59" width="72" height="16" rx="8" fill="#DFF7EC"/>
-  <text x="89" y="70" fill="#1E2B34" font-size="10" font-family="Arial, sans-serif">Chat</text>
-  <rect x="156" y="59" width="58" height="16" rx="8" fill="#E8EEF4"/>
-  <text x="170" y="70" fill="#6D7E8B" font-size="10" font-family="Arial, sans-serif">Solve</text>
-  <rect x="378" y="58" width="86" height="18" rx="9" fill="#E8EEF4"/>
-  <text x="394" y="70" fill="#6D7E8B" font-size="10" font-family="Arial, sans-serif">History</text>
-  <rect x="62" y="102" width="120" height="30" rx="15" fill="#EEF3F7"/>
-  <text x="84" y="121" fill="#5D6E7B" font-size="11" font-family="Arial, sans-serif">New chat</text>
-  <rect x="192" y="102" width="126" height="30" rx="15" fill="#EEF3F7"/>
-  <text x="212" y="121" fill="#5D6E7B" font-size="11" font-family="Arial, sans-serif">Screen question</text>
-  <rect x="64" y="152" width="250" height="66" rx="22" fill="#F6F9FC" stroke="#D8E2EA"/>
-  <text x="84" y="178" fill="#6C7D8A" font-size="10" font-family="Arial, sans-serif">You</text>
-  <text x="84" y="197" fill="#18232B" font-size="12" font-family="Arial, sans-serif">What is on this screen and what</text>
-  <text x="84" y="214" fill="#18232B" font-size="12" font-family="Arial, sans-serif">should I focus on next?</text>
-  <rect x="226" y="234" width="250" height="92" rx="24" fill="#DFF7EC" stroke="#BEEBD7"/>
-  <text x="246" y="260" fill="#2E604A" font-size="10" font-family="Arial, sans-serif">Sylica AI</text>
-  <text x="246" y="279" fill="#173427" font-size="12" font-family="Arial, sans-serif">I can see an auth dashboard with a</text>
-  <text x="246" y="296" fill="#173427" font-size="12" font-family="Arial, sans-serif">failed route. Check the chat history</text>
-  <text x="246" y="313" fill="#173427" font-size="12" font-family="Arial, sans-serif">API and verify the request token.</text>
-  <rect x="62" y="346" width="416" height="24" rx="12" fill="#EFF4F8" stroke="#D8E2EA"/>
-  <text x="82" y="361" fill="#8798A5" font-size="11" font-family="Arial, sans-serif">Ask anything or mention your screen...</text>
-  <rect x="404" y="349" width="60" height="18" rx="9" fill="#7DF9C7"/>
-  <text x="422" y="361" fill="#173427" font-size="10" font-family="Arial, sans-serif">Send</text>
+<svg width="540" height="360" viewBox="0 0 540 360" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="logoOrb" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(86 308) rotate(46) scale(24 24)">
+      <stop stop-color="#9359FF"/>
+      <stop offset="0.48" stop-color="#3E62FF"/>
+      <stop offset="1" stop-color="#121524"/>
+    </radialGradient>
+    <linearGradient id="teal" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#13F0D4"/>
+      <stop offset="1" stop-color="#60F6E2"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="54" y="26" width="428" height="252" rx="30" fill="#161722" stroke="#505472" stroke-opacity="0.65"/>
+  <rect x="78" y="48" width="74" height="34" rx="17" fill="#171924" stroke="#373A51"/>
+  <text x="102" y="70" fill="#FFFFFF" font-size="13" font-weight="700" font-family="Inter, Arial, sans-serif">New</text>
+  <rect x="160" y="48" width="54" height="34" rx="17" fill="url(#teal)" fill-opacity="0.18" stroke="#27F1D6"/>
+  <text x="178" y="70" fill="#F8FFFD" font-size="13" font-weight="700" font-family="Inter, Arial, sans-serif">hi</text>
+  <rect x="228" y="42" width="168" height="40" rx="20" fill="#171821" stroke="#36394F"/>
+  <rect x="244" y="50" width="66" height="24" rx="12" fill="#0F3C3F" stroke="#1AF1D5"/>
+  <text x="262" y="66" fill="#DBFFF9" font-size="11" font-weight="800" letter-spacing="1.1" font-family="Inter, Arial, sans-serif">LIVE</text>
+  <text x="319" y="66" fill="#FFFFFF" font-size="14" font-weight="700" font-family="Inter, Arial, sans-serif">Live Interview</text>
+  <rect x="408" y="42" width="84" height="40" rx="20" transform="translate(-12 0)" fill="#171821" stroke="#36394F"/>
+  <rect x="410" y="50" width="58" height="24" rx="12" fill="#103A50" stroke="#2AF0D5"/>
+  <text x="421" y="66" fill="#DBFFF9" font-size="11" font-weight="800" letter-spacing="1.2" font-family="Inter, Arial, sans-serif">COMP</text>
+
+  <rect x="78" y="104" width="356" height="70" rx="24" fill="#11131C" stroke="#40435B"/>
+  <text x="100" y="132" fill="#FFFFFF" font-size="16" font-weight="800" font-family="Inter, Arial, sans-serif">System audio helper</text>
+  <text x="100" y="154" fill="#D8DBE7" font-size="12.5" font-weight="600" font-family="Inter, Arial, sans-serif">Captures computer audio and updates answers live.</text>
+  <rect x="338" y="118" width="94" height="42" rx="21" fill="url(#teal)"/>
+  <text x="363" y="144" fill="#173427" font-size="15" font-weight="700" font-family="Inter, Arial, sans-serif">Start Live</text>
+
+  <rect x="370" y="182" width="56" height="74" rx="24" fill="url(#teal)" fill-opacity="0.78" stroke="#9AFFF2" stroke-opacity="0.36"/>
+  <text x="388" y="224" fill="#F9FFFD" font-size="18" font-weight="700" font-family="Inter, Arial, sans-serif">hi</text>
+
+  <rect x="90" y="194" width="250" height="98" rx="26" fill="#11131C" stroke="#3F435C"/>
+  <text x="114" y="226" fill="#FFFFFF" font-size="17" font-weight="700" font-family="Inter, Arial, sans-serif">Hello! I'm here to help</text>
+  <text x="114" y="250" fill="#FFFFFF" fill-opacity="0.94" font-size="17" font-weight="700" font-family="Inter, Arial, sans-serif">with interview prep, coding,</text>
+  <text x="114" y="274" fill="#FFFFFF" fill-opacity="0.94" font-size="17" font-weight="700" font-family="Inter, Arial, sans-serif">and fast desktop assistance.</text>
+
+  <rect x="78" y="300" width="384" height="48" rx="24" fill="#12131D" stroke="#3A3E54"/>
+  <circle cx="114" cy="324" r="18" fill="#141726"/>
+  <circle cx="114" cy="324" r="12" fill="url(#logoOrb)"/>
+  <circle cx="154" cy="324" r="18" fill="#15161E"/>
+  <path d="M154 315L157 319L163 320L159 325L160 331L154 328L148 331L149 325L145 320L151 319L154 315Z" stroke="#F7FFFD" stroke-width="1.6" stroke-linejoin="round"/>
+  <circle cx="194" cy="324" r="18" fill="#FAFCFB"/>
+  <path d="M188 324C192 320 196 320 200 324" stroke="#1A2330" stroke-width="2" stroke-linecap="round"/>
+  <path d="M188 330C192 334 196 334 200 330" stroke="#1A2330" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="188" cy="327" r="1.6" fill="#1A2330"/>
+  <circle cx="200" cy="327" r="1.6" fill="#1A2330"/>
+  <circle cx="234" cy="324" r="18" fill="#1ABDA5"/>
+  <rect x="227" y="316" width="14" height="12" rx="2.5" stroke="#F7FFFD" stroke-width="1.7"/>
+  <rect x="229.5" y="331" width="9" height="3" rx="1.5" fill="#F7FFFD"/>
+  <rect x="254" y="302" width="150" height="44" rx="22" fill="#169C8D"/>
+  <text x="275" y="330" fill="#F8FFFD" font-size="15" font-weight="700" font-family="Inter, Arial, sans-serif">What should Sylica do?</text>
+  <circle cx="430" cy="324" r="22" fill="url(#teal)"/>
+  <path d="M422 332L438 324L422 316L426 323L422 332Z" stroke="#173427" stroke-width="2" stroke-linejoin="round" fill="#DFFFF8"/>
 </svg>

@@ -285,17 +285,32 @@ const Queue: React.FC<QueueProps> = ({
     }
   }
 
+  const hasExpandedPanel =
+    !isMinimized && (activeMode === "chat" || screenshots.length > 0)
+  const shouldUseCompactDockLayout = !isMinimized && !hasExpandedPanel
+
   return (
     <div
       ref={contentRef}
       className={`inline-flex flex-col items-start bg-transparent ${
-        isMinimized ? "" : "min-w-[320px]"
+        isMinimized ? "" : shouldUseCompactDockLayout ? "w-fit" : "min-w-[284px]"
       }`}
     >
-      <div className={isMinimized ? "p-0" : "px-4 py-3"}>
-        <div className={isMinimized ? "" : "space-y-3"}>
-          {!isMinimized && (
-            <div key={activeMode} className="sylica-panel-switch w-full">
+      <div
+        className={
+          isMinimized
+            ? "p-0"
+            : shouldUseCompactDockLayout
+            ? "w-fit px-1 py-1"
+            : "w-full px-1 py-1"
+        }
+      >
+        <div className={isMinimized ? "" : "space-y-2.5"}>
+          {hasExpandedPanel && (
+            <div
+              key={activeMode}
+              className="sylica-panel-switch sylica-liquid-shell w-full rounded-[22px] px-2.5 py-2.5"
+            >
               {activeMode === "analyze" ? (
                 <ScreenshotQueue
                   isLoading={false}
@@ -330,6 +345,7 @@ const Queue: React.FC<QueueProps> = ({
             onStartComputerTask={handleStartComputerTask}
             onStopComputerTask={handleStopComputerTask}
             onResumeComputerTask={handleResumeComputerTask}
+            isDockOnly={shouldUseCompactDockLayout}
             onToggleMinimized={() => {
               handleTooltipVisibilityChange(false, 0)
               setIsMinimized((current) => !current)

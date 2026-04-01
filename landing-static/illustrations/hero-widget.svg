@@ -1,40 +1,64 @@
-<svg width="540" height="420" viewBox="0 0 540 420" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect width="540" height="420" rx="36" fill="#F5F8FB"/>
-  <circle cx="462" cy="70" r="84" fill="#DDF7EC"/>
-  <circle cx="94" cy="346" r="72" fill="#E7EFF7"/>
-  <rect x="34" y="28" width="472" height="364" rx="30" fill="#FFFFFF" stroke="#D6E0E8"/>
-  <rect x="58" y="50" width="424" height="32" rx="16" fill="#F3F6F9"/>
-  <circle cx="78" cy="66" r="4" fill="#8FD9B7"/>
-  <circle cx="94" cy="66" r="4" fill="#F2C66D"/>
-  <circle cx="110" cy="66" r="4" fill="#F19595"/>
-  <rect x="128" y="58" width="120" height="16" rx="8" fill="#E5EDF4"/>
-  <rect x="58" y="102" width="128" height="102" rx="20" fill="#F7FAFC" stroke="#DAE3EA"/>
-  <rect x="202" y="102" width="128" height="102" rx="20" fill="#F7FAFC" stroke="#DAE3EA"/>
-  <rect x="346" y="102" width="128" height="102" rx="20" fill="#F7FAFC" stroke="#DAE3EA"/>
-  <rect x="74" y="118" width="96" height="10" rx="5" fill="#DDE7EE"/>
-  <rect x="74" y="138" width="82" height="8" rx="4" fill="#E7EEF4"/>
-  <rect x="74" y="154" width="98" height="8" rx="4" fill="#E7EEF4"/>
-  <rect x="74" y="172" width="84" height="18" rx="9" fill="#DFF7EC"/>
-  <path d="M235 124L215 164H245L227 188" stroke="#66D4A7" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="362" y="118" width="96" height="12" rx="6" fill="#DDE7EE"/>
-  <rect x="362" y="140" width="70" height="8" rx="4" fill="#E7EEF4"/>
-  <rect x="362" y="156" width="88" height="8" rx="4" fill="#E7EEF4"/>
-  <rect x="362" y="172" width="62" height="18" rx="9" fill="#EAF1F7"/>
-  <rect x="58" y="224" width="424" height="102" rx="24" fill="#FBFDFF" stroke="#D9E2EA"/>
-  <rect x="78" y="244" width="124" height="12" rx="6" fill="#DCE5ED"/>
-  <rect x="78" y="266" width="176" height="9" rx="4.5" fill="#E6EDF4"/>
-  <rect x="78" y="283" width="138" height="9" rx="4.5" fill="#E6EDF4"/>
-  <rect x="78" y="302" width="96" height="8" rx="4" fill="#8FD9B7"/>
-  <rect x="58" y="344" width="424" height="30" rx="15" fill="#11191F"/>
-  <circle cx="82" cy="359" r="9" fill="#7DF9C7"/>
-  <rect x="98" y="351" width="94" height="16" rx="8" fill="#1A252D"/>
-  <rect x="202" y="349" width="96" height="20" rx="10" fill="#FFFFFF"/>
-  <text x="219" y="362" fill="#0F171E" font-size="10" font-family="Arial, sans-serif">Analyze Screen</text>
-  <rect x="306" y="349" width="70" height="20" rx="10" fill="#1A252D"/>
-  <text x="321" y="362" fill="#F1F6FA" font-size="10" font-family="Arial, sans-serif">Select Area</text>
-  <rect x="386" y="348" width="42" height="22" rx="11" fill="#202C35"/>
-  <circle cx="399" cy="359" r="8" fill="#FFFFFF"/>
-  <circle cx="415" cy="359" r="8" fill="#7DF9C7"/>
-  <rect x="438" y="349" width="24" height="20" rx="10" fill="#202C35"/>
-  <rect x="468" y="349" width="24" height="20" rx="10" fill="#202C35"/>
+<svg width="540" height="260" viewBox="0 0 540 260" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="logoOrb" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(70 186) rotate(48) scale(28 28)">
+      <stop stop-color="#9A5BFF"/>
+      <stop offset="0.5" stop-color="#3D63FF"/>
+      <stop offset="1" stop-color="#14162A"/>
+    </radialGradient>
+    <linearGradient id="teal" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#14F0D4"/>
+      <stop offset="1" stop-color="#5FF6E1"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="42" y="26" width="456" height="58" rx="26" fill="#081D20" stroke="#14F0D4" stroke-width="2.4"/>
+  <rect x="58" y="42" width="320" height="12" rx="6" fill="#0E3133"/>
+  <rect x="58" y="60" width="402" height="10" rx="5" fill="#103739"/>
+  <rect x="396" y="36" width="84" height="38" rx="19" fill="#0B2A2C"/>
+  <circle cx="420" cy="55" r="8" stroke="#F4FFFD" stroke-width="2"/>
+  <path d="M428 47L434 53" stroke="#F4FFFD" stroke-width="2" stroke-linecap="round"/>
+  <text x="440" y="60" fill="#F4FFFD" font-size="13" font-weight="700" font-family="Inter, Arial, sans-serif">AI Mode</text>
+
+  <rect x="34" y="156" width="472" height="60" rx="30" fill="#4B4D57" fill-opacity="0.82" stroke="#8E919C" stroke-opacity="0.25"/>
+
+  <circle cx="70" cy="186" r="18" fill="#151826"/>
+  <circle cx="70" cy="186" r="12" fill="url(#logoOrb)"/>
+  <path d="M64 180C66 176 74 176 76 180C78 184 78 188 74 192C71 195 66 194 64 190" stroke="#BDC5FF" stroke-width="1.7" stroke-linecap="round"/>
+
+  <circle cx="112" cy="186" r="18" fill="#12272B"/>
+  <path d="M112 177L115 181L121 182L117 187L118 193L112 190L106 193L107 187L103 182L109 181L112 177Z" stroke="#F4FFFD" stroke-width="1.6" stroke-linejoin="round"/>
+
+  <rect x="146" y="162" width="168" height="48" rx="24" fill="#15161E"/>
+  <text x="170" y="192" fill="#FFFFFF" font-size="15" font-weight="700" font-family="Inter, Arial, sans-serif">Analyze Screen</text>
+  <rect x="250" y="169" width="42" height="34" rx="12" fill="#444550"/>
+  <text x="261" y="191" fill="#FFFFFF" font-size="12.5" font-weight="700" font-family="Inter, Arial, sans-serif">Ctrl</text>
+  <rect x="298" y="169" width="32" height="34" rx="12" fill="#444550"/>
+  <text x="310" y="191" fill="#FFFFFF" font-size="13.5" font-weight="700" font-family="Inter, Arial, sans-serif">H</text>
+
+  <rect x="338" y="168" width="88" height="36" rx="18" fill="#FBFDFC"/>
+  <circle cx="358" cy="186" r="7.5" stroke="#17202A" stroke-width="1.7"/>
+  <path d="M354 186H362" stroke="#17202A" stroke-width="1.7" stroke-linecap="round"/>
+  <path d="M358 182V190" stroke="#17202A" stroke-width="1.7" stroke-linecap="round"/>
+  <text x="371" y="192" fill="#17202A" font-size="14" font-weight="700" font-family="Inter, Arial, sans-serif">Solve</text>
+
+  <rect x="432" y="162" width="90" height="48" rx="24" transform="translate(-12 0)" fill="#15161E"/>
+  <path d="M432 182C436 180 440 180 444 182" stroke="#F4FFFD" stroke-width="2" stroke-linecap="round" transform="translate(10 0)"/>
+  <path d="M432 190C436 192 440 192 444 190" stroke="#F4FFFD" stroke-width="2" stroke-linecap="round" transform="translate(10 0)"/>
+  <circle cx="442" cy="186" r="2" fill="#F4FFFD"/>
+  <circle cx="458" cy="186" r="2" fill="#F4FFFD"/>
+  <text x="466" y="192" fill="#FFFFFF" font-size="14" font-weight="700" font-family="Inter, Arial, sans-serif">Live</text>
+
+  <circle cx="444" cy="186" r="18" fill="#21233B"/>
+  <rect x="437" y="178" width="14" height="12" rx="2.4" stroke="#F4FFFD" stroke-width="1.7"/>
+  <rect x="439.5" y="193" width="9" height="3" rx="1.5" fill="#F4FFFD"/>
+
+  <circle cx="486" cy="186" r="18" fill="#21233B"/>
+  <rect x="480" y="174" width="12" height="24" rx="2.4" stroke="#F4FFFD" stroke-width="1.7"/>
+  <circle cx="486" cy="193" r="1.5" fill="#F4FFFD"/>
+
+  <circle cx="512" cy="186" r="18" fill="#15161E"/>
+  <rect x="505" y="177" width="8" height="8" rx="1.5" stroke="#F4FFFD" stroke-width="1.5"/>
+  <rect x="517" y="177" width="8" height="8" rx="1.5" stroke="#F4FFFD" stroke-width="1.5"/>
+  <rect x="505" y="189" width="8" height="8" rx="1.5" stroke="#F4FFFD" stroke-width="1.5"/>
+  <rect x="517" y="189" width="8" height="8" rx="1.5" stroke="#F4FFFD" stroke-width="1.5"/>
 </svg>

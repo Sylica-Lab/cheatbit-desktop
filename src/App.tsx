@@ -16,6 +16,7 @@ import { AccountDashboardDialog } from "./components/Account/AccountDashboardDia
 import { AuthScreen } from "./components/Auth/AuthScreen"
 import { SettingsDialog } from "./components/Settings/SettingsDialog"
 import UninstallOffboardingDialog from "./components/Uninstall/UninstallOffboardingDialog"
+import PhoneRelayWindow from "./components/PhoneRelay/PhoneRelayWindow"
 import type { AuthState } from "../shared/backendAuth"
 import {
   EMPTY_DESKTOP_UPDATE_STATE,
@@ -57,6 +58,7 @@ function App() {
 	
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [isAccountDashboardOpen, setIsAccountDashboardOpen] = useState(false)
+  const [isPhoneRelayOpen, setIsPhoneRelayOpen] = useState(false)
   const [isUninstallOffboardingOpen, setIsUninstallOffboardingOpen] =
     useState(false)
   const [desktopUpdateState, setDesktopUpdateState] = useState<DesktopUpdateState>(
@@ -132,7 +134,14 @@ function App() {
   useEffect(() => {
     const unsubscribeSettings = window.electronAPI.onShowSettings(() => {
       console.log("Show settings dialog requested");
-      setIsSettingsOpen(true);
+      setIsSettingsOpen((previous) => {
+        const nextOpen = !previous
+        if (nextOpen) {
+          setIsAccountDashboardOpen(false)
+          setIsPhoneRelayOpen(false)
+        }
+        return nextOpen
+      })
     });
     
     return () => {
@@ -142,15 +151,34 @@ function App() {
 
   useEffect(() => {
     const handleOpenAccountDashboard = () => {
-      setIsAccountDashboardOpen(true)
+      setIsAccountDashboardOpen((previous) => {
+        const nextOpen = !previous
+        if (nextOpen) {
+          setIsSettingsOpen(false)
+          setIsPhoneRelayOpen(false)
+        }
+        return nextOpen
+      })
+    }
+    const handleOpenPhoneRelay = () => {
+      setIsPhoneRelayOpen((previous) => {
+        const nextOpen = !previous
+        if (nextOpen) {
+          setIsSettingsOpen(false)
+          setIsAccountDashboardOpen(false)
+        }
+        return nextOpen
+      })
     }
 
     window.addEventListener("open-account-dashboard", handleOpenAccountDashboard)
+    window.addEventListener("open-phone-relay", handleOpenPhoneRelay)
     return () => {
       window.removeEventListener(
         "open-account-dashboard",
         handleOpenAccountDashboard
       )
+      window.removeEventListener("open-phone-relay", handleOpenPhoneRelay)
     }
   }, [])
 
@@ -329,7 +357,8 @@ function App() {
     isInitialized,
     authState.authenticated,
     isSettingsOpen,
-    isAccountDashboardOpen
+    isAccountDashboardOpen,
+    isPhoneRelayOpen,
   ])
 
   return (
@@ -343,7 +372,12 @@ function App() {
                   ref={appShellRef}
                   data-app-shell="true"
                   data-aux-open={
-                    isSettingsOpen || isAccountDashboardOpen ? "true" : "false"
+                    isSettingsOpen ||
+                    isAccountDashboardOpen ||
+                    isPhoneRelayOpen ||
+                    isUninstallOffboardingOpen
+                      ? "true"
+                      : "false"
                   }
                   className="inline-flex flex-col items-start bg-transparent"
                 >
@@ -362,6 +396,10 @@ function App() {
                   <AccountDashboardDialog
                     open={isAccountDashboardOpen}
                     onOpenChange={handleCloseAccountDashboard}
+                  />
+                  <PhoneRelayWindow
+                    open={isPhoneRelayOpen}
+                    onOpenChange={setIsPhoneRelayOpen}
                   />
                   <UninstallOffboardingDialog
                     open={isUninstallOffboardingOpen}

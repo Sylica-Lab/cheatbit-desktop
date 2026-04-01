@@ -13,7 +13,7 @@ export function GeneralChatPanel({
   onComputerTaskRequestConsumed,
 }: GeneralChatPanelProps) {
   return (
-    <div className="w-[22rem] min-w-[22rem] max-w-[22rem] space-y-3">
+    <div className="w-[var(--sylica-widget-panel-width)] min-w-[var(--sylica-widget-panel-width)] max-w-[var(--sylica-widget-panel-width)] space-y-3">
       <AssistantChat
         queryKey={GENERAL_CHAT_QUERY_KEY}
         mode="general"

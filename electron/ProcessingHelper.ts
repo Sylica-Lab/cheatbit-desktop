@@ -4,7 +4,7 @@ import fs from "node:fs"
 import { ScreenshotHelper } from "./ScreenshotHelper"
 import { IProcessingHelperDeps } from "./main"
 import * as axios from "axios"
-import { BrowserWindow } from "electron"
+import { BrowserWindow, nativeImage } from "electron"
 import { OpenAI, toFile } from "openai"
 import { configHelper } from "./ConfigHelper"
 import Anthropic from '@anthropic-ai/sdk';
@@ -13,6 +13,7 @@ import {
   DEFAULT_MODELS,
   PROVIDER_DISPLAY_NAMES,
   TOGETHER_BASE_URL,
+  TOGETHER_GENERAL_MODEL,
 } from "../shared/aiConfig"
 import type {
   AssistantChatMode,
@@ -68,6 +69,9 @@ interface StructuredSolutionResponse {
   space_complexity?: string;
 }
 
+type StructuredAnalyzeResponse = Partial<ExtractedQuestionInfo> &
+  Partial<StructuredSolutionResponse>
+
 export interface LiveInterviewTurnRequest {
   instructions: string[];
   lastAnswer: string;
@@ -102,6 +106,13 @@ interface TextFollowUpProcessingOptions {
 const LIVE_AUDIO_TRANSCRIPTION_MODEL = "openai/whisper-large-v3"
 const LIVE_INTERVIEW_MAX_TOKENS = 520
 const LIVE_AUDIO_INTERVIEW_MAX_TOKENS = 420
+const FAST_VISION_LONG_EDGE = 1440
+const ANALYZE_EXTRACTION_BASE_TOKENS = 900
+const ANALYZE_EXTRACTION_TOKENS_PER_EXTRA_IMAGE = 110
+const ANALYZE_EXTRACTION_MAX_TOKENS = 1340
+const FAST_ANALYZE_BASE_TOKENS = 1250
+const FAST_ANALYZE_TOKENS_PER_EXTRA_IMAGE = 120
+const FAST_ANALYZE_MAX_TOKENS = 1800
 
 export class ProcessingHelper {
   private deps: IProcessingHelperDeps
@@ -182,6 +193,80 @@ export class ProcessingHelper {
     stage: "extractionModel" | "solutionModel" | "debuggingModel"
   ): string {
     return DEFAULT_MODELS[provider][stage];
+  }
+
+  private optimizeVisionImageData(base64: string): string {
+    try {
+      const image = nativeImage.createFromBuffer(Buffer.from(base64, "base64"))
+      const size = image.getSize()
+      const longestEdge = Math.max(size.width, size.height)
+
+      if (!longestEdge || longestEdge <= FAST_VISION_LONG_EDGE) {
+        return base64
+      }
+
+      const scale = FAST_VISION_LONG_EDGE / longestEdge
+      const resizedImage = image.resize({
+        width: Math.max(1, Math.round(size.width * scale)),
+        height: Math.max(1, Math.round(size.height * scale)),
+        quality: "good",
+      })
+
+      return resizedImage.toPNG().toString("base64")
+    } catch (error) {
+      console.warn("Falling back to original screenshot payload for vision.", error)
+      return base64
+    }
+  }
+
+  private getExtractionTokenBudget(imageCount: number): number {
+    return Math.min(
+      ANALYZE_EXTRACTION_MAX_TOKENS,
+      ANALYZE_EXTRACTION_BASE_TOKENS +
+        Math.max(0, imageCount - 1) * ANALYZE_EXTRACTION_TOKENS_PER_EXTRA_IMAGE
+    )
+  }
+
+  private getFastAnalyzeTokenBudget(imageCount: number): number {
+    return Math.min(
+      FAST_ANALYZE_MAX_TOKENS,
+      FAST_ANALYZE_BASE_TOKENS +
+        Math.max(0, imageCount - 1) * FAST_ANALYZE_TOKENS_PER_EXTRA_IMAGE
+    )
+  }
+
+  private getSolutionTokenBudget(problemInfo: ExtractedQuestionInfo): number {
+    const questionType = problemInfo.question_type || "general"
+    const subQuestionCount = Math.max(1, problemInfo.sub_questions?.length || 0)
+
+    const baseBudget =
+      questionType === "coding"
+        ? 1100
+        : questionType === "academic"
+        ? 720
+        : questionType === "mcq"
+        ? 420
+        : 620
+
+    return Math.min(1500, baseBudget + Math.max(0, subQuestionCount - 1) * 90)
+  }
+
+  private getAnalyzeSolutionModel(
+    config: ReturnType<typeof configHelper.loadConfig>,
+    problemInfo: ExtractedQuestionInfo
+  ): string {
+    const configuredModel =
+      config.solutionModel ||
+      this.getDefaultModelForStage(config.apiProvider, "solutionModel")
+
+    if (
+      config.apiProvider === "together" &&
+      configuredModel === DEFAULT_MODELS.together.solutionModel
+    ) {
+      return TOGETHER_GENERAL_MODEL
+    }
+
+    return configuredModel
   }
 
   private stripCodeFences(text: string): string {
@@ -283,32 +368,238 @@ export class ProcessingHelper {
   }
 
   private buildExtractionInstruction(language: string): string {
-    return `You analyze screenshots that may contain coding challenges, academic questions, multiple-choice questions, or general reasoning prompts.
+    return `Extract the visible problem or content from the screenshots.
 
-Return only valid JSON with these fields:
-- question_type: one of "coding", "mcq", "academic", or "general"
-- problem_statement: the full combined prompt/question text in plain text, covering ALL visible questions, sub-questions, and requested tasks in top-to-bottom order. If there is no explicit question, use this field for a concise summary of the visible content.
-- content_summary: concise summary of the visible content when there is no explicit question, otherwise empty string
-- sub_questions: array of strings listing every distinct visible question, sub-question, or requested task in order
-- constraints: string
-- example_input: string
-- example_output: string
-- answer_choices: array of strings for MCQs, otherwise []
-- subject: string
-- answer_format: string describing what kind of answer is expected
-- existing_work: string with any visible attempt, notes, or partial answer
-- key_details: array of short strings with important facts, formulas, instructions, or hints
+Return only valid JSON with:
+- question_type: "coding" | "mcq" | "academic" | "general"
+- problem_statement: full visible prompt or a concise summary when no direct question exists
+- content_summary: summary only when there is no direct question, otherwise ""
+- sub_questions: every visible sub-question or task in order
+- constraints: short string
+- example_input: short string
+- example_output: short string
+- answer_choices: MCQ options, otherwise []
+- answer_format: short string
+- existing_work: short visible attempt/notes/code summary
+- key_details: short list of important facts or hints
 
 Rules:
-- Preserve the wording from the screenshots as accurately as possible.
-- If a field is missing, use an empty string or [].
-- If multiple questions or sub-parts are visible, include all of them. Never return only the first one.
-- Do not collapse numbered or lettered sub-parts into a single shortened summary.
-- If there is no explicit question to answer, do not refuse and do not leave problem_statement empty. Set question_type to "general", set answer_format to "summary", and summarize the visible content instead.
-- If the screenshots mostly show notes, code, UI, chat, slides, or an article without a direct question, treat them as content to summarize and explain.
-- If the screenshots show code and an explicit coding task, keep question_type as "coding". If they show code but no direct task, you may still use question_type "general" with answer_format "summary".
-- Preferred coding language for coding tasks is ${language}.
-- Return JSON only with no markdown or extra commentary.`;
+- Keep wording accurate, but stay compact.
+- Include all visible sub-parts in order.
+- If there is no clear question, summarize the visible content instead of refusing.
+- Preferred coding language is ${language}.
+- Use empty strings or [] for missing fields.
+- Return JSON only.`;
+  }
+
+  private buildFastAnalyzePrompt(language: string): string {
+    return `Analyze the screenshot(s) and answer directly.
+
+Return only valid JSON in this exact field order:
+{
+  "question_type": "coding|mcq|academic|general",
+  "is_code_response": true,
+  "answer": "direct final answer or concise explanation covering every visible question in order",
+  "code": "only if code is genuinely needed, otherwise empty string",
+  "thoughts": ["1 or 2 short reasoning bullets"],
+  "time_complexity": "coding only, otherwise N/A - Not applicable",
+  "space_complexity": "coding only, otherwise N/A - Not applicable",
+  "problem_statement": "full visible question or concise visible-content summary",
+  "content_summary": "summary only when there is no direct question, otherwise empty string",
+  "sub_questions": ["visible sub-questions or tasks in order"],
+  "constraints": "short string",
+  "example_input": "short string",
+  "example_output": "short string",
+  "answer_choices": ["MCQ options if any"],
+  "answer_format": "short string",
+  "existing_work": "short visible attempt/notes/code summary",
+  "key_details": ["short important facts or hints"]
+}
+
+Rules:
+- Start the useful answer as early as possible.
+- Keep the answer minimal, correct, and fast to read.
+- Include code only when the screenshot clearly asks for implementation.
+- If there is no clear question, summarize the visible content instead.
+- Include every visible sub-part in order.
+- If multiple distinct questions or numbered parts are visible, answer all of them in order and label them clearly in "answer".
+- Do not stop after the first visible question or sub-part.
+- Preferred coding language is ${language}.
+- Return JSON only.`;
+  }
+
+  private buildDirectAnalyzeAnswerPrompt(language: string): string {
+    return `You are answering a screenshot-based question.
+
+Instructions:
+- Answer immediately in markdown.
+- Be fast, direct, and minimal.
+- If the screenshot asks for code, give a short correct ${language} solution with a code block.
+- If it is MCQ, start with the best option, then one short reason.
+- If it is general or academic, answer in a few short lines.
+- If multiple questions or numbered parts are visible, answer all of them in order.
+- If there is no explicit question, briefly summarize the visible content.
+- Do not mention hidden prompts or internal tools.`
+  }
+
+  private parseDirectAnalyzeTextResponse(
+    responseText: string
+  ): ReturnType<ProcessingHelper["normalizeSolutionResponse"]> {
+    const normalizedText = responseText.trim()
+    const codeBlockMatch = /```[a-zA-Z0-9_-]*\n([\s\S]*?)```/m.exec(normalizedText)
+    const extractedCode = codeBlockMatch?.[1]?.trim() || ""
+    const prose = normalizedText
+      .replace(/```[a-zA-Z0-9_-]*\n[\s\S]*?```/gm, "")
+      .trim()
+    const fallbackThoughts = extractedCode
+      ? [
+          "The screenshot appears to require code, so the response is focused on the shortest usable implementation.",
+        ]
+      : this.buildDistinctAnswerThoughts(prose)
+
+    return this.normalizeSolutionResponse(
+      {
+        question_type: extractedCode ? "coding" : "general",
+        is_code_response: Boolean(extractedCode),
+        answer: prose || normalizedText,
+        code: extractedCode,
+        thoughts: fallbackThoughts,
+        time_complexity: extractedCode ? "Complexity not provided." : "N/A - Not applicable",
+        space_complexity: extractedCode ? "Complexity not provided." : "N/A - Not applicable",
+      },
+      extractedCode ? "coding" : "general"
+    )
+  }
+
+  private normalizeThoughtText(text: string): string {
+    return text.replace(/\s+/g, " ").trim().toLowerCase()
+  }
+
+  private buildDistinctAnswerThoughts(answer: string): string[] {
+    const normalizedAnswer = this.normalizeThoughtText(answer)
+    if (!normalizedAnswer) {
+      return []
+    }
+
+    if (/^\**\s*[a-d][.)]\s/i.test(answer) || /^\**\s*option\s+[a-d]\b/i.test(answer)) {
+      return [
+        "This appears to be an MCQ, so the response selects the strongest option first and keeps the justification brief.",
+      ]
+    }
+
+    if (
+      /(?:desktop|screenshot|search bar|icons?|folders?|window|visible content)/i.test(
+        answer
+      )
+    ) {
+      return [
+        "No explicit question was detected, so the response summarizes the visible screenshot content.",
+      ]
+    }
+
+    return [
+      "Focused on the clearest visible prompt and kept the response short enough to glance at quickly.",
+    ]
+  }
+
+  private hasDistinctMultipleSubQuestions(
+    problemInfo: ExtractedQuestionInfo
+  ): boolean {
+    const problemStatement = (problemInfo.problem_statement || "").trim()
+    const contentSummary = (problemInfo.content_summary || "").trim()
+    const distinctSubQuestions = Array.isArray(problemInfo.sub_questions)
+      ? problemInfo.sub_questions
+          .filter((question): question is string => typeof question === "string")
+          .map((question) => question.trim())
+          .filter(Boolean)
+          .filter(
+            (question) =>
+              question !== problemStatement && question !== contentSummary
+          )
+      : []
+
+    return (
+      new Set(
+        distinctSubQuestions.map((question) => this.normalizeThoughtText(question))
+      ).size > 1
+    )
+  }
+
+  private shouldRunExpandedSolutionPass(
+    problemInfo: ExtractedQuestionInfo
+  ): boolean {
+    if ((problemInfo.answer_format || "").trim().toLowerCase() === "summary") {
+      return false
+    }
+
+    if (this.hasDistinctMultipleSubQuestions(problemInfo)) {
+      return true
+    }
+
+    const visibleText = [
+      problemInfo.problem_statement || "",
+      ...(Array.isArray(problemInfo.sub_questions) ? problemInfo.sub_questions : []),
+    ]
+      .map((text) => text.trim())
+      .filter(Boolean)
+      .join("\n")
+
+    if (!visibleText) {
+      return false
+    }
+
+    const numberedPartMatches =
+      visibleText.match(/(?:^|\n)\s*(?:\d+[\).:]|[a-zA-Z][\).:])\s+/gm) || []
+    const questionMarkMatches = visibleText.match(/\?/g) || []
+
+    return numberedPartMatches.length >= 2 || questionMarkMatches.length >= 2
+  }
+
+  private countStructuredAnswerParts(answer: string): number {
+    const lines = answer
+      .split(/\n+/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+
+    return lines.filter((line) =>
+      /^(?:[-*]\s*)?(?:\*\*|__)?(?:(?:question|part|q)\s*\d+|(?:\d+|[a-zA-Z])[\).:])\b/i.test(
+        line
+      )
+    ).length
+  }
+
+  private fastAnswerLikelyCoversMultipleQuestions(
+    problemInfo: ExtractedQuestionInfo,
+    solution: ReturnType<ProcessingHelper["normalizeSolutionResponse"]>
+  ): boolean {
+    const answer = (solution.answer || solution.code || "").trim()
+    if (!answer || solution.is_code_response) {
+      return false
+    }
+
+    const distinctSubQuestionCount = Array.isArray(problemInfo.sub_questions)
+      ? new Set(
+          problemInfo.sub_questions
+            .filter((question): question is string => typeof question === "string")
+            .map((question) => this.normalizeThoughtText(question))
+            .filter(Boolean)
+        ).size
+      : 0
+
+    const expectedPartCount = Math.max(
+      2,
+      Math.min(4, distinctSubQuestionCount || 0)
+    )
+    const structuredAnswerParts = this.countStructuredAnswerParts(answer)
+
+    if (structuredAnswerParts >= expectedPartCount) {
+      return true
+    }
+
+    const bulletLikeParts =
+      answer.match(/(?:^|\n)\s*(?:[-*•]|\d+[\).:]|[a-zA-Z][\).:])\s+/gm)?.length || 0
+
+    return bulletLikeParts >= expectedPartCount
   }
 
   private buildSolutionPrompt(
@@ -386,6 +677,7 @@ Return only valid JSON with this exact structure:
 }
 
 Rules:
+- Emit fields in the exact order shown above so the answer can stream early.
 - For coding tasks with an explicit coding task: provide a correct, efficient implementation in ${language}, set is_code_response=true, and include detailed time/space complexity.
 - For MCQs: answer directly, identify the best option, explain why, set is_code_response=false, and leave code empty.
 - For academic/general tasks: provide a correct direct answer with concise reasoning, set is_code_response=false unless code is genuinely required.
@@ -393,7 +685,8 @@ Rules:
 - If multiple distinct questions or sub-parts are present, answer all of them in order and label them clearly.
 - Do not skip later questions even if the first question looks like the main one.
 - If the screenshots contain multiple independent questions that cannot be represented as one code-only answer, set is_code_response=false and place the full multi-part answer in "answer".
-- thoughts must be a short array of practical reasoning points.
+- thoughts must be 1 or 2 short practical reasoning points.
+- Keep the answer as short as possible while still correct and usable.
 - Return JSON only.`;
   }
 
@@ -906,6 +1199,12 @@ Instructions:
     signal: AbortSignal
   ): Promise<ExtractedQuestionInfo> {
     const extractionInstruction = this.buildExtractionInstruction(language)
+    const optimizedImageDataList = imageDataList.map((imageData) =>
+      this.optimizeVisionImageData(imageData)
+    )
+    const extractionTokenBudget = this.getExtractionTokenBudget(
+      optimizedImageDataList.length
+    )
 
     if (this.isOpenAICompatibleProvider(config.apiProvider)) {
       const response = await this.openaiClient!.chat.completions.create({
@@ -920,14 +1219,14 @@ Instructions:
                 type: "text" as const,
                 text: extractionInstruction,
               },
-              ...imageDataList.map((data) => ({
+              ...optimizedImageDataList.map((data) => ({
                 type: "image_url" as const,
                 image_url: { url: `data:image/png;base64,${data}` },
               })),
             ],
           },
         ],
-        max_tokens: 4000,
+        max_tokens: extractionTokenBudget,
         temperature: 0.2,
       })
 
@@ -946,7 +1245,7 @@ Instructions:
               role: "user",
               parts: [
                 { text: extractionInstruction },
-                ...imageDataList.map((data) => ({
+                ...optimizedImageDataList.map((data) => ({
                   inlineData: {
                     mimeType: "image/png",
                     data,
@@ -957,7 +1256,7 @@ Instructions:
           ],
           generationConfig: {
             temperature: 0.2,
-            maxOutputTokens: 4000,
+            maxOutputTokens: extractionTokenBudget,
           },
         },
         { signal }
@@ -979,7 +1278,6 @@ Instructions:
         model:
           config.extractionModel ||
           this.getDefaultModelForStage(config.apiProvider, "extractionModel"),
-        max_tokens: 4000,
         messages: [
           {
             role: "user",
@@ -988,7 +1286,7 @@ Instructions:
                 type: "text" as const,
                 text: extractionInstruction,
               },
-              ...imageDataList.map((data) => ({
+              ...optimizedImageDataList.map((data) => ({
                 type: "image" as const,
                 source: {
                   type: "base64" as const,
@@ -999,6 +1297,7 @@ Instructions:
             ],
           },
         ],
+        max_tokens: extractionTokenBudget,
         temperature: 0.2,
       })
 
@@ -1020,6 +1319,485 @@ Instructions:
       }
 
       throw error
+    }
+  }
+
+  private async generateFastAnalyzeFromImageData(
+    imageDataList: string[],
+    language: string,
+    config: ReturnType<typeof configHelper.loadConfig>,
+    signal: AbortSignal
+  ): Promise<{
+    problemInfo: ExtractedQuestionInfo
+    solution: ReturnType<ProcessingHelper["normalizeSolutionResponse"]>
+  }> {
+    const optimizedImageDataList = imageDataList.map((imageData) =>
+      this.optimizeVisionImageData(imageData)
+    )
+    const tokenBudget = this.getFastAnalyzeTokenBudget(
+      optimizedImageDataList.length
+    )
+    const analyzeInstruction = this.buildFastAnalyzePrompt(language)
+
+    if (this.isOpenAICompatibleProvider(config.apiProvider)) {
+      const request = {
+        model:
+          config.extractionModel ||
+          this.getDefaultModelForStage(config.apiProvider, "extractionModel"),
+        messages: [
+          {
+            role: "user" as const,
+            content: [
+              {
+                type: "text" as const,
+                text: analyzeInstruction,
+              },
+              ...optimizedImageDataList.map((data) => ({
+                type: "image_url" as const,
+                image_url: { url: `data:image/png;base64,${data}` },
+              })),
+            ],
+          },
+        ],
+        max_tokens: tokenBudget,
+        temperature: 0.2,
+      }
+
+      let streamedResponseContent = ""
+
+      try {
+        const responseStream = await this.openaiClient!.chat.completions.create(
+          {
+            ...request,
+            stream: true,
+          },
+          { signal }
+        )
+
+        for await (const chunk of responseStream) {
+          if (signal.aborted) {
+            break
+          }
+
+          const deltaText = chunk.choices?.[0]?.delta?.content
+          if (typeof deltaText !== "string" || deltaText.length === 0) {
+            continue
+          }
+
+          streamedResponseContent += deltaText
+          const preview = this.extractStreamingSolutionPreview(
+            streamedResponseContent
+          )
+
+          if (preview) {
+            this.emitSolutionStream({
+              content: preview.content,
+              isCodeResponse: preview.isCodeResponse,
+            })
+          }
+        }
+      } catch (streamError) {
+        if (axios.isCancel(streamError)) {
+          throw streamError
+        }
+
+        console.warn(
+          "Falling back to non-streaming fast analyze generation.",
+          streamError
+        )
+      }
+
+      let responseText = streamedResponseContent.trim()
+
+      if (!responseText) {
+        const response = await this.openaiClient!.chat.completions.create(
+          request,
+          { signal }
+        )
+        responseText = response.choices[0].message.content || ""
+      }
+
+      try {
+        const parsedResponse = this.parseJsonResponse<StructuredAnalyzeResponse>(
+          responseText
+        )
+        const problemInfo = this.normalizeExtractedQuestionInfo(parsedResponse)
+        const solution = this.normalizeSolutionResponse(
+          parsedResponse,
+          problemInfo.question_type
+        )
+
+        this.emitSolutionStream({
+          content: solution.code || solution.answer,
+          isCodeResponse: Boolean(solution.is_code_response),
+          done: true,
+        })
+
+        return {
+          problemInfo,
+          solution,
+        }
+      } catch (parseError) {
+        console.warn(
+          "Structured fast analyze parsing failed. Falling back to direct text parsing.",
+          parseError
+        )
+      }
+
+      const solution = this.parseDirectAnalyzeTextResponse(responseText)
+      const problemInfo = this.normalizeExtractedQuestionInfo({
+        question_type: solution.is_code_response ? "coding" : "general",
+        problem_statement:
+          solution.answer?.trim() ||
+          "Visible question or content extracted from the screenshot.",
+        sub_questions: [
+          solution.answer?.trim() ||
+            "Answer the visible question or summarize the visible content.",
+        ],
+        answer_format: solution.is_code_response ? "code" : "direct_answer",
+        key_details: [],
+      })
+
+      this.emitSolutionStream({
+        content: solution.code || solution.answer,
+        isCodeResponse: Boolean(solution.is_code_response),
+        done: true,
+      })
+
+      return {
+        problemInfo,
+        solution,
+      }
+    }
+
+    let responseText = ""
+
+    if (config.apiProvider === "gemini") {
+      const response = await axios.default.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/${config.extractionModel || "gemini-2.0-flash"}:generateContent?key=${this.geminiApiKey}`,
+        {
+          contents: [
+            {
+              role: "user",
+              parts: [
+                { text: analyzeInstruction },
+                ...optimizedImageDataList.map((data) => ({
+                  inlineData: {
+                    mimeType: "image/png",
+                    data,
+                  },
+                })),
+              ],
+            },
+          ],
+          generationConfig: {
+            temperature: 0.2,
+            maxOutputTokens: tokenBudget,
+          },
+        },
+        { signal }
+      )
+
+      const responseData = response.data as GeminiResponse
+      if (!responseData.candidates || responseData.candidates.length === 0) {
+        throw new Error("Empty response from Gemini API.")
+      }
+
+      responseText =
+        responseData.candidates[0].content.parts.find(
+          (part) => typeof part.text === "string" && part.text.length > 0
+        )?.text || ""
+    } else {
+      const response = await this.anthropicClient!.messages.create({
+        model:
+          config.extractionModel ||
+          this.getDefaultModelForStage(config.apiProvider, "extractionModel"),
+        max_tokens: tokenBudget,
+        temperature: 0.2,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text" as const,
+                text: analyzeInstruction,
+              },
+              ...optimizedImageDataList.map((data) => ({
+                type: "image" as const,
+                source: {
+                  type: "base64" as const,
+                  media_type: "image/png" as const,
+                  data,
+                },
+              })),
+            ],
+          },
+        ],
+      })
+
+      const textBlock = response.content.find(
+        (entry) => entry.type === "text"
+      ) as { text?: string } | undefined
+
+      responseText = textBlock?.text || ""
+    }
+
+    const parsedResponse = this.parseJsonResponse<StructuredAnalyzeResponse>(
+      responseText
+    )
+    const problemInfo = this.normalizeExtractedQuestionInfo(parsedResponse)
+    const solution = this.normalizeSolutionResponse(
+      parsedResponse,
+      problemInfo.question_type
+    )
+
+    this.emitSolutionStream({
+      content: solution.code || solution.answer,
+      isCodeResponse: Boolean(solution.is_code_response),
+      done: true,
+    })
+
+    return {
+      problemInfo,
+      solution,
+    }
+  }
+
+  private async generateStructuredSolutionForProblemInfo(
+    problemInfo: ExtractedQuestionInfo,
+    language: string,
+    config: ReturnType<typeof configHelper.loadConfig>,
+    signal: AbortSignal
+  ): Promise<{
+    success: true
+    data: ReturnType<ProcessingHelper["normalizeSolutionResponse"]>
+  } | {
+    success: false
+    error: string
+  }> {
+    try {
+      const promptText = this.buildSolutionPrompt(problemInfo, language);
+      const solutionTokenBudget = this.getSolutionTokenBudget(problemInfo)
+      const analyzeSolutionModel = this.getAnalyzeSolutionModel(
+        config,
+        problemInfo
+      )
+
+      let responseContent;
+      
+      if (this.isOpenAICompatibleProvider(config.apiProvider)) {
+        const providerLabel = this.getProviderLabel(config.apiProvider);
+
+        if (!this.openaiClient) {
+          return {
+            success: false,
+            error: `${providerLabel} API key not configured. Please check your settings.`
+          };
+        }
+        
+        const solutionRequest = {
+          model: analyzeSolutionModel,
+          messages: [
+            {
+              role: "system" as const,
+              content:
+                "You are a high-accuracy assistant for coding, academics, multiple-choice questions, and general problem solving. Return valid JSON only."
+            },
+            { role: "user" as const, content: promptText }
+          ],
+          max_tokens: solutionTokenBudget,
+          temperature: 0.2
+        };
+
+        let streamedResponseContent = "";
+
+        try {
+          const solutionStream = await this.openaiClient.chat.completions.create(
+            {
+              ...solutionRequest,
+              stream: true,
+            },
+            { signal }
+          );
+
+          for await (const chunk of solutionStream) {
+            if (signal.aborted) {
+              break;
+            }
+
+            const deltaText = chunk.choices?.[0]?.delta?.content;
+            if (typeof deltaText !== "string" || deltaText.length === 0) {
+              continue;
+            }
+
+            streamedResponseContent += deltaText;
+            const preview = this.extractStreamingSolutionPreview(
+              streamedResponseContent,
+              problemInfo.question_type
+            );
+
+            if (preview) {
+              this.emitSolutionStream({
+                content: preview.content,
+                isCodeResponse: preview.isCodeResponse,
+              });
+            }
+          }
+        } catch (streamError) {
+          if (axios.isCancel(streamError)) {
+            throw streamError;
+          }
+
+          console.warn(
+            "Falling back to non-streaming solution generation.",
+            streamError
+          );
+        }
+
+        if (streamedResponseContent.trim()) {
+          responseContent = streamedResponseContent;
+        } else {
+          const solutionResponse = await this.openaiClient.chat.completions.create(
+            solutionRequest,
+            { signal }
+          );
+
+          responseContent = solutionResponse.choices[0].message.content;
+        }
+      } else if (config.apiProvider === "gemini")  {
+        if (!this.geminiApiKey) {
+          return {
+            success: false,
+            error: "Gemini API key not configured. Please check your settings."
+          };
+        }
+        
+        try {
+          const geminiMessages = [
+            {
+              role: "user",
+              parts: [
+                {
+                  text: promptText
+                }
+              ]
+            }
+          ];
+
+          const response = await axios.default.post(
+            `https://generativelanguage.googleapis.com/v1beta/models/${analyzeSolutionModel}:generateContent?key=${this.geminiApiKey}`,
+            {
+              contents: geminiMessages,
+              generationConfig: {
+                temperature: 0.2,
+                maxOutputTokens: solutionTokenBudget
+              }
+            },
+            { signal }
+          );
+
+          const responseData = response.data as GeminiResponse;
+          
+          if (!responseData.candidates || responseData.candidates.length === 0) {
+            throw new Error("Empty response from Gemini API");
+          }
+          
+          responseContent = responseData.candidates[0].content.parts[0].text;
+        } catch (error) {
+          console.error("Error using Gemini API for solution:", error);
+          return {
+            success: false,
+            error: "Failed to generate solution with Gemini API. Please check your API key or try again later."
+          };
+        }
+      } else if (config.apiProvider === "anthropic") {
+        if (!this.anthropicClient) {
+          return {
+            success: false,
+            error: "Anthropic API key not configured. Please check your settings."
+          };
+        }
+        
+        try {
+          const messages = [
+            {
+              role: "user" as const,
+              content: [
+                {
+                  type: "text" as const,
+                  text: promptText
+                }
+              ]
+            }
+          ];
+
+          const response = await this.anthropicClient.messages.create({
+            model: analyzeSolutionModel,
+            max_tokens: solutionTokenBudget,
+            messages: messages,
+            temperature: 0.2
+          });
+
+          responseContent = (response.content[0] as { type: 'text', text: string }).text;
+        } catch (error: any) {
+          console.error("Error using Anthropic API for solution:", error);
+
+          if (error.status === 429) {
+            return {
+              success: false,
+              error: "Claude API rate limit exceeded. Please wait a few minutes before trying again."
+            };
+          } else if (error.status === 413 || (error.message && error.message.includes("token"))) {
+            return {
+              success: false,
+              error: "Your screenshots contain too much information for Claude to process. Switch to OpenAI, Gemini, or Together AI in settings which can handle larger inputs."
+            };
+          }
+
+          return {
+            success: false,
+            error: "Failed to generate solution with Anthropic API. Please check your API key or try again later."
+          };
+        }
+      }
+      
+      const formattedResponse = this.normalizeSolutionResponse(
+        this.parseJsonResponse<StructuredSolutionResponse>(responseContent),
+        problemInfo.question_type
+      );
+
+      this.emitSolutionStream({
+        content: formattedResponse.code || formattedResponse.answer,
+        isCodeResponse: Boolean(formattedResponse.is_code_response),
+        done: true,
+      });
+
+      return { success: true, data: formattedResponse };
+    } catch (error: any) {
+      if (axios.isCancel(error)) {
+        return {
+          success: false,
+          error: "Processing was canceled by the user."
+        };
+      }
+      
+      if (error?.response?.status === 401) {
+        return {
+          success: false,
+          error: "Invalid API key. Please check your settings."
+        };
+      } else if (error?.response?.status === 429) {
+        return {
+          success: false,
+          error: "API rate limit exceeded or insufficient credits. Please try again later."
+        };
+      }
+      
+      console.error("Solution generation error:", error);
+      return {
+        success: false,
+        error: "Failed to generate solution. Please try again with clearer screenshots."
+      };
     }
   }
 
@@ -1590,20 +2368,26 @@ Instructions:
     const answer = (response.answer || "").trim();
     const code = (response.code || "").trim();
     const isCodeResponse = response.is_code_response ?? Boolean(code);
+    const primaryContent = answer || code;
     const defaultThought =
       questionType === "coding"
         ? "Solution approach based on correctness, efficiency, and edge cases"
         : "Answer based on the key facts and reasoning visible in the screenshots";
+    const normalizedPrimaryContent = this.normalizeThoughtText(primaryContent);
+    const distinctThoughts = Array.isArray(response.thoughts)
+      ? response.thoughts
+          .filter((thought): thought is string => typeof thought === "string")
+          .map((thought) => thought.trim())
+          .filter(Boolean)
+          .filter((thought) => this.normalizeThoughtText(thought) !== normalizedPrimaryContent)
+      : [];
 
     return {
       question_type: questionType,
       is_code_response: isCodeResponse,
       answer: answer || code,
       code: isCodeResponse ? code || answer : answer || code,
-      thoughts:
-        Array.isArray(response.thoughts) && response.thoughts.length > 0
-          ? response.thoughts.filter(Boolean)
-          : [defaultThought],
+      thoughts: distinctThoughts.length > 0 ? distinctThoughts : [defaultThought],
       time_complexity:
         response.time_complexity ||
         (questionType === "coding"
@@ -1847,7 +2631,6 @@ Instructions:
             try {
               return {
                 path,
-                preview: await this.screenshotHelper.getImagePreview(path),
                 data: fs.readFileSync(path).toString('base64')
               };
             } catch (err) {
@@ -1967,7 +2750,6 @@ Instructions:
               
               return {
                 path,
-                preview: await this.screenshotHelper.getImagePreview(path),
                 data: fs.readFileSync(path).toString('base64')
               };
             } catch (err) {
@@ -2039,246 +2821,89 @@ Instructions:
       // Update the user on progress
       if (mainWindow) {
         mainWindow.webContents.send("processing-status", {
-          message: "Analyzing screenshots...",
-          progress: 20
+          message: "Reading the screenshot and starting the answer...",
+          progress: 24
         });
       }
 
-      let problemInfo: ExtractedQuestionInfo;
-      const extractionInstruction = this.buildExtractionInstruction(language);
-      
-      if (this.isOpenAICompatibleProvider(config.apiProvider)) {
-        const providerLabel = this.getProviderLabel(config.apiProvider);
-
-        // Verify OpenAI-compatible client
-        if (!this.openaiClient) {
-          this.initializeAIClient(); // Try to reinitialize
-          
-          if (!this.openaiClient) {
-            return {
-              success: false,
-              error: `${providerLabel} API key not configured or invalid. Please check your settings.`
-            };
-          }
-        }
-
-        // Use the OpenAI-compatible chat.completions interface for OpenAI/Together
-        const messages = [
-          {
-            role: "system" as const, 
-            content: extractionInstruction
-          },
-          {
-            role: "user" as const,
-            content: [
-              {
-                type: "text" as const, 
-                text: "Extract ALL visible question details from these screenshots, including every sub-question or task in order. If there is no clear question, summarize the visible content instead. Return only JSON."
-              },
-              ...imageDataList.map(data => ({
-                type: "image_url" as const,
-                image_url: { url: `data:image/png;base64,${data}` }
-              }))
-            ]
-          }
-        ];
-
-        // Send to the configured multimodal model
-        const extractionResponse = await this.openaiClient.chat.completions.create({
-          model:
-            config.extractionModel ||
-            this.getDefaultModelForStage(config.apiProvider, "extractionModel"),
-          messages: messages,
-          max_tokens: 4000,
-          temperature: 0.2
-        });
-
-        // Parse the response
-        try {
-          const responseText = extractionResponse.choices[0].message.content;
-          problemInfo = this.normalizeExtractedQuestionInfo(
-            this.parseJsonResponse<ExtractedQuestionInfo>(responseText)
-          );
-        } catch (error) {
-          console.error(`Error parsing ${providerLabel} response:`, error);
-          return {
-            success: false,
-            error: "Failed to parse problem information. Please try again or use clearer screenshots."
-          };
-        }
-      } else if (config.apiProvider === "gemini")  {
-        // Use Gemini API
-        if (!this.geminiApiKey) {
-          return {
-            success: false,
-            error: "Gemini API key not configured. Please check your settings."
-          };
-        }
-
-        try {
-          // Create Gemini message structure
-          const geminiMessages: GeminiMessage[] = [
-            {
-              role: "user",
-              parts: [
-                {
-                  text: extractionInstruction
-                },
-                ...imageDataList.map(data => ({
-                  inlineData: {
-                    mimeType: "image/png",
-                    data: data
-                  }
-                }))
-              ]
-            }
-          ];
-
-          // Make API request to Gemini
-          const response = await axios.default.post(
-            `https://generativelanguage.googleapis.com/v1beta/models/${config.extractionModel || "gemini-2.0-flash"}:generateContent?key=${this.geminiApiKey}`,
-            {
-              contents: geminiMessages,
-              generationConfig: {
-                temperature: 0.2,
-                maxOutputTokens: 4000
-              }
-            },
-            { signal }
-          );
-
-          const responseData = response.data as GeminiResponse;
-          
-          if (!responseData.candidates || responseData.candidates.length === 0) {
-            throw new Error("Empty response from Gemini API");
-          }
-          
-          const responseText = responseData.candidates[0].content.parts[0].text;
-          problemInfo = this.normalizeExtractedQuestionInfo(
-            this.parseJsonResponse<ExtractedQuestionInfo>(responseText)
-          );
-        } catch (error) {
-          console.error("Error using Gemini API:", error);
-          return {
-            success: false,
-            error: "Failed to process with Gemini API. Please check your API key or try again later."
-          };
-        }
-      } else if (config.apiProvider === "anthropic") {
-        if (!this.anthropicClient) {
-          return {
-            success: false,
-            error: "Anthropic API key not configured. Please check your settings."
-          };
-        }
-
-        try {
-          const messages = [
-            {
-              role: "user" as const,
-              content: [
-                {
-                  type: "text" as const,
-                  text: extractionInstruction
-                },
-                ...imageDataList.map(data => ({
-                  type: "image" as const,
-                  source: {
-                    type: "base64" as const,
-                    media_type: "image/png" as const,
-                    data: data
-                  }
-                }))
-              ]
-            }
-          ];
-
-          const response = await this.anthropicClient.messages.create({
-            model:
-              config.extractionModel ||
-              this.getDefaultModelForStage(config.apiProvider, "extractionModel"),
-            max_tokens: 4000,
-            messages: messages,
-            temperature: 0.2
-          });
-
-          const responseText = (response.content[0] as { type: 'text', text: string }).text;
-          problemInfo = this.normalizeExtractedQuestionInfo(
-            this.parseJsonResponse<ExtractedQuestionInfo>(responseText)
-          );
-        } catch (error: any) {
-          console.error("Error using Anthropic API:", error);
-
-          // Add specific handling for Claude's limitations
-          if (error.status === 429) {
-            return {
-              success: false,
-              error: "Claude API rate limit exceeded. Please wait a few minutes before trying again."
-            };
-          } else if (error.status === 413 || (error.message && error.message.includes("token"))) {
-            return {
-              success: false,
-              error: "Your screenshots contain too much information for Claude to process. Switch to OpenAI, Gemini, or Together AI in settings which can handle larger inputs."
-            };
-          }
-
-          return {
-            success: false,
-            error: "Failed to process with Anthropic API. Please check your API key or try again later."
-          };
-	        }
-	      }
-
-      if (!problemInfo.problem_statement) {
-        return {
-          success: false,
-          error: "Failed to identify any usable content from the screenshots. Try clearer screenshots or include more of the visible content."
-        };
-      }
-	      
-	      // Update the user on progress
-	      if (mainWindow) {
-        mainWindow.webContents.send("processing-status", {
-          message: "Screenshots analyzed successfully. Preparing the answer...",
-          progress: 40
-        });
-      }
-
-      // Store problem info in AppState
-      this.deps.setProblemInfo(problemInfo);
-
-      // Send first success event
-      if (mainWindow) {
-        mainWindow.webContents.send(
-          this.deps.PROCESSING_EVENTS.PROBLEM_EXTRACTED,
-          problemInfo
+      try {
+        const analyzeResult = await this.generateFastAnalyzeFromImageData(
+          imageDataList,
+          language,
+          config,
+          signal
         );
+        const problemInfo = analyzeResult.problemInfo
+        let finalSolution = analyzeResult.solution
 
-        // Generate solutions after successful extraction
-        const solutionsResult = await this.generateSolutionsHelper(signal);
-        if (solutionsResult.success) {
-          // Clear any existing extra screenshots before transitioning to solutions view
-          this.screenshotHelper.clearExtraScreenshotQueue();
-          
-          // Final progress update
+        if (!problemInfo.problem_statement) {
+          return {
+            success: false,
+            error:
+              "Failed to identify any usable content from the screenshots. Try clearer screenshots or include more of the visible content."
+          };
+        }
+
+        // Store problem info in AppState
+        this.deps.setProblemInfo(problemInfo);
+
+        if (
+          this.shouldRunExpandedSolutionPass(problemInfo) &&
+          !this.fastAnswerLikelyCoversMultipleQuestions(problemInfo, finalSolution)
+        ) {
+          if (mainWindow) {
+            mainWindow.webContents.send("processing-status", {
+              message: "Detected multiple questions. Expanding the answer...",
+              progress: 62
+            });
+          }
+
+          const expandedResult = await this.generateStructuredSolutionForProblemInfo(
+            problemInfo,
+            language,
+            config,
+            signal
+          )
+
+          if (!expandedResult.success) {
+            console.warn(
+              "Expanded multi-question solution generation failed; falling back to fast analyze result.",
+              "error" in expandedResult ? expandedResult.error : "Unknown error"
+            )
+          } else {
+            finalSolution = expandedResult.data
+          }
+        }
+
+        if (mainWindow) {
+          mainWindow.webContents.send(
+            this.deps.PROCESSING_EVENTS.PROBLEM_EXTRACTED,
+            problemInfo
+          )
+
+          this.screenshotHelper.clearExtraScreenshotQueue()
+
           mainWindow.webContents.send("processing-status", {
             message: "Solution generated successfully",
             progress: 100
-          });
-          
+          })
+
           mainWindow.webContents.send(
             this.deps.PROCESSING_EVENTS.SOLUTION_SUCCESS,
-            solutionsResult.data
-          );
-          return { success: true, data: solutionsResult.data };
-        } else {
-          throw new Error(
-            solutionsResult.error || "Failed to generate solutions"
-          );
+            finalSolution
+          )
         }
-      }
 
-      return { success: false, error: "Failed to process screenshots" };
+        return { success: true, data: finalSolution };
+      } catch (error: any) {
+        console.error("Error generating fast analyze result:", error);
+        return {
+          success: false,
+          error:
+            error?.message ||
+            "Failed to read the screenshot and generate an answer. Try again with a clearer screenshot."
+        };
+      }
     } catch (error: any) {
       // If the request was cancelled, don't retry
       if (axios.isCancel(error)) {
@@ -2328,215 +2953,17 @@ Instructions:
       // Update progress status
       if (mainWindow) {
         mainWindow.webContents.send("processing-status", {
-          message: "Creating the best answer or solution...",
-          progress: 60
+          message: "Generating the answer...",
+          progress: 62
         });
       }
 
-      const promptText = this.buildSolutionPrompt(problemInfo, language);
-
-      let responseContent;
-      
-      if (this.isOpenAICompatibleProvider(config.apiProvider)) {
-        const providerLabel = this.getProviderLabel(config.apiProvider);
-
-        // OpenAI-compatible processing
-        if (!this.openaiClient) {
-          return {
-            success: false,
-            error: `${providerLabel} API key not configured. Please check your settings.`
-          };
-        }
-        
-        // Send to the configured text model
-        const solutionRequest = {
-          model:
-            config.solutionModel ||
-            this.getDefaultModelForStage(config.apiProvider, "solutionModel"),
-          messages: [
-            {
-              role: "system" as const,
-              content:
-                "You are a high-accuracy assistant for coding, academics, multiple-choice questions, and general problem solving. Return valid JSON only."
-            },
-            { role: "user" as const, content: promptText }
-          ],
-          max_tokens: 4000,
-          temperature: 0.2
-        };
-
-        let streamedResponseContent = "";
-
-        try {
-          const solutionStream = await this.openaiClient.chat.completions.create(
-            {
-              ...solutionRequest,
-              stream: true,
-            },
-            { signal }
-          );
-
-          for await (const chunk of solutionStream) {
-            if (signal.aborted) {
-              break;
-            }
-
-            const deltaText = chunk.choices?.[0]?.delta?.content;
-            if (typeof deltaText !== "string" || deltaText.length === 0) {
-              continue;
-            }
-
-            streamedResponseContent += deltaText;
-            const preview = this.extractStreamingSolutionPreview(
-              streamedResponseContent,
-              problemInfo.question_type
-            );
-
-            if (preview) {
-              this.emitSolutionStream({
-                content: preview.content,
-                isCodeResponse: preview.isCodeResponse,
-              });
-            }
-          }
-        } catch (streamError) {
-          if (axios.isCancel(streamError)) {
-            throw streamError;
-          }
-
-          console.warn(
-            "Falling back to non-streaming solution generation.",
-            streamError
-          );
-        }
-
-        if (streamedResponseContent.trim()) {
-          responseContent = streamedResponseContent;
-        } else {
-          const solutionResponse = await this.openaiClient.chat.completions.create(
-            solutionRequest,
-            { signal }
-          );
-
-          responseContent = solutionResponse.choices[0].message.content;
-        }
-      } else if (config.apiProvider === "gemini")  {
-        // Gemini processing
-        if (!this.geminiApiKey) {
-          return {
-            success: false,
-            error: "Gemini API key not configured. Please check your settings."
-          };
-        }
-        
-        try {
-          // Create Gemini message structure
-          const geminiMessages = [
-            {
-              role: "user",
-              parts: [
-                {
-                  text: promptText
-                }
-              ]
-            }
-          ];
-
-          // Make API request to Gemini
-          const response = await axios.default.post(
-            `https://generativelanguage.googleapis.com/v1beta/models/${config.solutionModel || "gemini-2.0-flash"}:generateContent?key=${this.geminiApiKey}`,
-            {
-              contents: geminiMessages,
-              generationConfig: {
-                temperature: 0.2,
-                maxOutputTokens: 4000
-              }
-            },
-            { signal }
-          );
-
-          const responseData = response.data as GeminiResponse;
-          
-          if (!responseData.candidates || responseData.candidates.length === 0) {
-            throw new Error("Empty response from Gemini API");
-          }
-          
-          responseContent = responseData.candidates[0].content.parts[0].text;
-        } catch (error) {
-          console.error("Error using Gemini API for solution:", error);
-          return {
-            success: false,
-            error: "Failed to generate solution with Gemini API. Please check your API key or try again later."
-          };
-        }
-      } else if (config.apiProvider === "anthropic") {
-        // Anthropic processing
-        if (!this.anthropicClient) {
-          return {
-            success: false,
-            error: "Anthropic API key not configured. Please check your settings."
-          };
-        }
-        
-        try {
-          const messages = [
-            {
-              role: "user" as const,
-              content: [
-                {
-                  type: "text" as const,
-                  text: promptText
-                }
-              ]
-            }
-          ];
-
-          // Send to Anthropic API
-          const response = await this.anthropicClient.messages.create({
-            model:
-              config.solutionModel ||
-              this.getDefaultModelForStage(config.apiProvider, "solutionModel"),
-            max_tokens: 4000,
-            messages: messages,
-            temperature: 0.2
-          });
-
-          responseContent = (response.content[0] as { type: 'text', text: string }).text;
-        } catch (error: any) {
-          console.error("Error using Anthropic API for solution:", error);
-
-          // Add specific handling for Claude's limitations
-          if (error.status === 429) {
-            return {
-              success: false,
-              error: "Claude API rate limit exceeded. Please wait a few minutes before trying again."
-            };
-          } else if (error.status === 413 || (error.message && error.message.includes("token"))) {
-            return {
-              success: false,
-              error: "Your screenshots contain too much information for Claude to process. Switch to OpenAI, Gemini, or Together AI in settings which can handle larger inputs."
-            };
-          }
-
-          return {
-            success: false,
-            error: "Failed to generate solution with Anthropic API. Please check your API key or try again later."
-          };
-        }
-      }
-      
-      const formattedResponse = this.normalizeSolutionResponse(
-        this.parseJsonResponse<StructuredSolutionResponse>(responseContent),
-        problemInfo.question_type
+      return await this.generateStructuredSolutionForProblemInfo(
+        problemInfo,
+        language,
+        config,
+        signal
       );
-
-      this.emitSolutionStream({
-        content: formattedResponse.code || formattedResponse.answer,
-        isCodeResponse: Boolean(formattedResponse.is_code_response),
-        done: true,
-      });
-
-      return { success: true, data: formattedResponse };
     } catch (error: any) {
       if (axios.isCancel(error)) {
         return {
@@ -2585,7 +3012,9 @@ Instructions:
       }
 
       // Prepare the images for the API call
-      const imageDataList = screenshots.map(screenshot => screenshot.data);
+      const imageDataList = screenshots.map((screenshot) =>
+        this.optimizeVisionImageData(screenshot.data)
+      );
       const followUpPrompt = this.buildFollowUpPrompt(problemInfo, language);
       
       let debugContent;

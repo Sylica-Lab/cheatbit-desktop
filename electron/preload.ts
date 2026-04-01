@@ -22,6 +22,20 @@ import type {
   TextFollowUpResponse
 } from "../shared/followUpChat"
 import type { DesktopUpdateState } from "../shared/desktopUpdates"
+import type {
+  CreatePhonePairingSessionResponse,
+  PhonePairingSessionSummary,
+  PhoneRelayEventSummary,
+} from "../shared/phoneRelay"
+import type {
+  CreateLocalPhonePairingSessionResponse,
+  LocalPhoneRelayState,
+} from "../shared/localPhoneRelay"
+import type {
+  ConnectedAppIntegration,
+  IntegrationConnectResponse,
+  IntegrationProvider,
+} from "../shared/integrations"
 
 export const PROCESSING_EVENTS = {
   //global states
@@ -49,6 +63,7 @@ const TEXT_FOLLOW_UP_STREAM_EVENT = "text-follow-up-stream"
 const SOLUTION_STREAM_EVENT = "solution-stream"
 const DESKTOP_UPDATE_STATE_EVENT = "updates:state"
 const SHOW_UNINSTALL_OFFBOARDING_EVENT = "show-uninstall-offboarding"
+const LOCAL_PHONE_RELAY_STATE_EVENT = "local-phone-relay-state"
 
 // At the top of the file
 console.log("Preload script is running")
@@ -63,10 +78,55 @@ const electronAPI = {
     ipcRenderer.invoke("auth:logout") as Promise<{ success: boolean }>,
   getAccountDashboard: () =>
     ipcRenderer.invoke("auth:get-dashboard") as Promise<UserDashboardData>,
+  listIntegrations: () =>
+    ipcRenderer.invoke("auth:list-integrations") as Promise<ConnectedAppIntegration[]>,
+  createIntegrationConnectSession: (payload: { provider: IntegrationProvider }) =>
+    ipcRenderer.invoke(
+      "auth:create-integration-connect-session",
+      payload
+    ) as Promise<IntegrationConnectResponse>,
+  disconnectIntegration: (payload: { provider: IntegrationProvider }) =>
+    ipcRenderer.invoke("auth:disconnect-integration", payload) as Promise<{
+      success: true
+    }>,
   createCheckoutSession: () =>
     ipcRenderer.invoke("auth:create-checkout-session") as Promise<BillingSessionResponse>,
   createBillingPortalSession: () =>
     ipcRenderer.invoke("auth:create-billing-portal-session") as Promise<BillingSessionResponse>,
+  createPhonePairingSession: (payload?: { desktopDeviceName?: string }) =>
+    ipcRenderer.invoke("auth:create-phone-pairing-session", payload) as Promise<
+      { success: true; data: CreatePhonePairingSessionResponse } | { success: false; error: string }
+    >,
+  getPhonePairingSession: (payload: { pairingId: string }) =>
+    ipcRenderer.invoke("auth:get-phone-pairing-session", payload) as Promise<
+      { success: true; data: { pairing: PhonePairingSessionSummary } } | { success: false; error: string }
+    >,
+  listPhoneDevices: () =>
+    ipcRenderer.invoke("auth:list-phone-devices") as Promise<
+      { success: true; data: { devices: PhonePairingSessionSummary[] } } | { success: false; error: string }
+    >,
+  listPhoneEvents: (payload?: { pairingId?: string; after?: string | null }) =>
+    ipcRenderer.invoke("auth:list-phone-events", payload) as Promise<
+      { success: true; data: { events: PhoneRelayEventSummary[] } } | { success: false; error: string }
+    >,
+  getLocalPhoneRelayState: () =>
+    ipcRenderer.invoke("local-phone-relay:get-state") as Promise<
+      { success: true; data: { state: LocalPhoneRelayState } } | { success: false; error: string }
+    >,
+  createLocalPhonePairingSession: (payload?: { desktopDeviceName?: string }) =>
+    ipcRenderer.invoke("local-phone-relay:create-pairing-session", payload) as Promise<
+      {
+        success: true
+        data: {
+          pairing: CreateLocalPhonePairingSessionResponse
+          state: LocalPhoneRelayState
+        }
+      } | { success: false; error: string }
+    >,
+  openPhoneRelayWindow: () =>
+    ipcRenderer.invoke("app:open-phone-relay-window") as Promise<
+      { success: true } | { success: false; error: string }
+    >,
   requestMicrophoneAccess: () =>
     ipcRenderer.invoke("permissions:request-microphone") as Promise<{
       granted: boolean
@@ -294,6 +354,13 @@ const electronAPI = {
     ipcRenderer.on(COMPUTER_USE_STATE_EVENT, subscription)
     return () => {
       ipcRenderer.removeListener(COMPUTER_USE_STATE_EVENT, subscription)
+    }
+  },
+  onLocalPhoneRelayState: (callback: (state: LocalPhoneRelayState) => void) => {
+    const subscription = (_: unknown, state: LocalPhoneRelayState) => callback(state)
+    ipcRenderer.on(LOCAL_PHONE_RELAY_STATE_EVENT, subscription)
+    return () => {
+      ipcRenderer.removeListener(LOCAL_PHONE_RELAY_STATE_EVENT, subscription)
     }
   },
   // External URL handler

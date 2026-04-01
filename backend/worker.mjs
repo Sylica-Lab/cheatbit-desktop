@@ -6,6 +6,9 @@ let nodeHandler = null;
 const WINDOWS_INSTALLER_PATH = "/Sylica-AI-Setup.exe";
 const WINDOWS_INSTALLER_KEY = "Sylica-AI-Setup.exe";
 const WINDOWS_UPDATE_FEED_PREFIX = "/desktop-updates/win/";
+const ANDROID_APK_PATH = "/Sylica-AI-Android.apk";
+const ANDROID_APK_KEY = "Sylica-AI-Android.apk";
+const ANDROID_VERSIONED_DOWNLOAD_PREFIX = "/mobile-downloads/";
 const STATIC_PAGE_ROUTE_MAP = new Map([
   ["/tos", "/terms/index.html"],
   ["/terms", "/terms/index.html"],
@@ -16,6 +19,8 @@ const STATIC_PAGE_ROUTE_MAP = new Map([
   ["/changelog", "/changelog/index.html"],
   ["/blog", "/blog/index.html"],
   ["/blogs", "/blogs/index.html"],
+  ["/research", "/research/index.html"],
+  ["/researches", "/research/index.html"],
 ]);
 const WORKER_STRING_ENV_KEYS = [
   "ADMIN_EMAIL",
@@ -101,6 +106,28 @@ function resolveDownloadAsset(url) {
       contentType: "application/octet-stream",
       cacheControl: "no-store, no-cache, must-revalidate, max-age=0",
       contentDisposition: `attachment; filename="${WINDOWS_INSTALLER_KEY}"`,
+    };
+  }
+
+  if (url.pathname === ANDROID_APK_PATH) {
+    return {
+      key: ANDROID_APK_KEY,
+      contentType: "application/vnd.android.package-archive",
+      cacheControl: "no-store, no-cache, must-revalidate, max-age=0",
+      contentDisposition: `attachment; filename="${ANDROID_APK_KEY}"`,
+    };
+  }
+
+  if (
+    url.pathname.startsWith(ANDROID_VERSIONED_DOWNLOAD_PREFIX) &&
+    url.pathname.endsWith(".apk")
+  ) {
+    const filename = url.pathname.split("/").pop() || "Sylica-AI-Android.apk";
+    return {
+      key: url.pathname.slice(1),
+      contentType: "application/vnd.android.package-archive",
+      cacheControl: "public, max-age=31536000, immutable",
+      contentDisposition: `attachment; filename="${filename}"`,
     };
   }
 

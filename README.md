@@ -77,6 +77,8 @@ The application uses unidentifiable global keyboard shortcuts that won't be dete
 - Reset Zoom: [Control or Cmd + 0]
 - Zoom In: [Control or Cmd + =]
 
+Note: when running `npm run dev`, global shortcuts are disabled by default to avoid conflicts with normal editor shortcuts like `Ctrl/Cmd+B`. Set `SYLICA_ENABLE_GLOBAL_SHORTCUTS_IN_DEV=1` if you want to test shortcut behavior in development.
+
 ## Invisibility Compatibility
 
 The application is invisible to:

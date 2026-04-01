@@ -1,0 +1,27 @@
+<svg width="640" height="720" viewBox="0 0 640 720" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="dailyAccent" x1="178" y1="174" x2="464" y2="566" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#59EEDA"/>
+      <stop offset="1" stop-color="#87A8FF"/>
+    </linearGradient>
+  </defs>
+  <rect width="640" height="720" rx="56" fill="#F3F6FB"/>
+  <rect x="42" y="42" width="556" height="636" rx="48" fill="#111723"/>
+  <rect x="88" y="88" width="148" height="42" rx="21" fill="#1D2434" stroke="#44506B"/>
+  <text x="123" y="114" fill="#F7FAFF" font-size="18" font-weight="700" font-family="Arial, sans-serif">EVERYDAY</text>
+  <rect x="102" y="186" width="436" height="118" rx="34" fill="#171C2A" stroke="#40495F"/>
+  <text x="138" y="236" fill="#FFFFFF" font-size="28" font-weight="700" font-family="Arial, sans-serif">One assistant for daily work</text>
+  <text x="138" y="276" fill="#D6DDEE" font-size="20" font-family="Arial, sans-serif">Summaries, answers, notes, and next steps</text>
+  <rect x="120" y="360" width="168" height="198" rx="32" fill="#F9FBFF"/>
+  <rect x="306" y="360" width="214" height="198" rx="32" fill="#1B2132" stroke="#4B5570"/>
+  <rect x="146" y="394" width="116" height="16" rx="8" fill="#CFDCEA"/>
+  <path d="M154 444L170 460L198 430" stroke="#55D7A3" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="214" y="432" width="36" height="36" rx="18" fill="url(#dailyAccent)"/>
+  <path d="M154 514L170 530L198 500" stroke="#55D7A3" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="338" y="394" width="150" height="44" rx="22" fill="#232A3E"/>
+  <text x="364" y="422" fill="#FFFFFF" font-size="18" font-weight="700" font-family="Arial, sans-serif">Draft reply</text>
+  <rect x="338" y="452" width="126" height="44" rx="22" fill="#232A3E"/>
+  <text x="364" y="480" fill="#FFFFFF" font-size="18" font-weight="700" font-family="Arial, sans-serif">Summarize</text>
+  <rect x="338" y="510" width="160" height="44" rx="22" fill="url(#dailyAccent)" fill-opacity="0.2" stroke="#6EF2E0"/>
+  <text x="364" y="538" fill="#F8FFFD" font-size="18" font-weight="700" font-family="Arial, sans-serif">Plan next steps</text>
+</svg>

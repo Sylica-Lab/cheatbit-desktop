@@ -24,9 +24,11 @@ export interface AppConfig {
 export const DEFAULT_PROVIDER: ApiProvider = "together";
 
 export const TOGETHER_BASE_URL = "https://api.together.xyz/v1";
-export const TOGETHER_VISION_MODEL = "Qwen/Qwen3-VL-8B-Instruct";
+export const TOGETHER_VISION_MODEL = "Qwen/Qwen3.5-9B";
+export const TOGETHER_VISION_ACCURACY_MODEL = "Qwen/Qwen3.5-397B-A17B";
+export const TOGETHER_VISION_REASONING_MODEL = "moonshotai/Kimi-K2.5";
 export const TOGETHER_CODER_MODEL = "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8";
-export const TOGETHER_GENERAL_MODEL = "Qwen/Qwen3-Next-80B-A3B-Instruct";
+export const TOGETHER_GENERAL_MODEL = "moonshotai/Kimi-K2.5";
 
 export const PROVIDER_DISPLAY_NAMES: Record<ApiProvider, string> = {
   openai: "OpenAI",
@@ -46,7 +48,7 @@ export const PROVIDER_CARD_DESCRIPTIONS: Record<ApiProvider, string> = {
   openai: "GPT-4o models",
   gemini: "Gemini 1.5 and 2.0 models",
   anthropic: "Claude 3 models",
-  together: "Qwen vision and coding models",
+  together: "Fast vision, reasoning, and coding models",
 };
 
 export const PROVIDER_KEY_LABELS: Record<ApiProvider, string> = {
@@ -250,8 +252,18 @@ export const MODEL_OPTIONS: Record<
     extractionModel: [
       {
         id: TOGETHER_VISION_MODEL,
-        name: "Qwen3 VL 8B Instruct",
-        description: "Vision-capable Qwen model for screenshot extraction",
+        name: "Qwen3.5 9B",
+        description: "Fast Together vision default for screenshot extraction",
+      },
+      {
+        id: TOGETHER_VISION_REASONING_MODEL,
+        name: "Kimi K2.5",
+        description: "Best overall Together vision option for harder screenshots",
+      },
+      {
+        id: TOGETHER_VISION_ACCURACY_MODEL,
+        name: "Qwen3.5 397B A17B",
+        description: "Largest Together vision option when accuracy matters more than speed",
       },
     ],
     solutionModel: [
@@ -262,15 +274,25 @@ export const MODEL_OPTIONS: Record<
       },
       {
         id: TOGETHER_GENERAL_MODEL,
-        name: "Qwen3 Next 80B A3B",
-        description: "General-purpose reasoning alternative",
+        name: "Kimi K2.5",
+        description: "Best overall Together reasoning alternative",
       },
     ],
     debuggingModel: [
       {
         id: TOGETHER_VISION_MODEL,
-        name: "Qwen3 VL 8B Instruct",
-        description: "Vision-capable Qwen model for screenshot debugging",
+        name: "Qwen3.5 9B",
+        description: "Fast Together vision default for screenshot debugging",
+      },
+      {
+        id: TOGETHER_VISION_REASONING_MODEL,
+        name: "Kimi K2.5",
+        description: "Best overall Together vision option for harder debugging screenshots",
+      },
+      {
+        id: TOGETHER_VISION_ACCURACY_MODEL,
+        name: "Qwen3.5 397B A17B",
+        description: "Largest Together vision option when debugging accuracy matters more than speed",
       },
     ],
   },

@@ -3,7 +3,7 @@
 import { spawn } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
-import { app, ipcMain, shell } from "electron"
+import { app, BrowserWindow, ipcMain, shell } from "electron"
 import { IIpcHandlerDeps } from "./main"
 import { configHelper } from "./ConfigHelper"
 import { backendClient } from "./BackendClient"
@@ -22,11 +22,21 @@ import type {
   LiveInterviewTranscriptData,
   TextFollowUpStreamEvent,
 } from "../shared/followUpChat"
+import type { LocalPhoneRelayState } from "../shared/localPhoneRelay"
 
 const TEXT_FOLLOW_UP_STREAM_EVENT = "text-follow-up-stream"
+const LOCAL_PHONE_RELAY_STATE_EVENT = "local-phone-relay-state"
 
 export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
   console.log("Initializing IPC handlers")
+
+  deps.localPhoneRelayController?.subscribe((state) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) {
+        window.webContents.send(LOCAL_PHONE_RELAY_STATE_EVENT, state)
+      }
+    }
+  })
 
   const openExternalUrl = async (
     rawUrl: string
@@ -292,6 +302,191 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
 
   ipcMain.handle("auth:create-billing-portal-session", async () => {
     return backendClient.createBillingPortalSession()
+  })
+
+  ipcMain.handle("auth:list-integrations", async () => {
+    return backendClient.listIntegrations()
+  })
+
+  ipcMain.handle("auth:create-integration-connect-session", async (_event, payload) => {
+    return backendClient.createIntegrationConnectSession(
+      payload?.provider === "notion" ? "notion" : "google"
+    )
+  })
+
+  ipcMain.handle("auth:disconnect-integration", async (_event, payload) => {
+    await backendClient.disconnectIntegration(
+      payload?.provider === "notion" ? "notion" : "google"
+    )
+    return { success: true as const }
+  })
+
+  ipcMain.handle("auth:create-phone-pairing-session", async (_event, payload) => {
+    try {
+      const response = await backendClient.createPhonePairingSession({
+        desktopDeviceName: String(payload?.desktopDeviceName || "").trim(),
+      })
+      return {
+        success: true as const,
+        data: response,
+      }
+    } catch (error) {
+      if (isAuthenticationError(error)) {
+        notifyUnauthorized()
+      }
+
+      return {
+        success: false as const,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to start phone pairing.",
+      }
+    }
+  })
+
+  ipcMain.handle("local-phone-relay:get-state", async () => {
+    try {
+      if (!deps.localPhoneRelayController) {
+        return {
+          success: false as const,
+          error: "Local phone relay is not available.",
+        }
+      }
+
+      await deps.localPhoneRelayController.ensureStarted()
+      return {
+        success: true as const,
+        data: {
+          state: deps.localPhoneRelayController.getState(),
+        },
+      }
+    } catch (error) {
+      return {
+        success: false as const,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to load local phone relay state.",
+      }
+    }
+  })
+
+  ipcMain.handle("local-phone-relay:create-pairing-session", async (_event, payload) => {
+    try {
+      if (!deps.localPhoneRelayController) {
+        return {
+          success: false as const,
+          error: "Local phone relay is not available.",
+        }
+      }
+
+      const pairing = await deps.localPhoneRelayController.createPairingSession({
+        desktopDeviceName: String(payload?.desktopDeviceName || "").trim(),
+      })
+
+      return {
+        success: true as const,
+        data: {
+          pairing,
+          state: deps.localPhoneRelayController.getState(),
+        },
+      }
+    } catch (error) {
+      return {
+        success: false as const,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to start local phone pairing.",
+      }
+    }
+  })
+
+  ipcMain.handle("app:open-phone-relay-window", async () => {
+    try {
+      await deps.openPhoneRelayWindow()
+      return { success: true as const }
+    } catch (error) {
+      return {
+        success: false as const,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to open the phone relay window.",
+      }
+    }
+  })
+
+  ipcMain.handle("auth:get-phone-pairing-session", async (_event, payload) => {
+    try {
+      const pairing = await backendClient.getPhonePairingSession(
+        String(payload?.pairingId || "").trim()
+      )
+      return {
+        success: true as const,
+        data: { pairing },
+      }
+    } catch (error) {
+      if (isAuthenticationError(error)) {
+        notifyUnauthorized()
+      }
+
+      return {
+        success: false as const,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to load phone pairing session.",
+      }
+    }
+  })
+
+  ipcMain.handle("auth:list-phone-devices", async () => {
+    try {
+      const devices = await backendClient.listPhoneDevices()
+      return {
+        success: true as const,
+        data: { devices },
+      }
+    } catch (error) {
+      if (isAuthenticationError(error)) {
+        notifyUnauthorized()
+      }
+
+      return {
+        success: false as const,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to load paired phones.",
+      }
+    }
+  })
+
+  ipcMain.handle("auth:list-phone-events", async (_event, payload) => {
+    try {
+      const events = await backendClient.listPhoneEvents({
+        pairingId: String(payload?.pairingId || "").trim() || undefined,
+        after: String(payload?.after || "").trim() || undefined,
+      })
+      return {
+        success: true as const,
+        data: { events },
+      }
+    } catch (error) {
+      if (isAuthenticationError(error)) {
+        notifyUnauthorized()
+      }
+
+      return {
+        success: false as const,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to load phone relay events.",
+      }
+    }
   })
 
   ipcMain.handle("permissions:request-microphone", async () => {
@@ -717,6 +912,37 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
 
     const emitStreamEvent = (streamEvent: TextFollowUpStreamEvent) => {
       event.sender.send(TEXT_FOLLOW_UP_STREAM_EVENT, streamEvent)
+    }
+
+    if (
+      mode === "general" &&
+      backendClient.looksLikeIntegrationAssistantRequest(message)
+    ) {
+      try {
+        const integrationResult = await backendClient.runIntegrationAssistantAction({
+          message,
+          chatHistory,
+        })
+
+        if (integrationResult.handled) {
+          if (requestId) {
+            emitStreamEvent({
+              requestId,
+              content: integrationResult.reply,
+              done: true,
+            })
+          }
+
+          return {
+            success: true as const,
+            data: {
+              reply: integrationResult.reply,
+            },
+          }
+        }
+      } catch (error) {
+        console.error("Integration assistant action failed:", error)
+      }
     }
 
     const result = await deps.processingHelper?.processTextFollowUp(

@@ -1,0 +1,31 @@
+<svg width="640" height="720" viewBox="0 0 640 720" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="deviceAccent" x1="150" y1="150" x2="500" y2="560" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#57EED9"/>
+      <stop offset="1" stop-color="#5E78FF"/>
+    </linearGradient>
+  </defs>
+  <rect width="640" height="720" rx="56" fill="#F5F7FB"/>
+  <rect x="42" y="42" width="556" height="636" rx="48" fill="#101522"/>
+  <rect x="88" y="88" width="216" height="42" rx="21" fill="#1C2130" stroke="#364159"/>
+  <text x="122" y="114" fill="#F7FAFF" font-size="18" font-weight="700" font-family="Arial, sans-serif">CROSS-DEVICE</text>
+  <rect x="98" y="188" width="444" height="286" rx="34" fill="#171C2A" stroke="#3B435C"/>
+  <rect x="146" y="228" width="250" height="158" rx="24" fill="#F9FBFF"/>
+  <rect x="174" y="258" width="194" height="18" rx="9" fill="#D7E2EF"/>
+  <rect x="174" y="292" width="150" height="14" rx="7" fill="#E7EFF8"/>
+  <rect x="174" y="322" width="170" height="14" rx="7" fill="#E7EFF8"/>
+  <rect x="410" y="252" width="82" height="164" rx="22" fill="#F9FBFF"/>
+  <rect x="428" y="278" width="46" height="10" rx="5" fill="#D7E2EF"/>
+  <rect x="428" y="306" width="46" height="66" rx="12" fill="#EEF4FA"/>
+  <circle cx="451" cy="392" r="8" fill="#D7E2EF"/>
+  <path d="M320 450L320 536" stroke="url(#deviceAccent)" stroke-width="10" stroke-linecap="round"/>
+  <path d="M320 536L206 596" stroke="url(#deviceAccent)" stroke-width="10" stroke-linecap="round"/>
+  <path d="M320 536L320 596" stroke="url(#deviceAccent)" stroke-width="10" stroke-linecap="round"/>
+  <path d="M320 536L434 596" stroke="url(#deviceAccent)" stroke-width="10" stroke-linecap="round"/>
+  <rect x="150" y="592" width="112" height="48" rx="24" fill="#1D2436" stroke="#4E5771"/>
+  <rect x="264" y="592" width="112" height="48" rx="24" fill="#1D2436" stroke="#4E5771"/>
+  <rect x="378" y="592" width="112" height="48" rx="24" fill="#1D2436" stroke="#4E5771"/>
+  <text x="181" y="622" fill="#FFFFFF" font-size="18" font-weight="700" font-family="Arial, sans-serif">Call</text>
+  <text x="287" y="622" fill="#FFFFFF" font-size="18" font-weight="700" font-family="Arial, sans-serif">Docs</text>
+  <text x="402" y="622" fill="#FFFFFF" font-size="18" font-weight="700" font-family="Arial, sans-serif">Tasks</text>
+</svg>

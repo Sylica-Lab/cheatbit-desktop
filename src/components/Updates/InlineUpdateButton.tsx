@@ -50,7 +50,7 @@ const InlineUpdateButton: React.FC<InlineUpdateButtonProps> = ({
   return (
     <button
       type="button"
-      className="flex h-8 items-center gap-1.5 rounded-lg border border-white/10 bg-white/10 px-2.5 text-[11px] font-medium leading-none text-white transition-colors hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-70"
+      className="sylica-dock-tab sylica-glass-chip flex h-9 items-center gap-1.5 rounded-2xl px-3 text-[11px] font-medium leading-none text-white disabled:cursor-not-allowed disabled:opacity-70"
       onClick={() => {
         void handleClick()
       }}

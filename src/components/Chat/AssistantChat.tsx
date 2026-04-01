@@ -1507,8 +1507,8 @@ export function AssistantChat({
   }
 
   const surfaceClassName = className.trim().length
-    ? `w-full min-w-0 space-y-3 rounded-[20px] border border-white/10 bg-[linear-gradient(180deg,rgba(14,16,18,0.92),rgba(8,10,12,0.82))] p-3 text-white shadow-[0_20px_44px_rgba(0,0,0,0.35)] ${className}`
-    : "w-full min-w-0 space-y-3 rounded-[20px] border border-white/10 bg-[linear-gradient(180deg,rgba(14,16,18,0.92),rgba(8,10,12,0.82))] p-3 text-white shadow-[0_20px_44px_rgba(0,0,0,0.35)]"
+    ? `sylica-liquid-panel w-full min-w-0 space-y-3 rounded-[24px] p-3 text-white ${className}`
+    : "sylica-liquid-panel w-full min-w-0 space-y-3 rounded-[24px] p-3 text-white"
 
   const displayedMessages = useMemo(() => {
     if (!isPersistedMode) {
@@ -1637,8 +1637,8 @@ export function AssistantChat({
               disabled={threadButtonsDisabled}
               className={`shrink-0 rounded-full border px-2.5 py-1 transition ${
                 activeThreadId === null
-                  ? "border-[#7df9c7]/35 bg-[#17362d] text-white"
-                  : "border-white/10 bg-black/40 text-white/70 hover:text-white"
+                  ? "border-[#7df9c7]/30 bg-[rgba(159,247,214,0.14)] text-white"
+                  : "border-white/10 bg-white/[0.05] text-white/70 hover:text-white"
               } ${threadButtonsDisabled ? "cursor-not-allowed opacity-60" : ""}`}
             >
               New
@@ -1656,8 +1656,8 @@ export function AssistantChat({
                 disabled={threadButtonsDisabled}
                 className={`shrink-0 rounded-full border px-2.5 py-1 transition ${
                   thread.id === activeThreadId
-                    ? "border-[#7df9c7]/35 bg-[#17362d] text-white"
-                    : "border-white/10 bg-black/40 text-white/70 hover:text-white"
+                    ? "border-[#7df9c7]/30 bg-[rgba(159,247,214,0.14)] text-white"
+                    : "border-white/10 bg-white/[0.05] text-white/70 hover:text-white"
                 } ${threadButtonsDisabled ? "cursor-not-allowed opacity-60" : ""}`}
                 title={thread.title}
               >
@@ -1682,7 +1682,7 @@ export function AssistantChat({
             )}
           </div>
 
-          <div className="flex items-center justify-between gap-2 rounded-[14px] border border-white/10 bg-black/35 px-3 py-2 text-[10px] text-white/62">
+          <div className="sylica-glass-chip flex items-center justify-between gap-2 rounded-[16px] px-3 py-2 text-[10px] text-white/62">
             <div className="min-w-0 flex-1">
               <div className="truncate">{liveStatusLabel}</div>
               <div className="truncate text-[9px] text-white/42">
@@ -1711,7 +1711,7 @@ export function AssistantChat({
           </div>
 
           {(isComputerUseSessionActive || isSelectedComputerThread) && (
-            <div className="flex items-center justify-between gap-2 rounded-[14px] border border-sky-300/15 bg-sky-300/10 px-3 py-2 text-[10px] text-white/72">
+            <div className="flex items-center justify-between gap-2 rounded-[16px] border border-sky-300/18 bg-[rgba(95,162,255,0.1)] px-3 py-2 text-[10px] text-white/72">
               <div className="min-w-0 flex-1">
                 <div className="truncate">{computerStatusLabel}</div>
                 <div className="truncate text-[9px] text-white/42">
@@ -1778,14 +1778,14 @@ export function AssistantChat({
                       : "max-w-[92%]"
                   } space-y-1.5 rounded-[16px] ${
                     isLiveSuggestionMessage
-                      ? "border border-[#7df9c7]/20 bg-[linear-gradient(180deg,rgba(19,44,37,0.92),rgba(8,12,11,0.92))] px-2.5 py-2 text-white"
+                      ? "border border-[#7df9c7]/20 bg-[linear-gradient(180deg,rgba(51,105,88,0.42),rgba(15,25,22,0.5))] px-2.5 py-2 text-white backdrop-blur-xl"
                       : isComputerUseMessage
-                        ? "border border-sky-300/20 bg-[linear-gradient(180deg,rgba(17,36,56,0.92),rgba(8,12,20,0.92))] px-2.5 py-2 text-white"
+                        ? "border border-sky-300/20 bg-[linear-gradient(180deg,rgba(62,104,154,0.38),rgba(12,18,29,0.5))] px-2.5 py-2 text-white backdrop-blur-xl"
                       : message.role === "user"
-                        ? "border border-[#7df9c7]/25 bg-[#17362d] px-3 py-2.5 text-white"
+                        ? "border border-[#7df9c7]/22 bg-[linear-gradient(180deg,rgba(84,150,129,0.34),rgba(30,57,49,0.38))] px-3 py-2.5 text-white backdrop-blur-lg"
                         : message.error
                           ? "border border-red-500/20 bg-red-500/10 px-3 py-2.5 text-red-100"
-                          : "border border-white/10 bg-black/60 px-3 py-2.5 text-white/[0.92]"
+                          : "border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.04))] px-3 py-2.5 text-white/[0.92] backdrop-blur-lg"
                   } ${message.pending ? "opacity-75" : ""}`}
                 >
                   {isLiveSuggestionMessage && (
@@ -1840,8 +1840,8 @@ export function AssistantChat({
       <div
         className={
           isCompactFollowUpComposer
-            ? "flex items-end gap-2 rounded-[14px] bg-white/[0.04] px-2.5 py-1.5"
-            : "flex items-end gap-2 rounded-[16px] border border-white/10 bg-black/[0.65] px-3 py-2"
+            ? "sylica-glass-chip flex items-end gap-2 rounded-[16px] px-2.5 py-1.5"
+            : "sylica-glass-chip flex items-end gap-2 rounded-[18px] px-3 py-2"
         }
       >
         <textarea

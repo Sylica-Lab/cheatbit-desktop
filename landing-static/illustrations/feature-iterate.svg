@@ -1,15 +1,20 @@
-<svg width="420" height="300" viewBox="0 0 420 300" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect width="420" height="300" rx="30" fill="#F7FAFD"/>
-  <rect x="28" y="24" width="364" height="252" rx="26" fill="#FFFFFF" stroke="#D8E2EA"/>
-  <rect x="44" y="64" width="98" height="70" rx="20" fill="#F5F8FB" stroke="#D9E3EB"/>
-  <rect x="160" y="104" width="98" height="70" rx="20" fill="#DFF7EC" stroke="#BEEBD7"/>
-  <rect x="276" y="64" width="98" height="70" rx="20" fill="#F5F8FB" stroke="#D9E3EB"/>
-  <text x="71" y="104" fill="#657784" font-size="11" font-family="Arial, sans-serif">Capture</text>
-  <text x="191" y="144" fill="#204032" font-size="11" font-family="Arial, sans-serif">Answer</text>
-  <text x="294" y="104" fill="#657784" font-size="11" font-family="Arial, sans-serif">Refine</text>
-  <path d="M142 100H160" stroke="#7FD8B4" stroke-width="7" stroke-linecap="round"/>
-  <path d="M258 100H276" stroke="#7FD8B4" stroke-width="7" stroke-linecap="round"/>
-  <path d="M325 146C325 182 282 214 210 214C140 214 96 196 96 166" stroke="#7FD8B4" stroke-width="7" stroke-linecap="round"/>
-  <path d="M88 168L98 150L112 164" stroke="#7FD8B4" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="110" y="226" width="200" height="14" rx="7" fill="#E6EDF4"/>
+<svg width="420" height="250" viewBox="0 0 420 250" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="34" y="24" width="352" height="46" rx="18" fill="#12131C" stroke="#31344A"/>
+  <text x="52" y="52" fill="#FFFFFF" font-size="12" font-weight="700" font-family="Inter, Arial, sans-serif">Show/Hide</text>
+  <rect x="116" y="35" width="34" height="24" rx="10" fill="#484A58"/>
+  <text x="125" y="51" fill="#FFFFFF" font-size="8.8" font-weight="700" font-family="Inter, Arial, sans-serif">Ctrl</text>
+  <rect x="156" y="35" width="22" height="24" rx="10" fill="#484A58"/>
+  <text x="163" y="51" fill="#FFFFFF" font-size="10" font-weight="700" font-family="Inter, Arial, sans-serif">B</text>
+  <text x="208" y="52" fill="#FFFFFF" font-size="12" font-weight="700" font-family="Inter, Arial, sans-serif">New Shot</text>
+
+  <rect x="34" y="90" width="352" height="112" rx="22" fill="#171823" stroke="#3C4057"/>
+  <text x="52" y="120" fill="#FFFFFF" font-size="17" font-weight="800" font-family="Inter, Arial, sans-serif">My Thoughts</text>
+  <circle cx="60" cy="142" r="3.5" fill="#22B7FF"/>
+  <text x="72" y="147" fill="#F1F6FB" font-size="11.5" font-weight="600" font-family="Inter, Arial, sans-serif">Hash map lookup keeps complements fast.</text>
+  <circle cx="60" cy="164" r="3.5" fill="#22B7FF"/>
+  <text x="72" y="169" fill="#F1F6FB" font-size="11.5" font-weight="600" font-family="Inter, Arial, sans-serif">One pass avoids extra work.</text>
+  <text x="52" y="194" fill="#FFFFFF" font-size="16" font-weight="800" font-family="Inter, Arial, sans-serif">Solution</text>
+
+  <rect x="58" y="214" width="304" height="26" rx="13" fill="#11131C" stroke="#3A3E54"/>
+  <text x="78" y="231" fill="#FFFFFF" fill-opacity="0.8" font-size="11.5" font-weight="600" font-family="Inter, Arial, sans-serif">Ask a follow-up...</text>
 </svg>

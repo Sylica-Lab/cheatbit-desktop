@@ -1,0 +1,29 @@
+<svg width="640" height="720" viewBox="0 0 640 720" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="guideAccent" x1="192" y1="186" x2="452" y2="566" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A168FF"/>
+      <stop offset="1" stop-color="#4FE7D6"/>
+    </linearGradient>
+  </defs>
+  <rect width="640" height="720" rx="56" fill="#F4F6FB"/>
+  <rect x="42" y="42" width="556" height="636" rx="48" fill="#131826"/>
+  <rect x="92" y="90" width="174" height="42" rx="21" fill="#202638" stroke="#44506C"/>
+  <text x="126" y="116" fill="#F7FAFF" font-size="18" font-weight="700" font-family="Arial, sans-serif">SCREEN HELP</text>
+  <rect x="100" y="188" width="440" height="320" rx="34" fill="#171C2B" stroke="#3E4760"/>
+  <rect x="132" y="220" width="292" height="224" rx="28" fill="#F9FBFF"/>
+  <rect x="454" y="220" width="54" height="224" rx="27" fill="#1E2436" stroke="#59627B"/>
+  <circle cx="480" cy="278" r="14" fill="#9D6AFF" fill-opacity="0.28"/>
+  <circle cx="480" cy="332" r="14" fill="#58EEDA" fill-opacity="0.28"/>
+  <circle cx="480" cy="386" r="14" fill="#FFFFFF" fill-opacity="0.18"/>
+  <path d="M278 266H340" stroke="#D7E1ED" stroke-width="10" stroke-linecap="round"/>
+  <path d="M216 328H278" stroke="#D7E1ED" stroke-width="10" stroke-linecap="round"/>
+  <path d="M278 390H340" stroke="#D7E1ED" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="278" cy="328" r="82" stroke="url(#guideAccent)" stroke-width="10" stroke-opacity="0.8"/>
+  <circle cx="278" cy="328" r="34" fill="#1E2436" stroke="#FFFFFF" stroke-opacity="0.7" stroke-width="6"/>
+  <path d="M278 252V286" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round"/>
+  <path d="M278 370V404" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round"/>
+  <path d="M202 328H236" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round"/>
+  <path d="M320 328H354" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round"/>
+  <rect x="154" y="554" width="332" height="48" rx="24" fill="#1A2030" stroke="#4B5670"/>
+  <text x="190" y="585" fill="#F5F9FF" font-size="20" font-weight="700" font-family="Arial, sans-serif">See context. Ask what to do next.</text>
+</svg>

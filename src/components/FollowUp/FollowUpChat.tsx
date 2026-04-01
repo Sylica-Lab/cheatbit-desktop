@@ -14,7 +14,7 @@ export function FollowUpChat({ currentContext }: FollowUpChatProps) {
       currentContext={currentContext}
       placeholder="Ask a follow-up..."
       maxHeightClassName="max-h-[13rem]"
-      className="bg-white/[0.03]"
+      className="bg-transparent"
     />
   )
 }

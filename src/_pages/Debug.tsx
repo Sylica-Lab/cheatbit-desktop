@@ -25,7 +25,7 @@ const CodeSection = ({
   isLoading: boolean
   currentLanguage: string
 }) => (
-  <div className="space-y-2">
+  <div className="space-y-1.5">
     <h2 className="text-[13px] font-medium text-white tracking-wide"></h2>
     {isLoading ? (
       <div className="space-y-1.5">
@@ -43,9 +43,11 @@ const CodeSection = ({
           style={dracula}
           customStyle={{
             margin: 0,
-            padding: "1rem",
-            width: "fit-content",
-            minWidth: "100%",
+            padding: "0.75rem",
+            width: "100%",
+            maxWidth: "100%",
+            minWidth: "0",
+            boxSizing: "border-box",
             overflowX: "auto",
             backgroundColor: "rgba(22, 27, 34, 0.5)"
           }}
@@ -110,6 +112,29 @@ const Debug: React.FC<DebugProps> = ({
 
   const queryClient = useQueryClient()
   const contentRef = useRef<HTMLDivElement>(null)
+  const commandBarRef = useRef<HTMLDivElement>(null)
+  const [contentWidth, setContentWidth] = useState<number | null>(null)
+
+  useEffect(() => {
+    const updateWidth = () => {
+      if (!commandBarRef.current) return
+      const nextWidth = Math.ceil(commandBarRef.current.getBoundingClientRect().width)
+      setContentWidth((currentWidth) =>
+        currentWidth === nextWidth ? currentWidth : nextWidth
+      )
+    }
+
+    updateWidth()
+
+    const observer = new ResizeObserver(updateWidth)
+    if (commandBarRef.current) {
+      observer.observe(commandBarRef.current)
+    }
+
+    return () => {
+      observer.disconnect()
+    }
+  }, [])
 
   useEffect(() => {
     // Try to get the new solution data from cache first
@@ -280,9 +305,9 @@ const Debug: React.FC<DebugProps> = ({
   return (
     <div
       ref={contentRef}
-      className="relative inline-flex flex-col items-start bg-transparent"
+      className="relative inline-flex min-w-0 flex-col items-start bg-transparent"
     >
-      <div className="space-y-3 px-4 py-3">
+      <div className="space-y-2.5 px-3 py-3">
       {/* Conditionally render the screenshot queue */}
       <div className="bg-transparent w-fit">
         <div className="pb-3">
@@ -297,20 +322,32 @@ const Debug: React.FC<DebugProps> = ({
       </div>
 
       {/* Navbar of commands with the tooltip */}
-      <SolutionCommands
-        screenshots={screenshots}
-        onTooltipVisibilityChange={handleTooltipVisibilityChange}
-        isProcessing={isProcessing}
-        extraScreenshots={screenshots}
-        credits={window.__CREDITS__}
-        currentLanguage={currentLanguage}
-        setLanguage={setLanguage}
-      />
+      <div ref={commandBarRef} className="w-fit">
+        <SolutionCommands
+          screenshots={screenshots}
+          onTooltipVisibilityChange={handleTooltipVisibilityChange}
+          isProcessing={isProcessing}
+          extraScreenshots={screenshots}
+          credits={window.__CREDITS__}
+          currentLanguage={currentLanguage}
+          setLanguage={setLanguage}
+        />
+      </div>
 
       {/* Main Content */}
-      <div className="text-sm text-black bg-black/60 rounded-md">
-        <div className="rounded-lg overflow-hidden">
-          <div className="px-4 py-3 space-y-4">
+        <div
+          className="text-sm text-black bg-black/60 rounded-md"
+        style={
+          contentWidth
+            ? {
+                width: `${contentWidth}px`,
+                maxWidth: `${contentWidth}px`,
+              }
+            : undefined
+        }
+        >
+          <div className="rounded-lg overflow-hidden">
+          <div className="px-3 py-3 space-y-3">
             {/* Thoughts Section */}
             <ContentSection
               title="What I Changed"
@@ -340,8 +377,8 @@ const Debug: React.FC<DebugProps> = ({
             />
             
             {/* Debug Analysis Section */}
-            <div className="space-y-2">
-              <h2 className="text-[13px] font-medium text-white tracking-wide">Analysis & Improvements</h2>
+            <div className="space-y-1.5">
+              <h2 className="text-[12px] font-medium text-white tracking-wide">Analysis & Improvements</h2>
               {!debugAnalysis ? (
                 <div className="space-y-1.5">
                   <div className="mt-4 flex">
@@ -351,7 +388,7 @@ const Debug: React.FC<DebugProps> = ({
                   </div>
                 </div>
               ) : (
-                <div className="bg-black/30 rounded-md p-4 text-[13px] leading-[1.4] text-gray-100 whitespace-pre-wrap overflow-auto max-h-[600px]">
+                <div className="bg-black/30 rounded-md p-3 text-[12px] leading-[1.35] text-gray-100 whitespace-pre-wrap overflow-auto max-h-[600px]">
                   {/* Process the debug analysis text by sections and lines */}
                   {(() => {
                     // First identify key sections based on common patterns in the debug output

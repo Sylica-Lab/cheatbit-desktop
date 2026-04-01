@@ -1,0 +1,31 @@
+<svg width="640" height="720" viewBox="0 0 640 720" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="96" y1="72" x2="556" y2="648" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#171A28"/>
+      <stop offset="1" stop-color="#0E1220"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="180" y1="164" x2="460" y2="476" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#9C63FF"/>
+      <stop offset="1" stop-color="#53EBD7"/>
+    </linearGradient>
+  </defs>
+  <rect width="640" height="720" rx="56" fill="#F4F6FB"/>
+  <rect x="42" y="42" width="556" height="636" rx="48" fill="url(#bg)"/>
+  <rect x="86" y="86" width="152" height="40" rx="20" fill="#24283A" stroke="#52576F"/>
+  <text x="122" y="111" fill="#F7FAFF" font-size="18" font-weight="700" font-family="Arial, sans-serif">MEETINGS</text>
+  <rect x="108" y="194" width="424" height="122" rx="34" fill="#1A2032" stroke="#42485D"/>
+  <text x="146" y="244" fill="#FFFFFF" font-size="28" font-weight="700" font-family="Arial, sans-serif">Live call context</text>
+  <text x="146" y="282" fill="#D6DCEE" font-size="20" font-family="Arial, sans-serif">Notes, follow-ups, and next actions</text>
+  <rect x="112" y="390" width="200" height="124" rx="32" fill="#FFFFFF" fill-opacity="0.1" stroke="#595F74"/>
+  <rect x="328" y="390" width="200" height="124" rx="32" fill="#FFFFFF" fill-opacity="0.1" stroke="#595F74"/>
+  <circle cx="212" cy="452" r="54" fill="url(#accent)" fill-opacity="0.18"/>
+  <circle cx="212" cy="452" r="38" fill="#1E2436" stroke="#94FFF0" stroke-opacity="0.55"/>
+  <path d="M188 456C197 440 227 440 236 456C244 469 243 490 225 501C212 509 194 507 186 493" stroke="#E9F2FF" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="428" cy="452" r="54" fill="#7B5BFF" fill-opacity="0.16"/>
+  <rect x="390" y="416" width="76" height="68" rx="22" fill="#1E2436" stroke="#9E9AFF" stroke-opacity="0.45"/>
+  <path d="M406 437H450" stroke="#F4F7FF" stroke-width="8" stroke-linecap="round"/>
+  <path d="M406 456H440" stroke="#B9C2D8" stroke-width="8" stroke-linecap="round"/>
+  <path d="M406 474H430" stroke="#94FFF0" stroke-width="8" stroke-linecap="round"/>
+  <path d="M128 580C180 544 240 544 292 580" stroke="#7A80A1" stroke-width="6" stroke-linecap="round"/>
+  <path d="M348 580C400 544 460 544 512 580" stroke="#7A80A1" stroke-width="6" stroke-linecap="round"/>
+</svg>

@@ -49,6 +49,14 @@ function getWranglerCommand() {
     ".bin",
     process.platform === "win32" ? "wrangler.cmd" : "wrangler"
   )
+  const localWranglerJs = path.join(projectRoot, "backend", "node_modules", "wrangler", "bin", "wrangler.js")
+
+  if (existsSync(localWranglerJs)) {
+    return {
+      command: process.execPath,
+      argsPrefix: [localWranglerJs],
+    }
+  }
 
   if (existsSync(localWrangler)) {
     return {
@@ -61,6 +69,10 @@ function getWranglerCommand() {
     command: process.platform === "win32" ? "npx.cmd" : "npx",
     argsPrefix: ["--prefix", "backend", "wrangler"],
   }
+}
+
+function shouldUseShell(command) {
+  return process.platform === "win32" && /\.(cmd|bat)$/i.test(command)
 }
 
 function putObject(key, filePath) {
@@ -81,7 +93,7 @@ function putObject(key, filePath) {
   const result = spawnSync(command, args, {
     cwd: projectRoot,
     stdio: "inherit",
-    shell: process.platform === "win32",
+    shell: shouldUseShell(command),
   })
 
   if (result.error) {

@@ -5,6 +5,7 @@ import {
   LayoutDashboard,
   Radio,
   ScanSearch,
+  Smartphone,
 } from "lucide-react"
 import type { ComputerUseState } from "../../../shared/followUpChat"
 import type { DesktopUpdateState } from "../../../shared/desktopUpdates"
@@ -38,6 +39,7 @@ interface QueueCommandsProps {
   onStartComputerTask: (task: string) => Promise<void> | void
   onStopComputerTask: () => Promise<void> | void
   onResumeComputerTask: () => Promise<void> | void
+  isDockOnly?: boolean
 }
 
 const QueueCommands: React.FC<QueueCommandsProps> = ({
@@ -56,6 +58,7 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
   onStartComputerTask,
   onStopComputerTask,
   onResumeComputerTask,
+  isDockOnly = false,
 }) => {
   const { showToast } = useToast()
   const dragRegionStyle = { WebkitAppRegion: "drag" as const }
@@ -76,6 +79,10 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
 
   const openAccountDashboard = () => {
     window.dispatchEvent(new CustomEvent("open-account-dashboard"))
+  }
+
+  const openPhoneRelayWindow = () => {
+    window.dispatchEvent(new CustomEvent("open-phone-relay"))
   }
 
   const handleScreenshot = async () => {
@@ -138,6 +145,12 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
   const isWaitingForSecret =
     computerUseState.status === "waiting_for_secret" ||
     computerUseState.needsSecretInput
+  const iconButtonClass =
+    "sylica-dock-tab sylica-glass-chip flex h-7 w-7 shrink-0 items-center justify-center rounded-[16px] text-white/76 transition-colors hover:text-white"
+  const chipButtonClass =
+    "sylica-dock-tab sylica-glass-chip flex items-center gap-1.5 rounded-[16px] px-2 py-1.5 text-[10px] font-medium text-white/88 transition-colors hover:text-white"
+  const keyHintClass =
+    "rounded-[10px] border border-white/10 bg-white/[0.08] px-1.25 py-[3px] text-[9px] leading-none text-white/54"
 
   const handleComputerSubmit = async () => {
     const normalizedTask = computerTask.trim()
@@ -163,7 +176,7 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
     return (
       <div className="w-fit">
         <div
-          className="flex cursor-move items-center rounded-2xl border border-white/10 bg-black/[0.92] p-1.5 text-xs text-white/90 backdrop-blur-md"
+          className="sylica-liquid-dock flex cursor-move items-center rounded-[16px] p-1 text-xs text-white/90"
           style={dragRegionStyle}
         >
           <button
@@ -175,7 +188,7 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
             style={noDragStyle}
           >
             <CheatbitMark
-              className="h-9 w-9 rounded-[14px] border-white/8 bg-white/[0.02] p-0.5 shadow-none"
+              className="h-8 w-8 rounded-[12px] border-white/8 bg-white/[0.02] p-0.5 shadow-none"
               rotating
             />
           </button>
@@ -185,31 +198,33 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
   }
 
   return (
-    <div className="w-full pt-2">
+    <div className={isDockOnly ? "w-fit pt-1.5" : "w-full pt-1.5"}>
       <div
-        className="flex w-full min-w-[320px] cursor-move items-center justify-between gap-2 rounded-xl border border-white/10 bg-black/[0.92] px-3 py-2 text-xs text-white/90 backdrop-blur-md"
+        className={`sylica-liquid-dock flex cursor-move items-center justify-between gap-2 rounded-[18px] px-2 py-1.5 text-xs text-white/90 ${
+          isDockOnly ? "w-fit" : "w-full min-w-[284px]"
+        }`}
         style={dragRegionStyle}
       >
-        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap">
+        <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto whitespace-nowrap">
           <button
             type="button"
-            className="rounded-[12px] transition-transform hover:scale-[1.03] focus:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+              className="rounded-[14px] transition-transform hover:scale-[1.03] focus:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
             onClick={onToggleMinimized}
             aria-label="Minimize widget"
             title="Minimize widget"
             style={noDragStyle}
           >
             <CheatbitMark
-              className="h-7 w-7 rounded-[10px] border-white/8 bg-white/[0.02] p-0.5 shadow-none"
-              rotating
-            />
-          </button>
+                className="h-7 w-7 rounded-[12px] border-white/8 bg-white/[0.03] p-0.5 shadow-none"
+                rotating
+              />
+            </button>
 
           {activeMode === "analyze" && (
             <>
               <button
                 type="button"
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-white/80 transition-colors hover:bg-white/10 hover:text-white"
+                className={iconButtonClass}
                 onClick={() => {
                   void handleRegionScreenshot()
                 }}
@@ -217,20 +232,20 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
                 title="Select Area"
                 style={noDragStyle}
               >
-                <Focus className="h-3.5 w-3.5" />
+                <Focus className="h-2.5 w-2.5" />
               </button>
 
               <button
                 type="button"
-                className="flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-white/10"
+                className={chipButtonClass}
                 onClick={() => {
                   void handleScreenshot()
                 }}
                 style={noDragStyle}
               >
-                <span className="max-w-[8rem] truncate text-[11px] leading-none">
+                <span className="max-w-[6.5rem] truncate text-[10px] leading-none">
                   {screenshotCount === 0
-                    ? "Analyze Screen"
+                    ? "Analyze"
                     : screenshotCount === 1
                     ? "Take second screenshot"
                     : screenshotCount === 2
@@ -242,10 +257,10 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
                     : "Next will replace first screenshot"}
                 </span>
                 <div className="flex gap-1">
-                  <span className="rounded-md bg-white/10 px-1.5 py-1 text-[11px] leading-none text-white/70">
+                  <span className={keyHintClass}>
                     {COMMAND_KEY}
                   </span>
-                  <span className="rounded-md bg-white/10 px-1.5 py-1 text-[11px] leading-none text-white/70">
+                  <span className={keyHintClass}>
                     H
                   </span>
                   </div>
@@ -253,12 +268,12 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
             </>
           )}
 
-          <div className="flex shrink-0 items-center gap-1 rounded-full border border-white/10 bg-black/[0.6] p-0.5">
+          <div className="sylica-dock-pill flex shrink-0 items-center gap-1 rounded-full p-[3px]">
             <button
               type="button"
-              className={`flex h-7 w-7 items-center justify-center rounded-full transition-colors ${
+              className={`sylica-dock-tab flex min-w-[3.5rem] items-center justify-center gap-1 rounded-full px-2 py-1.5 text-[10px] font-medium transition-colors ${
                 activeMode === "analyze"
-                  ? "bg-white text-black"
+                  ? "sylica-dock-tab-active"
                   : "text-white/[0.68] hover:text-white"
               } ${modeSwitchLocked ? "cursor-not-allowed opacity-45" : ""}`}
               onClick={() => onModeChange("analyze")}
@@ -267,30 +282,32 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
               title="Solve"
               style={noDragStyle}
             >
-              <ScanSearch className="h-3 w-3" />
+              <ScanSearch className="h-2.5 w-2.5" />
+              <span>Solve</span>
             </button>
             <button
               type="button"
-              className={`flex h-7 w-7 items-center justify-center rounded-full transition-colors ${
+              className={`sylica-dock-tab flex min-w-[3.5rem] items-center justify-center gap-1 rounded-full px-2 py-1.5 text-[10px] font-medium transition-colors ${
                 activeMode === "chat"
-                  ? "bg-white text-black"
+                  ? "sylica-dock-tab-active"
                   : "text-white/[0.68] hover:text-white"
               }`}
               onClick={() => onModeChange("chat")}
-              aria-label="Chat mode"
-              title="Chat"
+              aria-label="Live mode"
+              title="Live"
               style={noDragStyle}
             >
-              <Radio className="h-3 w-3" />
+              <Radio className="h-2.5 w-2.5" />
+              <span>Live</span>
             </button>
           </div>
 
           {isComputerPromptOpen ? (
             <div
-              className="flex shrink-0 items-center gap-1 rounded-full border border-white/10 bg-black/55 px-2 py-1"
+              className="sylica-dock-pill flex shrink-0 items-center gap-1.5 rounded-full px-1.5 py-1"
               style={noDragStyle}
             >
-              <Computer className="h-3 w-3 text-[#7df9c7]" />
+              <Computer className="h-2.5 w-2.5 text-[#7df9c7]" />
               <input
                 type="text"
                 value={computerTask}
@@ -306,12 +323,12 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
                   }
                 }}
                 placeholder="What should Sylica do?"
-                className="w-[12rem] bg-transparent text-[11px] leading-none text-white outline-none placeholder:text-white/35"
+                className="w-[9.75rem] bg-transparent text-[10px] leading-none text-white outline-none placeholder:text-white/35"
                 autoFocus
               />
               <button
                 type="button"
-                className="rounded-full bg-[#7df9c7] px-2 py-1 text-[10px] font-medium text-black"
+                className="rounded-full bg-[#dffcf1] px-2 py-1 text-[9.5px] font-semibold text-black"
                 onClick={() => {
                   void handleComputerSubmit()
                 }}
@@ -320,7 +337,7 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
               </button>
               <button
                 type="button"
-                className="rounded-full border border-white/10 px-2 py-1 text-[10px] text-white/72 hover:text-white"
+                className="rounded-full border border-white/10 px-2 py-1 text-[9.5px] text-white/72 hover:text-white"
                 onClick={() => {
                   setIsComputerPromptOpen(false)
                   setComputerTask("")
@@ -332,10 +349,10 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
           ) : (
             <button
               type="button"
-              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors ${
+              className={`${iconButtonClass} ${
                 isComputerUseActive
-                  ? "bg-[#17362d] text-[#baf7df] hover:bg-[#1d4338]"
-                  : "text-white/80 hover:bg-white/10 hover:text-white"
+                  ? "bg-[rgba(159,247,214,0.14)] text-[#baf7df] hover:bg-[rgba(159,247,214,0.18)]"
+                  : ""
               }`}
               onClick={() => {
                 if (isComputerUseActive) {
@@ -348,7 +365,7 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
               title="Computer Use"
               style={noDragStyle}
             >
-              <Computer className="h-3.5 w-3.5" />
+              <Computer className="h-3 w-3" />
             </button>
           )}
 
@@ -356,10 +373,10 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
             <>
               {isComputerUseActive && (
                 <div
-                  className="flex shrink-0 items-center gap-2 rounded-full border border-[#7df9c7]/20 bg-[#17362d] px-2.5 py-1 text-[10px] text-[#d8ffef]"
+                  className="flex shrink-0 items-center gap-1.5 rounded-full border border-[#7df9c7]/20 bg-[rgba(159,247,214,0.14)] px-2 py-1 text-[9.5px] text-[#e2fff3]"
                   style={noDragStyle}
                 >
-                  <span className="max-w-[8.5rem] truncate">
+                  <span className="max-w-[7.5rem] truncate">
                     {isWaitingForSecret
                       ? "Waiting for manual login"
                       : computerUseState.currentAction || "Computer running"}
@@ -367,7 +384,7 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
                   {isWaitingForSecret ? (
                     <button
                       type="button"
-                      className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] text-white hover:bg-white/15"
+                      className="rounded-full bg-white/10 px-2 py-1 text-[9.5px] text-white hover:bg-white/15"
                       onClick={() => {
                         void onResumeComputerTask()
                       }}
@@ -377,7 +394,7 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
                   ) : (
                     <button
                       type="button"
-                      className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] text-white hover:bg-white/15"
+                      className="rounded-full bg-white/10 px-2 py-1 text-[9.5px] text-white hover:bg-white/15"
                       onClick={() => {
                         void onStopComputerTask()
                       }}
@@ -390,7 +407,7 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
               {screenshotCount > 0 && (
                 <button
                   type="button"
-                  className={`flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-white/10 ${
+                  className={`${chipButtonClass} ${
                     credits <= 0 ? "cursor-not-allowed opacity-50" : ""
                   }`}
                   onClick={() => {
@@ -400,10 +417,10 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
                 >
                   <span className="text-[11px] leading-none">Solve</span>
                   <div className="flex gap-1">
-                    <span className="rounded-md bg-white/10 px-1.5 py-1 text-[11px] leading-none text-white/70">
+                    <span className={keyHintClass}>
                       {COMMAND_KEY}
                     </span>
-                    <span className="rounded-md bg-white/10 px-1.5 py-1 text-[11px] leading-none text-white/70">
+                    <span className={keyHintClass}>
                       ↵
                     </span>
                   </div>
@@ -414,7 +431,7 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
 
           {activeMode === "chat" && isComputerUseActive && (
             <div
-              className="flex shrink-0 items-center gap-2 rounded-full border border-[#7df9c7]/20 bg-[#17362d] px-2.5 py-1 text-[10px] text-[#d8ffef]"
+              className="flex shrink-0 items-center gap-2 rounded-full border border-[#7df9c7]/20 bg-[rgba(159,247,214,0.14)] px-2.5 py-1 text-[10px] text-[#e2fff3]"
               style={noDragStyle}
             >
               <span className="max-w-[9rem] truncate">
@@ -425,7 +442,7 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
               {isWaitingForSecret ? (
                 <button
                   type="button"
-                  className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] text-white hover:bg-white/15"
+                  className="rounded-full bg-white/10 px-2.5 py-1 text-[10px] text-white hover:bg-white/15"
                   onClick={() => {
                     void onResumeComputerTask()
                   }}
@@ -435,7 +452,7 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
               ) : (
                 <button
                   type="button"
-                  className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] text-white hover:bg-white/15"
+                  className="rounded-full bg-white/10 px-2.5 py-1 text-[10px] text-white hover:bg-white/15"
                   onClick={() => {
                     void onStopComputerTask()
                   }}
@@ -456,8 +473,23 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
 
           <button
             type="button"
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-white/80 transition-colors hover:bg-white/10 hover:text-white"
+            className={iconButtonClass}
+            onClick={() => {
+              openPhoneRelayWindow()
+            }}
+            data-panel-trigger="phone-relay"
+            aria-label="Relay Manager"
+            title="Relay Manager"
+            style={noDragStyle}
+          >
+            <Smartphone className="h-3.5 w-3.5" />
+          </button>
+
+          <button
+            type="button"
+            className={iconButtonClass}
             onClick={openAccountDashboard}
+            data-panel-trigger="account-dashboard"
             aria-label="Dashboard"
             title="Dashboard"
             style={noDragStyle}

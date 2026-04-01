@@ -3,9 +3,14 @@ export function measureElementContentSize(element: HTMLElement): {
   height: number
 } {
   const rect = element.getBoundingClientRect()
+  const scrollWidth = element.scrollWidth
+  const clientWidth = element.clientWidth
 
   return {
-    width: Math.max(1, Math.ceil(rect.width)),
+    width: Math.max(
+      1,
+      Math.ceil(Math.max(rect.width, scrollWidth, clientWidth))
+    ),
     height: Math.max(1, Math.ceil(Math.max(rect.height, element.scrollHeight)))
   }
 }
@@ -29,7 +34,7 @@ export function updateWindowToElement(
   const { width, height } = measureElementContentSize(target)
 
   window.electronAPI?.updateContentDimensions({
-    width: width + (extras.width ?? 0),
-    height: height + (extras.height ?? 0)
+    width: width + 4 + (extras.width ?? 0),
+    height: height + 4 + (extras.height ?? 0)
   })
 }

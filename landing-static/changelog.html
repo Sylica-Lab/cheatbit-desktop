@@ -3,103 +3,124 @@
 <head>
   <meta charset="utf-8" />
   <title>Changelog | Sylica AI</title>
-  <meta name="description" content="Recent Sylica AI releases, Windows installer changes, update feed improvements, and frontend rollout notes." />
+  <meta
+    name="description"
+    content="Recent Sylica AI releases, Windows installer changes, update feed improvements, and frontend rollout notes."
+  />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta property="og:title" content="Changelog | Sylica AI" />
-  <meta property="og:description" content="Read recent Sylica AI release notes including updater, installer, uninstall, and frontend improvements." />
-  <meta property="og:image" content="/logo.svg" />
+  <meta
+    property="og:description"
+    content="Read recent Sylica AI release notes covering the desktop app, installer, updater, and public frontend."
+  />
+  <meta property="og:image" content="./logo.svg" />
   <meta name="twitter:card" content="summary_large_image" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
-  <script src="https://ajax.googleapis.com/ajax/libs/webfont/1.6.26/webfont.js" type="text/javascript"></script>
-  <script type="text/javascript">WebFont.load({ google: { families: ["Inter:300,400,500,600,700", "Roboto:300,400,500,600,700"] } });</script>
-  <link href="/logo.svg" rel="shortcut icon" type="image/svg+xml" />
-  <link href="/logo.svg" rel="apple-touch-icon" />
-  <link href="/site-pages.css" rel="stylesheet" type="text/css" />
+  <link rel="icon" href="./logo.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="./logo.svg" />
+  <link rel="stylesheet" href="./site-pages.css" />
 </head>
 <body>
   <div class="site-shell">
-    <header class="topbar">
-      <a class="brand" href="/">
-        <img src="/logo.svg" alt="Sylica AI logo" />
-        <span class="brand-copy">
-          <span class="brand-title">Sylica AI</span>
-          <span class="brand-subtitle">Desktop AI assistant</span>
+    <header class="site-header">
+      <a class="site-brand" href="/">
+        <img src="./logo.svg" alt="Sylica AI logo" />
+        <span class="site-brand-copy">
+          <span class="site-brand-title">Sylica AI</span>
+          <span class="site-brand-subtitle">Desktop-first assistant</span>
         </span>
       </a>
-      <nav class="topbar-nav">
+
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav" data-menu-toggle>
+        <span class="menu-toggle-line"></span>
+      </button>
+
+      <nav class="site-nav" id="site-nav" data-site-nav>
         <a href="/">Home</a>
         <a href="/blogs/">Blogs</a>
+        <a href="/research/">Research</a>
         <a href="/changelog/" class="is-active">Changelog</a>
         <a href="/security/">Security</a>
         <a href="/privacy/">Privacy</a>
         <a href="/terms/">Terms</a>
       </nav>
+
+      <div class="site-actions">
+        <a class="button button-secondary small" href="/#download">Downloads</a>
+      </div>
     </header>
 
-    <section class="hero-card">
-      <div class="eyebrow">Release notes</div>
-      <h1 class="hero-title">Recent product changes across the desktop app, installer, updater, and site.</h1>
-      <p class="hero-description">This changelog focuses on the latest public builds and website improvements. It is meant for users who want to see what changed before updating.</p>
-    </section>
+    <main>
+      <section class="section">
+        <div class="page-hero reveal is-visible">
+          <div class="page-hero-copy">
+            <div class="eyebrow">Release notes</div>
+            <h1>Recent changes across the app, installer, updater, and site.</h1>
+            <p>Readable release notes for the public build path.</p>
+          </div>
+          <div class="page-hero-side">
+            <a class="button button-primary" href="/Sylica-AI-Setup.exe">Download Windows installer</a>
+          </div>
+        </div>
+      </section>
 
-    <div class="content-grid">
-      <article class="content-card">
+      <section class="section">
         <div class="timeline">
-          <div class="timeline-item">
+          <article class="timeline-item reveal">
             <div class="timeline-meta">March 10, 2026 · v1.0.28</div>
             <h3>Upgrade installs no longer show uninstall offboarding</h3>
-            <ul>
-              <li>Fixed the Windows installer flow so upgrade installs do not trigger the uninstall retention prompt.</li>
-              <li>Published a fresh versioned installer, blockmap, and update metadata to the self-hosted update feed.</li>
-            </ul>
-          </div>
-          <div class="timeline-item">
+            <p>Upgrade installs skip the uninstall retention prompt and ship with fresh update metadata.</p>
+          </article>
+          <article class="timeline-item reveal">
             <div class="timeline-meta">March 10, 2026 · v1.0.27</div>
             <h3>Uninstall offboarding dialog sizing fix</h3>
-            <ul>
-              <li>Expanded the desktop window before showing uninstall offboarding so users no longer need to scroll through a cramped modal.</li>
-              <li>Kept the standard widget size for the main app after the dialog closes.</li>
-            </ul>
-          </div>
-          <div class="timeline-item">
+            <p>The uninstall flow now opens in a larger app window instead of a cramped modal.</p>
+          </article>
+          <article class="timeline-item reveal">
             <div class="timeline-meta">March 10, 2026 · v1.0.26</div>
             <h3>Uninstall offboarding launched from inside the app</h3>
-            <ul>
-              <li>Added a Windows uninstall retention flow that opens Sylica AI before final removal.</li>
-              <li>Included plan-management and continue-uninstall actions inside the app UI.</li>
-            </ul>
-          </div>
-          <div class="timeline-item">
+            <p>The Windows uninstall flow can now show retention actions before final removal.</p>
+          </article>
+          <article class="timeline-item reveal">
             <div class="timeline-meta">March 10, 2026 · v1.0.25</div>
             <h3>Self-hosted Windows updates</h3>
-            <ul>
-              <li>Replaced the old GitHub-token updater path with a Cloudflare-hosted generic update feed.</li>
-              <li>Added the inline Update and Restart button inside the main widget.</li>
-            </ul>
-          </div>
+            <p>The app moved to a Cloudflare-hosted update feed with an inline update action.</p>
+          </article>
         </div>
-      </article>
+      </section>
+    </main>
 
-      <aside class="content-card sidebar-card">
-        <h3>Need the latest build?</h3>
-        <p>Use the current website installer for a fresh install, or use the in-app updater on v1.0.25 and later.</p>
-        <div class="sidebar-links">
-          <a href="/Sylica-AI-Setup.exe">Download Windows installer</a>
-          <a href="/blogs/">Read blogs</a>
-          <a href="/security/">Security overview</a>
-        </div>
-      </aside>
-    </div>
-
-    <footer class="footer-card">
-      <p>Release notes are edited manually to stay readable. The update feed remains the source of truth for version matching.</p>
-      <div class="footer-links">
+    <footer class="site-footer">
+      <div class="footer-brand">
+        <a class="site-brand" href="/">
+          <img src="./logo.svg" alt="Sylica AI logo" />
+          <span class="site-brand-copy">
+            <span class="site-brand-title">Sylica AI</span>
+            <span class="site-brand-subtitle">Release notes</span>
+          </span>
+        </a>
+        <p>Short public release notes. The update feed stays the source of truth.</p>
+      </div>
+      <div class="footer-column">
+        <strong>Read</strong>
         <a href="/blogs/">Blogs</a>
+        <a href="/research/">Research</a>
+        <a href="/changelog/">Changelog</a>
+      </div>
+      <div class="footer-column">
+        <strong>Trust</strong>
         <a href="/security/">Security</a>
         <a href="/privacy/">Privacy</a>
+        <a href="/terms/">Terms</a>
+      </div>
+      <div class="footer-column">
+        <strong>Product</strong>
+        <a href="/">Homepage</a>
+        <a href="/#pricing">Pricing</a>
+        <a href="/#download">Downloads</a>
       </div>
     </footer>
   </div>
+
+  <script src="./site.js"></script>
 </body>
 </html>

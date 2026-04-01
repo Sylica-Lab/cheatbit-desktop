@@ -3,79 +3,153 @@
 <head>
   <meta charset="utf-8" />
   <title>Blogs | Sylica AI</title>
-  <meta name="description" content="Browse Sylica AI blogs, release notes, policies, and security pages from the public frontend." />
+  <meta
+    name="description"
+    content="Product notes, research links, release writing, and trust pages for Sylica AI."
+  />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta property="og:title" content="Blogs | Sylica AI" />
-  <meta property="og:description" content="Browse posts, changelogs, and product documents for Sylica AI." />
-  <meta property="og:image" content="/logo.svg" />
+  <meta property="og:description" content="Read the public writing around Sylica AI." />
+  <meta property="og:image" content="./logo.svg" />
   <meta name="twitter:card" content="summary_large_image" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
-  <script src="https://ajax.googleapis.com/ajax/libs/webfont/1.6.26/webfont.js" type="text/javascript"></script>
-  <script type="text/javascript">WebFont.load({ google: { families: ["Inter:300,400,500,600,700", "Roboto:300,400,500,600,700"] } });</script>
-  <link href="/logo.svg" rel="shortcut icon" type="image/svg+xml" />
-  <link href="/logo.svg" rel="apple-touch-icon" />
-  <link href="/site-pages.css" rel="stylesheet" type="text/css" />
+  <link rel="icon" href="./logo.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="./logo.svg" />
+  <link rel="stylesheet" href="./site-pages.css" />
 </head>
 <body>
   <div class="site-shell">
-    <header class="topbar">
-      <a class="brand" href="/">
-        <img src="/logo.svg" alt="Sylica AI logo" />
-        <span class="brand-copy">
-          <span class="brand-title">Sylica AI</span>
-          <span class="brand-subtitle">Desktop AI assistant</span>
+    <header class="site-header">
+      <a class="site-brand" href="/">
+        <img src="./logo.svg" alt="Sylica AI logo" />
+        <span class="site-brand-copy">
+          <span class="site-brand-title">Sylica AI</span>
+          <span class="site-brand-subtitle">Desktop-first assistant</span>
         </span>
       </a>
-      <nav class="topbar-nav">
+
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav" data-menu-toggle>
+        <span class="menu-toggle-line"></span>
+      </button>
+
+      <nav class="site-nav" id="site-nav" data-site-nav>
         <a href="/">Home</a>
         <a href="/blogs/" class="is-active">Blogs</a>
+        <a href="/research/">Research</a>
         <a href="/changelog/">Changelog</a>
         <a href="/security/">Security</a>
         <a href="/privacy/">Privacy</a>
         <a href="/terms/">Terms</a>
       </nav>
+
+      <div class="site-actions">
+        <a class="button button-secondary small" href="/#download">Downloads</a>
+      </div>
     </header>
 
-    <section class="hero-card">
-      <div class="eyebrow">Guides and docs</div>
-      <h1 class="hero-title">Public pages for product updates, docs, policies, and practical Sylica AI workflows.</h1>
-      <p class="hero-description">This is the lightweight content hub for the public frontend. It links product writing, release notes, security posture, and policy pages without sending users into the repo first.</p>
-    </section>
+    <main>
+      <section class="section">
+        <div class="page-hero reveal is-visible">
+          <div class="page-hero-copy">
+            <div class="eyebrow">Public pages</div>
+            <h1>Read the product in motion.</h1>
+            <p>Blogs, research, releases, and trust pages in one shell.</p>
+          </div>
+          <div class="page-hero-side">
+            <div class="meta-chip">Short copy</div>
+            <div class="meta-chip">Same public frontend</div>
+            <div class="hero-actions">
+              <a class="button button-primary" href="/blog/">Latest post</a>
+            </div>
+          </div>
+        </div>
+      </section>
 
-    <section class="content-card" style="margin-top:20px">
-      <div class="post-grid">
-        <div class="post-card">
-          <h3>Live desktop workflows with Sylica AI</h3>
-          <p>A product note on why the UI keeps shrinking, why browser-first automation matters, and how update delivery changed.</p>
-          <a href="/blog/">Read blog post</a>
+      <section class="section">
+        <div class="card-grid">
+          <article class="page-card reveal">
+            <div class="label">Blog</div>
+            <h3>Live desktop workflows</h3>
+            <p>Why the dock keeps shrinking while the workflow keeps growing.</p>
+            <div class="hero-actions" style="margin-top:16px;">
+              <a class="button button-secondary small" href="/blog/">Read</a>
+            </div>
+          </article>
+          <article class="page-card reveal">
+            <div class="label">Research</div>
+            <h3>Published studies</h3>
+            <p>Product notes and rollout studies from the admin publishing flow.</p>
+            <div class="hero-actions" style="margin-top:16px;">
+              <a class="button button-secondary small" href="/research/">Open</a>
+            </div>
+          </article>
+          <article class="page-card reveal">
+            <div class="label">Releases</div>
+            <h3>Changelog</h3>
+            <p>Installer, updater, and public frontend changes.</p>
+            <div class="hero-actions" style="margin-top:16px;">
+              <a class="button button-secondary small" href="/changelog/">Open</a>
+            </div>
+          </article>
+          <article class="page-card reveal">
+            <div class="label">Trust</div>
+            <h3>Security</h3>
+            <p>Desktop-first trust boundaries and user guidance.</p>
+            <div class="hero-actions" style="margin-top:16px;">
+              <a class="button button-secondary small" href="/security/">Read</a>
+            </div>
+          </article>
+          <article class="page-card reveal">
+            <div class="label">Trust</div>
+            <h3>Privacy</h3>
+            <p>What stays local, what reaches hosted services.</p>
+            <div class="hero-actions" style="margin-top:16px;">
+              <a class="button button-secondary small" href="/privacy/">Read</a>
+            </div>
+          </article>
+          <article class="page-card reveal">
+            <div class="label">Trust</div>
+            <h3>Terms</h3>
+            <p>Rules for the app, the site, billing, and updates.</p>
+            <div class="hero-actions" style="margin-top:16px;">
+              <a class="button button-secondary small" href="/terms/">Read</a>
+            </div>
+          </article>
         </div>
-        <div class="post-card">
-          <h3>Changelog</h3>
-          <p>Follow recent public builds, update-feed work, uninstall offboarding, and packaging fixes.</p>
-          <a href="/changelog/">View changelog</a>
-        </div>
-        <div class="post-card">
-          <h3>Security overview</h3>
-          <p>Read the current security model for desktop-first workflows, hosted account services, updates, and browser automation.</p>
-          <a href="/security/">Open security page</a>
-        </div>
-        <div class="post-card">
-          <h3>Privacy policy</h3>
-          <p>See what stays local, what reaches hosted services, and how billing and provider routing fit into the product.</p>
-          <a href="/privacy/">Open privacy policy</a>
-        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-brand">
+        <a class="site-brand" href="/">
+          <img src="./logo.svg" alt="Sylica AI logo" />
+          <span class="site-brand-copy">
+            <span class="site-brand-title">Sylica AI</span>
+            <span class="site-brand-subtitle">Public writing</span>
+          </span>
+        </a>
+        <p>Less copy. Clearer routes. Same product shell.</p>
       </div>
-    </section>
-
-    <footer class="footer-card">
-      <p>Need the app instead? The homepage and download flow stay available from the same static frontend.</p>
-      <div class="footer-links">
-        <a href="/">Homepage</a>
-        <a href="/Sylica-AI-Setup.exe">Download</a>
+      <div class="footer-column">
+        <strong>Read</strong>
+        <a href="/blog/">Latest post</a>
+        <a href="/research/">Research</a>
+        <a href="/changelog/">Changelog</a>
+      </div>
+      <div class="footer-column">
+        <strong>Trust</strong>
+        <a href="/security/">Security</a>
+        <a href="/privacy/">Privacy</a>
         <a href="/terms/">Terms</a>
+      </div>
+      <div class="footer-column">
+        <strong>Product</strong>
+        <a href="/">Homepage</a>
+        <a href="/#pricing">Pricing</a>
+        <a href="/#download">Downloads</a>
       </div>
     </footer>
   </div>
+
+  <script src="./site.js"></script>
 </body>
 </html>

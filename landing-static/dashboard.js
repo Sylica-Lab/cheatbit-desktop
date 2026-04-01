@@ -7,13 +7,24 @@ const statsGrid = document.getElementById("statsGrid");
 const subscriptionBreakdown = document.getElementById("subscriptionBreakdown");
 const eventFeed = document.getElementById("eventFeed");
 const usersTableBody = document.getElementById("usersTableBody");
+const researchForm = document.getElementById("researchForm");
+const researchFormStatus = document.getElementById("researchFormStatus");
+const researchList = document.getElementById("researchList");
+const researchCount = document.getElementById("researchCount");
+const tabButtons = Array.from(document.querySelectorAll("[data-tab-button]"));
+const tabPanels = Array.from(document.querySelectorAll("[data-tab-panel]"));
 
 const state = {
   token: localStorage.getItem("ic_admin_token") || "",
+  activeTab: "overview",
 };
 
 if (loginForm) {
   loginForm.addEventListener("submit", handleLogin);
+}
+
+if (researchForm) {
+  researchForm.addEventListener("submit", handleResearchPublish);
 }
 
 if (refreshButton) {
@@ -22,8 +33,29 @@ if (refreshButton) {
   });
 }
 
+tabButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    setActiveTab(button.dataset.tabButton || "overview");
+  });
+});
+
 if (state.token) {
   void loadDashboard();
+}
+
+function setActiveTab(tabName) {
+  state.activeTab = tabName === "research" ? "research" : "overview";
+
+  tabButtons.forEach((button) => {
+    const isActive = button.dataset.tabButton === state.activeTab;
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-selected", isActive ? "true" : "false");
+  });
+
+  tabPanels.forEach((panel) => {
+    const isActive = panel.dataset.tabPanel === state.activeTab;
+    panel.classList.toggle("hidden", !isActive);
+  });
 }
 
 async function handleLogin(event) {
@@ -48,22 +80,54 @@ async function handleLogin(event) {
   }
 }
 
+async function handleResearchPublish(event) {
+  event.preventDefault();
+  const formData = new FormData(researchForm);
+  setResearchFormStatus("", "");
+
+  try {
+    const response = await authedRequest("/api/admin/researches", {
+      method: "POST",
+      body: JSON.stringify({
+        title: String(formData.get("title") || ""),
+        authorName: String(formData.get("authorName") || ""),
+        summary: String(formData.get("summary") || ""),
+        content: String(formData.get("content") || ""),
+      }),
+    });
+
+    researchForm.reset();
+    await loadDashboard();
+    setActiveTab("research");
+    setResearchFormStatus(
+      `Published "${response.research?.title || "research"}" to /research/.`,
+      "success"
+    );
+  } catch (error) {
+    setResearchFormStatus(error.message || "Failed to publish research.", "error");
+  }
+}
+
 async function loadDashboard() {
   try {
-    const [statsResponse, usersResponse, eventsResponse] = await Promise.all([
-      authedRequest("/api/admin/stats"),
-      authedRequest("/api/admin/users"),
-      authedRequest("/api/admin/events"),
-    ]);
+    const [statsResponse, usersResponse, eventsResponse, researchResponse] =
+      await Promise.all([
+        authedRequest("/api/admin/stats"),
+        authedRequest("/api/admin/users"),
+        authedRequest("/api/admin/events"),
+        authedRequest("/api/admin/researches"),
+      ]);
 
     renderStats(statsResponse);
     renderBreakdown(statsResponse);
     renderEvents(eventsResponse.events || []);
     renderUsers(usersResponse.users || []);
+    renderResearches(researchResponse.researches || []);
 
     loginPanel.classList.add("hidden");
     dashboardPanel.classList.remove("hidden");
     refreshButton.classList.remove("hidden");
+    setActiveTab(state.activeTab);
   } catch (error) {
     state.token = "";
     localStorage.removeItem("ic_admin_token");
@@ -165,8 +229,8 @@ function renderUsers(users) {
         user.subscriptionStatus === "active"
           ? "success"
           : user.subscriptionStatus === "trial"
-          ? "warn"
-          : "danger";
+            ? "warn"
+            : "danger";
 
       return `
         <tr data-user-id="${escapeHtml(user.id)}">
@@ -264,6 +328,40 @@ function renderUsers(users) {
     });
 }
 
+function renderResearches(researches) {
+  researchCount.textContent = `${researches.length} published`;
+
+  if (!researches.length) {
+    researchList.innerHTML = `<p class="muted">No research has been published yet.</p>`;
+    return;
+  }
+
+  researchList.innerHTML = researches
+    .map((research) => {
+      const publicHref = `/research/#${encodeURIComponent(research.slug)}`;
+      return `
+        <article class="research-card">
+          <div class="research-card-header">
+            <div>
+              <h3>${escapeHtml(research.title)}</h3>
+              <p class="mini-note-row">
+                <span class="mini-note">${escapeHtml(research.authorName || "Sylica AI Research")}</span>
+                <span class="mini-note">${escapeHtml(formatDateTime(research.publishedAt))}</span>
+                <span class="mini-note">Slug: ${escapeHtml(research.slug)}</span>
+              </p>
+            </div>
+            <a class="research-card-link" href="${publicHref}" target="_blank" rel="noreferrer">
+              Open public page
+            </a>
+          </div>
+          <p class="research-summary">${escapeHtml(research.summary)}</p>
+          <p class="research-preview">${escapeHtml(summarizeLongText(research.content, 260))}</p>
+        </article>
+      `;
+    })
+    .join("");
+}
+
 async function updateUser(row, applyPlanDefaults) {
   if (!row) {
     return;
@@ -292,6 +390,26 @@ async function updateUser(row, applyPlanDefaults) {
   } catch (error) {
     alert(error.message || "Failed to update user.");
   }
+}
+
+function setResearchFormStatus(message, tone) {
+  if (!message) {
+    researchFormStatus.textContent = "";
+    researchFormStatus.className = "form-status hidden";
+    return;
+  }
+
+  researchFormStatus.textContent = message;
+  researchFormStatus.className = `form-status ${tone || ""}`.trim();
+}
+
+function summarizeLongText(value, maxLength) {
+  const normalized = String(value || "").replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxLength - 3).trimEnd()}...`;
 }
 
 async function request(path, options = {}) {

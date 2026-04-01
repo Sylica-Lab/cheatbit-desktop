@@ -20,6 +20,20 @@ import type {
   TextFollowUpResponse
 } from "../../shared/followUpChat"
 import type { DesktopUpdateState } from "../../shared/desktopUpdates"
+import type {
+  CreatePhonePairingSessionResponse,
+  PhonePairingSessionSummary,
+  PhoneRelayEventSummary,
+} from "../../shared/phoneRelay"
+import type {
+  CreateLocalPhonePairingSessionResponse,
+  LocalPhoneRelayState,
+} from "../../shared/localPhoneRelay"
+import type {
+  ConnectedAppIntegration,
+  IntegrationConnectResponse,
+  IntegrationProvider,
+} from "../../shared/integrations"
 
 export interface ElectronAPI {
   getAuthState: () => Promise<AuthState>
@@ -34,8 +48,51 @@ export interface ElectronAPI {
   }) => Promise<AuthState>
   logout: () => Promise<{ success: boolean }>
   getAccountDashboard: () => Promise<UserDashboardData>
+  listIntegrations: () => Promise<ConnectedAppIntegration[]>
+  createIntegrationConnectSession: (payload: {
+    provider: IntegrationProvider
+  }) => Promise<IntegrationConnectResponse>
+  disconnectIntegration: (payload: {
+    provider: IntegrationProvider
+  }) => Promise<{ success: true }>
   createCheckoutSession: () => Promise<BillingSessionResponse>
   createBillingPortalSession: () => Promise<BillingSessionResponse>
+  createPhonePairingSession: (payload?: {
+    desktopDeviceName?: string
+  }) => Promise<
+    { success: true; data: CreatePhonePairingSessionResponse } | { success: false; error: string }
+  >
+  getPhonePairingSession: (payload: {
+    pairingId: string
+  }) => Promise<
+    { success: true; data: { pairing: PhonePairingSessionSummary } } | { success: false; error: string }
+  >
+  listPhoneDevices: () => Promise<
+    { success: true; data: { devices: PhonePairingSessionSummary[] } } | { success: false; error: string }
+  >
+  listPhoneEvents: (payload?: {
+    pairingId?: string
+    after?: string | null
+  }) => Promise<
+    { success: true; data: { events: PhoneRelayEventSummary[] } } | { success: false; error: string }
+  >
+  getLocalPhoneRelayState: () => Promise<
+    { success: true; data: { state: LocalPhoneRelayState } } | { success: false; error: string }
+  >
+  createLocalPhonePairingSession: (payload?: {
+    desktopDeviceName?: string
+  }) => Promise<
+    {
+      success: true
+      data: {
+        pairing: CreateLocalPhonePairingSessionResponse
+        state: LocalPhoneRelayState
+      }
+    } | { success: false; error: string }
+  >
+  openPhoneRelayWindow: () => Promise<
+    { success: true } | { success: false; error: string }
+  >
   requestMicrophoneAccess: () => Promise<{
     granted: boolean
     status: string
@@ -148,6 +205,9 @@ export interface ElectronAPI {
   ) => () => void
   onComputerUseState: (
     callback: (state: ComputerUseState) => void
+  ) => () => void
+  onLocalPhoneRelayState: (
+    callback: (state: LocalPhoneRelayState) => void
   ) => () => void
   onDebugError: (callback: (error: string) => void) => () => void
   openExternal: (

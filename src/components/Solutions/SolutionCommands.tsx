@@ -45,13 +45,19 @@ const SolutionCommands: React.FC<SolutionCommandsProps> = ({
       showToast("Error", "Failed to quit app", "error")
     }
   }
+  const dockButtonClass =
+    "sylica-dock-tab sylica-glass-chip flex items-center gap-2 rounded-2xl px-3 py-2 transition-colors"
+  const iconButtonClass =
+    "sylica-dock-tab sylica-glass-chip flex h-9 w-9 items-center justify-center rounded-2xl text-white/78 transition-colors hover:text-white"
+  const keyHintClass =
+    "rounded-xl border border-white/10 bg-white/[0.08] px-1.5 py-1 text-[10px] leading-none text-white/54"
 
   return (
     <div className="pt-2">
-      <div className="flex w-fit items-center gap-4 rounded-xl border border-white/10 bg-black/[0.78] px-4 py-2 text-xs text-white/90 backdrop-blur-md">
+      <div className="sylica-liquid-dock flex w-fit items-center gap-3 rounded-[24px] px-3 py-2.5 text-xs text-white/90">
         <button
           type="button"
-          className="flex items-center gap-2 rounded px-2 py-1.5 transition-colors hover:bg-white/10"
+          className={dockButtonClass}
           onClick={async () => {
             try {
               const result = await window.electronAPI.toggleMainWindow()
@@ -66,10 +72,10 @@ const SolutionCommands: React.FC<SolutionCommandsProps> = ({
         >
           <span className="text-[11px] leading-none">Show/Hide</span>
           <div className="flex gap-1">
-            <span className="rounded-md bg-white/10 px-1.5 py-1 text-[11px] leading-none text-white/70">
+            <span className={keyHintClass}>
               {COMMAND_KEY}
             </span>
-            <span className="rounded-md bg-white/10 px-1.5 py-1 text-[11px] leading-none text-white/70">
+            <span className={keyHintClass}>
               B
             </span>
           </div>
@@ -78,7 +84,7 @@ const SolutionCommands: React.FC<SolutionCommandsProps> = ({
         {!isProcessing && (
           <button
             type="button"
-            className="flex items-center gap-2 rounded px-2 py-1.5 transition-colors hover:bg-white/10"
+            className={dockButtonClass}
             onClick={async () => {
               try {
                 const result = await window.electronAPI.triggerScreenshot()
@@ -97,10 +103,10 @@ const SolutionCommands: React.FC<SolutionCommandsProps> = ({
           >
             <span className="text-[11px] leading-none">New Screenshot</span>
             <div className="flex gap-1">
-              <span className="rounded-md bg-white/10 px-1.5 py-1 text-[11px] leading-none text-white/70">
+              <span className={keyHintClass}>
                 {COMMAND_KEY}
               </span>
-              <span className="rounded-md bg-white/10 px-1.5 py-1 text-[11px] leading-none text-white/70">
+              <span className={keyHintClass}>
                 H
               </span>
             </div>
@@ -109,7 +115,7 @@ const SolutionCommands: React.FC<SolutionCommandsProps> = ({
 
         <button
           type="button"
-          className="flex items-center gap-2 rounded px-2 py-1.5 transition-colors hover:bg-white/10"
+          className={dockButtonClass}
           onClick={async () => {
             try {
               const result = await window.electronAPI.triggerReset()
@@ -124,10 +130,10 @@ const SolutionCommands: React.FC<SolutionCommandsProps> = ({
         >
           <span className="text-[11px] leading-none">Start Over</span>
           <div className="flex gap-1">
-            <span className="rounded-md bg-white/10 px-1.5 py-1 text-[11px] leading-none text-white/70">
+            <span className={keyHintClass}>
               {COMMAND_KEY}
             </span>
-            <span className="rounded-md bg-white/10 px-1.5 py-1 text-[11px] leading-none text-white/70">
+            <span className={keyHintClass}>
               R
             </span>
           </div>
@@ -143,8 +149,9 @@ const SolutionCommands: React.FC<SolutionCommandsProps> = ({
 
         <button
           type="button"
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-white/80 transition-colors hover:bg-white/10 hover:text-white"
+          className={iconButtonClass}
           onClick={openAccountDashboard}
+          data-panel-trigger="account-dashboard"
           aria-label="Dashboard"
           title="Dashboard"
         >
@@ -153,7 +160,7 @@ const SolutionCommands: React.FC<SolutionCommandsProps> = ({
 
         <button
           type="button"
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-white/75 transition-colors hover:bg-white/10 hover:text-red-200"
+          className={`${iconButtonClass} hover:text-red-200`}
           onClick={() => {
             void handleQuitApp()
           }}

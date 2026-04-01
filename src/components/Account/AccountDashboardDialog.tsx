@@ -128,6 +128,7 @@ export function AccountDashboardDialog({
   const [dashboard, setDashboard] = useState<UserDashboardData | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [billingAction, setBillingAction] = useState<"checkout" | "portal" | null>(null)
+  const [integrationAction, setIntegrationAction] = useState<string | null>(null)
   const [generatedBillingLink, setGeneratedBillingLink] = useState<{
     kind: BillingLinkKind
     url: string
@@ -250,6 +251,13 @@ export function AccountDashboardDialog({
         return
       }
 
+      if (
+        target instanceof Element &&
+        target.closest("[data-panel-trigger='account-dashboard']")
+      ) {
+        return
+      }
+
       if (panelRef.current?.contains(target)) {
         return
       }
@@ -345,6 +353,60 @@ export function AccountDashboardDialog({
     window.setTimeout(() => {
       void window.electronAPI.openSettingsPortal()
     }, 0)
+  }
+
+  const handleConnectIntegration = async (
+    provider: "google" | "notion",
+    label: string
+  ) => {
+    setIntegrationAction(`connect:${provider}`)
+    setError("")
+
+    try {
+      const session = await window.electronAPI.createIntegrationConnectSession({
+        provider,
+      })
+      await openUrlInBrowser(session.url)
+      showToast(
+        `${label} Connection`,
+        `Finish the ${label} authorization in your browser, then return here and press Refresh.`,
+        "success"
+      )
+    } catch (connectError) {
+      setError(
+        connectError instanceof Error
+          ? connectError.message
+          : `Failed to start the ${label} connection.`
+      )
+    } finally {
+      setIntegrationAction(null)
+    }
+  }
+
+  const handleDisconnectIntegration = async (
+    provider: "google" | "notion",
+    label: string
+  ) => {
+    setIntegrationAction(`disconnect:${provider}`)
+    setError("")
+
+    try {
+      await window.electronAPI.disconnectIntegration({ provider })
+      await refreshDashboard()
+      showToast(
+        `${label} Disconnected`,
+        `${label} access has been removed from this account.`,
+        "success"
+      )
+    } catch (disconnectError) {
+      setError(
+        disconnectError instanceof Error
+          ? disconnectError.message
+          : `Failed to disconnect ${label}.`
+      )
+    } finally {
+      setIntegrationAction(null)
+    }
   }
 
   if (!open) {
@@ -577,6 +639,168 @@ export function AccountDashboardDialog({
                     </div>
                     <div className="mt-1.5 text-[24px] font-semibold text-white">
                       {dashboard.usage.totalScreenshotCount}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-[24px] border border-white/10 bg-white/[0.035] p-4">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <div className="text-[10px] uppercase tracking-[0.22em] text-white/40">
+                    Connected Apps
+                  </div>
+                  <div className="mt-1.5 text-[13px] leading-5 text-white/60">
+                    Connect Gmail, Google Calendar, and Notion so the built-in assistant can search, draft, and create content for you.
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2 text-[10px] uppercase tracking-[0.14em] text-white/50">
+                  <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
+                    assistant ready
+                  </span>
+                  <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
+                    refresh after auth
+                  </span>
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-3 md:grid-cols-3">
+                {dashboard.integrations.map((integration) => {
+                  const providerIsBusy =
+                    integrationAction === `connect:${integration.provider}` ||
+                    integrationAction === `disconnect:${integration.provider}`
+
+                  return (
+                    <div
+                      key={integration.app}
+                      className="rounded-[22px] border border-white/10 bg-black/25 p-3.5"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-[15px] font-semibold text-white">
+                            {integration.label}
+                          </div>
+                          {integration.sharedConnectionLabel ? (
+                            <div className="mt-1 text-[10px] uppercase tracking-[0.16em] text-[#7df9c7]">
+                              {integration.sharedConnectionLabel}
+                            </div>
+                          ) : null}
+                        </div>
+                        <span
+                          className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.16em] ${
+                            integration.connected
+                              ? "bg-[#7df9c7] text-black"
+                              : integration.configured
+                              ? "border border-white/10 bg-white/5 text-white/76"
+                              : "bg-amber-400/20 text-amber-100"
+                          }`}
+                        >
+                          {integration.connected
+                            ? "Connected"
+                            : integration.configured
+                            ? "Ready"
+                            : "Setup"}
+                        </span>
+                      </div>
+
+                      <div className="mt-3 text-[12px] leading-5 text-white/64">
+                        {integration.statusText}
+                      </div>
+
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {integration.supports.map((item) => (
+                          <span
+                            key={item}
+                            className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] text-white/62"
+                          >
+                            {item}
+                          </span>
+                        ))}
+                      </div>
+
+                      <div className="mt-4 flex flex-col gap-2">
+                        <Button
+                          onClick={() => {
+                            void (integration.connected
+                              ? handleDisconnectIntegration(
+                                  integration.provider,
+                                  integration.provider === "google"
+                                    ? "Google"
+                                    : "Notion"
+                                )
+                              : handleConnectIntegration(
+                                  integration.provider,
+                                  integration.provider === "google"
+                                    ? "Google"
+                                    : "Notion"
+                                ))
+                          }}
+                          disabled={
+                            providerIsBusy ||
+                            (!integration.configured && !integration.connected)
+                          }
+                          className="rounded-xl bg-white px-4 py-2 text-[12px] text-black hover:bg-white/90 disabled:bg-white/15 disabled:text-white/40"
+                        >
+                          {providerIsBusy
+                            ? integration.connected
+                              ? "Disconnecting..."
+                              : "Opening..."
+                            : integration.connected
+                            ? integration.provider === "google"
+                              ? "Disconnect Google"
+                              : "Disconnect Notion"
+                            : integration.provider === "google"
+                            ? "Connect Google"
+                            : "Connect Notion"}
+                        </Button>
+                        <div className="text-[11px] leading-5 text-white/48">
+                          {integration.accountEmail ||
+                          integration.workspaceName ||
+                          integration.accountName
+                            ? `Account: ${
+                                integration.accountEmail ||
+                                integration.workspaceName ||
+                                integration.accountName
+                              }`
+                            : integration.connected
+                            ? "Connected account metadata will appear here after refresh."
+                            : "Use explicit commands in chat after connecting."}
+                        </div>
+                        {integration.lastSyncedAt ? (
+                          <div className="text-[11px] text-white/38">
+                            Last updated {formatDate(integration.lastSyncedAt)}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+
+              <div className="mt-4 rounded-[20px] border border-white/10 bg-black/20 p-3">
+                <div className="text-[10px] uppercase tracking-[0.18em] text-white/40">
+                  Supported Commands
+                </div>
+                <div className="mt-2 grid gap-2 text-[12px] leading-5 text-white/64 md:grid-cols-2">
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-2">
+                    <div className="font-medium text-white">Gmail</div>
+                    <div className="mt-1">
+                      Show my latest Gmail messages
+                      <br />
+                      Search Gmail for "invoice"
+                      <br />
+                      Draft Gmail email to alice@example.com subject "Follow-up" body "Thanks for your time."
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-2">
+                    <div className="font-medium text-white">Calendar + Notion</div>
+                    <div className="mt-1">
+                      Show my upcoming calendar events
+                      <br />
+                      Create calendar event "Team sync" on 2026-03-20 at 3pm for 45 minutes
+                      <br />
+                      Create Notion page "Interview Notes" content "Strengths and risks"
                     </div>
                   </div>
                 </div>

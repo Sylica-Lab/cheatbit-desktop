@@ -148,7 +148,7 @@ const SubscribedApp: React.FC<SubscribedAppProps> = ({
     <div
       ref={containerRef}
       data-size-root="true"
-      className="sylica-window-enter inline-flex min-h-0 flex-col items-start bg-transparent"
+      className="sylica-window-enter relative inline-flex min-h-0 flex-col items-start bg-transparent"
     >
       {view === "queue" ? (
         <Queue

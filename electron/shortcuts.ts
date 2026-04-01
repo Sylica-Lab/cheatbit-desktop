@@ -4,6 +4,10 @@ import { configHelper } from "./ConfigHelper"
 import { backendClient } from "./BackendClient"
 import type { UsageAction } from "../shared/backendAuth"
 
+const isDev = process.env.NODE_ENV === "development"
+const enableGlobalShortcutsInDev =
+  process.env.SYLICA_ENABLE_GLOBAL_SHORTCUTS_IN_DEV === "1"
+
 export class ShortcutsHelper {
   private deps: IShortcutsHelperDeps
 
@@ -71,6 +75,13 @@ export class ShortcutsHelper {
   }
 
   public registerGlobalShortcuts(): void {
+    if (isDev && !enableGlobalShortcutsInDev) {
+      console.log(
+        "Skipping global shortcut registration in development. Set SYLICA_ENABLE_GLOBAL_SHORTCUTS_IN_DEV=1 to enable them."
+      )
+      return
+    }
+
     globalShortcut.register("CommandOrControl+H", async () => {
       const mainWindow = this.deps.getMainWindow()
       if (mainWindow) {

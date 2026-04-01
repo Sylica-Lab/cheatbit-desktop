@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Research | Sylica AI</title>
+  <meta
+    name="description"
+    content="Read published Sylica AI research, rollout notes, and implementation studies from the public frontend."
+  />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta property="og:title" content="Research | Sylica AI" />
+  <meta
+    property="og:description"
+    content="A public research feed for Sylica AI product studies, rollout notes, and technical explanations."
+  />
+  <meta property="og:image" content="./logo.svg" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <link rel="icon" href="./logo.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="./logo.svg" />
+  <link rel="stylesheet" href="./site-pages.css" />
+</head>
+<body>
+  <div class="site-shell">
+    <header class="site-header">
+      <a class="site-brand" href="/">
+        <img src="./logo.svg" alt="Sylica AI logo" />
+        <span class="site-brand-copy">
+          <span class="site-brand-title">Sylica AI</span>
+          <span class="site-brand-subtitle">Desktop-first assistant</span>
+        </span>
+      </a>
+
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav" data-menu-toggle>
+        <span class="menu-toggle-line"></span>
+      </button>
+
+      <nav class="site-nav" id="site-nav" data-site-nav>
+        <a href="/">Home</a>
+        <a href="/blogs/">Blogs</a>
+        <a href="/research/" class="is-active">Research</a>
+        <a href="/changelog/">Changelog</a>
+        <a href="/security/">Security</a>
+        <a href="/privacy/">Privacy</a>
+        <a href="/terms/">Terms</a>
+      </nav>
+
+      <div class="site-actions">
+        <a class="button button-secondary small" href="/#download">Downloads</a>
+      </div>
+    </header>
+
+    <main>
+      <section class="section">
+        <div class="page-hero reveal is-visible">
+          <div class="page-hero-copy">
+            <div class="eyebrow">Research</div>
+            <h1>Live public notes from the product team.</h1>
+            <p>Published directly from the admin research flow.</p>
+          </div>
+          <div class="page-hero-side">
+            <div class="meta-chip">Source: <code>/api/researches</code></div>
+            <div class="meta-chip">Live feed</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="content-shell">
+          <div id="researchStatus" class="page-status">Loading published research...</div>
+          <div id="researchList" class="research-feed hidden"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-brand">
+        <a class="site-brand" href="/">
+          <img src="./logo.svg" alt="Sylica AI logo" />
+          <span class="site-brand-copy">
+            <span class="site-brand-title">Sylica AI</span>
+            <span class="site-brand-subtitle">Research feed</span>
+          </span>
+        </a>
+        <p>Short public research, rollout notes, and implementation studies.</p>
+      </div>
+      <div class="footer-column">
+        <strong>Read</strong>
+        <a href="/blogs/">Blogs</a>
+        <a href="/research/">Research</a>
+        <a href="/changelog/">Changelog</a>
+      </div>
+      <div class="footer-column">
+        <strong>Trust</strong>
+        <a href="/security/">Security</a>
+        <a href="/privacy/">Privacy</a>
+        <a href="/terms/">Terms</a>
+      </div>
+      <div class="footer-column">
+        <strong>Product</strong>
+        <a href="/">Homepage</a>
+        <a href="/#pricing">Pricing</a>
+        <a href="/#download">Downloads</a>
+      </div>
+    </footer>
+  </div>
+
+  <script src="./site.js"></script>
+  <script>
+    const researchList = document.getElementById("researchList");
+    const researchStatus = document.getElementById("researchStatus");
+
+    void loadResearches();
+
+    async function loadResearches() {
+      try {
+        const response = await fetch("/api/researches", {
+          headers: { Accept: "application/json" },
+        });
+        const payload = await safeJson(response);
+
+        if (!response.ok) {
+          throw new Error(payload.error || "Failed to load research.");
+        }
+
+        renderResearches(payload.researches || []);
+      } catch (error) {
+        researchStatus.textContent = error.message || "Failed to load research.";
+        researchStatus.classList.add("is-error");
+      }
+    }
+
+    function renderResearches(researches) {
+      if (!researches.length) {
+        researchStatus.textContent = "No research has been published yet.";
+        return;
+      }
+
+      researchStatus.classList.add("hidden");
+      researchList.classList.remove("hidden");
+      researchList.innerHTML = researches
+        .map((research) => {
+          const author = research.authorName || "Sylica AI Research";
+          return `
+            <article class="feed-card research-entry">
+              <div class="research-entry-header">
+                <div>
+                  <div class="timeline-meta">${escapeHtml(formatDate(research.publishedAt))} · ${escapeHtml(author)}</div>
+                  <h3>${escapeHtml(research.title)}</h3>
+                </div>
+                <a class="button button-secondary small" href="#${escapeHtml(research.slug)}">Open</a>
+              </div>
+              <p class="research-summary">${escapeHtml(research.summary)}</p>
+              <div class="research-body" id="${escapeHtml(research.slug)}">${renderParagraphs(research.content)}</div>
+            </article>
+          `;
+        })
+        .join("");
+    }
+
+    async function safeJson(response) {
+      const text = await response.text();
+      return text ? JSON.parse(text) : {};
+    }
+
+    function renderParagraphs(value) {
+      return String(value || "")
+        .replace(/\r\n/g, "\n")
+        .split(/\n{2,}/)
+        .map((paragraph) => paragraph.trim())
+        .filter(Boolean)
+        .map((paragraph) => `<p>${escapeHtml(paragraph).replaceAll("\n", "<br />")}</p>`)
+        .join("");
+    }
+
+    function formatDate(value) {
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) {
+        return "Unscheduled";
+      }
+
+      return date.toLocaleDateString(undefined, {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      });
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+  </script>
+</body>
+</html>

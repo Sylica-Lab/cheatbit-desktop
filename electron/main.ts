@@ -1,7 +1,6 @@
 import { app, BrowserWindow, screen, shell, ipcMain, systemPreferences, desktopCapturer } from "electron"
 import path from "path"
 import fs from "fs"
-import { execFileSync } from "child_process"
 import { initializeIpcHandlers } from "./ipcHandlers"
 import { ProcessingHelper } from "./ProcessingHelper"
 import { ScreenshotHelper } from "./ScreenshotHelper"
@@ -11,61 +10,26 @@ import { configHelper } from "./ConfigHelper"
 import { selectScreenRegion } from "./RegionSelectionOverlay"
 import { LiveInterviewHelper } from "./LiveInterviewHelper"
 import { BrowserAgentController } from "./BrowserAgentController"
+import { LocalPhoneRelayController } from "./LocalPhoneRelayController"
 import * as dotenv from "dotenv"
 
 // Constants
 const isDev = process.env.NODE_ENV === "development"
-const APP_NAME = "Sylica AI"
-const APP_ID = "com.sylicaai.desktop"
+const IS_LOCAL_DESKTOP_TEST = process.env.SYLICA_LOCAL_DESKTOP_TEST === "1"
+const APP_NAME = IS_LOCAL_DESKTOP_TEST ? "Sylica AI Local" : "Sylica AI"
+const APP_ID = IS_LOCAL_DESKTOP_TEST
+  ? "com.sylicaai.desktop.local"
+  : "com.sylicaai.desktop"
 const APP_PROTOCOL = "sylica-ai"
 const LEGACY_APP_PROTOCOL = "cheatbit"
-const APP_DATA_DIRECTORY = "sylica-ai"
+const APP_DATA_DIRECTORY = IS_LOCAL_DESKTOP_TEST
+  ? "sylica-ai-local"
+  : "sylica-ai"
 const LEGACY_APP_DATA_DIRECTORY = "cheatbit"
 const SHOW_UNINSTALL_OFFBOARDING_EVENT = "show-uninstall-offboarding"
 
-function detectWindowsOpaqueFallback(): boolean {
-  if (process.platform !== "win32") {
-    return false
-  }
-
-  try {
-    const output = execFileSync(
-      "powershell.exe",
-      [
-        "-NoProfile",
-        "-Command",
-        "(Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name) -join \"`n\"",
-      ],
-      {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-        timeout: 3000,
-        windowsHide: true,
-      }
-    ).toLowerCase()
-
-    const fallbackPatterns = [
-      "microsoft basic render",
-      "microsoft basic display",
-      "virtualbox",
-      "vmware",
-      "parallels",
-      "remote display",
-      "hyper-v",
-      "citrix",
-      "virtio",
-      "qxl",
-    ]
-
-    return fallbackPatterns.some((pattern) => output.includes(pattern))
-  } catch {
-    return false
-  }
-}
-
 const shouldUseWindowsOpaqueFallback =
-  process.env.SYLICA_FORCE_OPAQUE_WINDOW === "1" ||
-  detectWindowsOpaqueFallback()
+  process.env.SYLICA_FORCE_OPAQUE_WINDOW === "1"
 
 app.setName(APP_NAME)
 if (process.platform === "win32") {
@@ -117,6 +81,7 @@ configureAppPaths()
 const state = {
   // Window management properties
   mainWindow: null as BrowserWindow | null,
+  phoneRelayWindow: null as BrowserWindow | null,
   isWindowVisible: false,
   windowPosition: null as { x: number; y: number } | null,
   windowSize: null as { width: number; height: number } | null,
@@ -132,6 +97,7 @@ const state = {
   processingHelper: null as ProcessingHelper | null,
   liveInterviewHelper: null as LiveInterviewHelper | null,
   browserAgentController: null as BrowserAgentController | null,
+  localPhoneRelayController: null as LocalPhoneRelayController | null,
   pendingUninstallOffboarding: false,
 
   // View and state management
@@ -199,6 +165,7 @@ export interface IShortcutsHelperDeps {
 
 export interface IIpcHandlerDeps {
   getMainWindow: () => BrowserWindow | null
+  openPhoneRelayWindow: () => Promise<void>
   setWindowDimensions: (width: number, height: number) => void
   requestMicrophoneAccess: () => Promise<{
     granted: boolean
@@ -214,6 +181,7 @@ export interface IIpcHandlerDeps {
   processingHelper: ProcessingHelper | null
   liveInterviewHelper: LiveInterviewHelper | null
   browserAgentController: BrowserAgentController | null
+  localPhoneRelayController: LocalPhoneRelayController | null
   PROCESSING_EVENTS: typeof state.PROCESSING_EVENTS
   takeScreenshot: () => Promise<string>
   takeRegionScreenshot: () => Promise<string>
@@ -283,6 +251,7 @@ function initializeHelpers() {
   state.browserAgentController = new BrowserAgentController({
     getMainWindow,
   })
+  state.localPhoneRelayController = new LocalPhoneRelayController(APP_NAME)
 }
 
 function getConfiguredVisibleOpacity(): number {
@@ -779,6 +748,84 @@ async function createWindow(): Promise<void> {
   }, 1500)
 }
 
+function getRendererUrl(query?: Record<string, string>): string {
+  const queryString =
+    query && Object.keys(query).length > 0
+      ? `?${new URLSearchParams(query).toString()}`
+      : ""
+
+  if (isDev) {
+    return `http://localhost:54321/${queryString}`
+  }
+
+  return queryString
+}
+
+async function loadRendererWindow(
+  window: BrowserWindow,
+  query?: Record<string, string>
+): Promise<void> {
+  if (isDev) {
+    await window.loadURL(getRendererUrl(query))
+    return
+  }
+
+  const indexPath = path.join(__dirname, "../dist/index.html")
+  if (!fs.existsSync(indexPath)) {
+    throw new Error("Could not find index.html in dist folder")
+  }
+
+  await window.loadFile(indexPath, { query })
+}
+
+async function createPhoneRelayWindow(): Promise<void> {
+  if (state.phoneRelayWindow && !state.phoneRelayWindow.isDestroyed()) {
+    state.phoneRelayWindow.show()
+    state.phoneRelayWindow.focus()
+    return
+  }
+
+  await state.localPhoneRelayController?.ensureStarted()
+
+  const window = new BrowserWindow({
+    width: 560,
+    height: 760,
+    minWidth: 500,
+    minHeight: 620,
+    autoHideMenuBar: true,
+    title: "Sylica AI Relay Manager",
+    show: false,
+    frame: true,
+    backgroundColor: "#edf7ff",
+    icon: resolveWindowIconPath(),
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: isDev
+        ? path.join(__dirname, "../dist-electron/preload.js")
+        : path.join(__dirname, "preload.js"),
+      scrollBounce: true,
+    },
+  })
+
+  state.phoneRelayWindow = window
+
+  window.webContents.on("did-finish-load", () => {
+    window.show()
+  })
+
+  window.on("closed", () => {
+    state.phoneRelayWindow = null
+  })
+
+  try {
+    await loadRendererWindow(window, { phoneRelay: "1" })
+  } catch (error) {
+    console.error("Failed to load phone relay window:", error)
+    window.close()
+  }
+}
+
 function handleWindowMove(): void {
   if (!state.mainWindow) return
   const bounds = state.mainWindow.getBounds()
@@ -796,7 +843,9 @@ function handleWindowResize(): void {
 function handleWindowClosed(): void {
   state.liveInterviewHelper?.shutdown()
   state.browserAgentController?.shutdown()
+  state.localPhoneRelayController?.shutdown()
   state.mainWindow = null
+  state.phoneRelayWindow = null
   state.isWindowVisible = false
   state.windowPosition = null
   state.windowSize = null
@@ -956,6 +1005,7 @@ async function initializeApp() {
     initializeHelpers()
     initializeIpcHandlers({
       getMainWindow,
+      openPhoneRelayWindow: createPhoneRelayWindow,
       setWindowDimensions,
       requestMicrophoneAccess,
       getScreenshotQueue,
@@ -965,6 +1015,7 @@ async function initializeApp() {
       processingHelper: state.processingHelper,
       liveInterviewHelper: state.liveInterviewHelper,
       browserAgentController: state.browserAgentController,
+      localPhoneRelayController: state.localPhoneRelayController,
       PROCESSING_EVENTS: state.PROCESSING_EVENTS,
       takeScreenshot,
       takeRegionScreenshot,
@@ -1053,9 +1104,11 @@ app.on("open-url", (event, url) => {
 app.on("window-all-closed", () => {
   state.liveInterviewHelper?.shutdown()
   state.browserAgentController?.shutdown()
+  state.localPhoneRelayController?.shutdown()
   if (process.platform !== "darwin") {
     app.quit()
     state.mainWindow = null
+    state.phoneRelayWindow = null
   }
 })
 
@@ -1068,6 +1121,7 @@ app.on("activate", () => {
 app.on("before-quit", () => {
   state.liveInterviewHelper?.shutdown()
   state.browserAgentController?.shutdown()
+  state.localPhoneRelayController?.shutdown()
 })
 
 // State getter/setter functions

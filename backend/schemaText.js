@@ -102,6 +102,65 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS phone_pairing_sessions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+  pairing_token_hash TEXT NOT NULL UNIQUE,
+  desktop_device_name TEXT NOT NULL,
+  mobile_device_name TEXT,
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'paired', 'revoked', 'expired')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  paired_at TIMESTAMPTZ,
+  last_seen_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS phone_relay_events (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+  pairing_id TEXT NOT NULL REFERENCES phone_pairing_sessions(id) ON DELETE CASCADE,
+  source TEXT NOT NULL CHECK (source IN ('mobile', 'desktop')),
+  event_type TEXT NOT NULL CHECK (event_type IN ('clipboard', 'otp', 'link', 'note')),
+  payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS research_posts (
+  id TEXT PRIMARY KEY,
+  slug TEXT NOT NULL UNIQUE,
+  title TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  content TEXT NOT NULL,
+  author_name TEXT,
+  created_by_admin_id TEXT REFERENCES admin_users(id) ON DELETE SET NULL,
+  published_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS user_integrations (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL
+    CHECK (provider IN ('google', 'notion')),
+  status TEXT NOT NULL DEFAULT 'connected'
+    CHECK (status IN ('connected', 'error', 'revoked')),
+  access_token_encrypted TEXT NOT NULL,
+  refresh_token_encrypted TEXT,
+  token_type TEXT,
+  scopes TEXT NOT NULL DEFAULT '',
+  access_token_expires_at TIMESTAMPTZ,
+  external_account_id TEXT,
+  external_account_email TEXT,
+  external_account_name TEXT,
+  metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_used_at TIMESTAMPTZ
+);
+
 CREATE INDEX IF NOT EXISTS idx_app_users_email ON app_users(email);
 CREATE INDEX IF NOT EXISTS idx_admin_users_email ON admin_users(email);
 CREATE INDEX IF NOT EXISTS idx_usage_events_user_created_at
@@ -120,4 +179,16 @@ CREATE INDEX IF NOT EXISTS idx_chat_threads_user_last_message_at
   ON chat_threads(user_id, last_message_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_created_at
   ON chat_messages(thread_id, created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_phone_pairing_sessions_user_status
+  ON phone_pairing_sessions(user_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_phone_relay_events_pairing_created_at
+  ON phone_relay_events(pairing_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_phone_relay_events_user_created_at
+  ON phone_relay_events(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_research_posts_published_at
+  ON research_posts(published_at DESC, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_integrations_user_provider
+  ON user_integrations(user_id, provider);
+CREATE INDEX IF NOT EXISTS idx_user_integrations_user_updated_at
+  ON user_integrations(user_id, updated_at DESC);
 `;

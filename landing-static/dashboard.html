@@ -14,8 +14,8 @@
           <p class="eyebrow">Sylica AI Backend</p>
           <h1>Admin Dashboard</h1>
           <p class="hero-copy">
-            Monitor authentication, subscriptions, request volume, and account-level
-            rate limits from one place.
+            Monitor authentication, subscriptions, request volume, and publish public
+            research updates from one place.
           </p>
         </div>
         <button id="refreshButton" class="secondary-button hidden" type="button">
@@ -55,53 +55,152 @@
       </section>
 
       <section id="dashboardPanel" class="hidden">
-        <section class="stats-grid" id="statsGrid"></section>
+        <nav class="tab-bar" aria-label="Admin sections">
+          <button
+            class="tab-button is-active"
+            type="button"
+            data-tab-button="overview"
+          >
+            Overview
+          </button>
+          <button class="tab-button" type="button" data-tab-button="research">
+            Research
+          </button>
+        </nav>
 
-        <section class="split-layout">
-          <div class="panel">
+        <section id="tabPanelOverview" class="tab-panel" data-tab-panel="overview">
+          <section class="stats-grid" id="statsGrid"></section>
+
+          <section class="split-layout">
+            <div class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="section-label">Subscriptions</p>
+                  <h2>Distribution</h2>
+                </div>
+              </div>
+              <div id="subscriptionBreakdown" class="breakdown-grid"></div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="section-label">Events</p>
+                  <h2>Recent Usage</h2>
+                </div>
+              </div>
+              <div id="eventFeed" class="event-feed"></div>
+            </div>
+          </section>
+
+          <section class="panel">
             <div class="panel-heading">
               <div>
-                <p class="section-label">Subscriptions</p>
-                <h2>Distribution</h2>
+                <p class="section-label">Accounts</p>
+                <h2>User Controls</h2>
               </div>
+              <p class="muted">Adjust plans, statuses, and per-user request limits.</p>
             </div>
-            <div id="subscriptionBreakdown" class="breakdown-grid"></div>
-          </div>
-
-          <div class="panel">
-            <div class="panel-heading">
-              <div>
-                <p class="section-label">Events</p>
-                <h2>Recent Usage</h2>
-              </div>
+            <div class="table-wrap">
+              <table class="users-table">
+                <thead>
+                  <tr>
+                    <th>User</th>
+                    <th>Subscription</th>
+                    <th>Usage Today</th>
+                    <th>Limits</th>
+                    <th>Last Login</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="usersTableBody"></tbody>
+              </table>
             </div>
-            <div id="eventFeed" class="event-feed"></div>
-          </div>
+          </section>
         </section>
 
-        <section class="panel">
-          <div class="panel-heading">
-            <div>
-              <p class="section-label">Accounts</p>
-              <h2>User Controls</h2>
-            </div>
-            <p class="muted">Adjust plans, statuses, and per-user request limits.</p>
-          </div>
-          <div class="table-wrap">
-            <table class="users-table">
-              <thead>
-                <tr>
-                  <th>User</th>
-                  <th>Subscription</th>
-                  <th>Usage Today</th>
-                  <th>Limits</th>
-                  <th>Last Login</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody id="usersTableBody"></tbody>
-            </table>
-          </div>
+        <section
+          id="tabPanelResearch"
+          class="tab-panel hidden"
+          data-tab-panel="research"
+        >
+          <section class="research-layout">
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="section-label">Publishing</p>
+                  <h2>Publish Research</h2>
+                </div>
+                <p class="muted">
+                  New entries go live immediately on <a href="/research/">/research/</a>.
+                </p>
+              </div>
+
+              <form id="researchForm" class="research-form">
+                <label class="research-field research-field-wide">
+                  <span>Title</span>
+                  <input
+                    name="title"
+                    type="text"
+                    maxlength="180"
+                    placeholder="Example: Off-chain and on-chain relay reliability study"
+                    required
+                  />
+                </label>
+
+                <label class="research-field">
+                  <span>Author</span>
+                  <input
+                    name="authorName"
+                    type="text"
+                    maxlength="100"
+                    placeholder="Sylica AI Research"
+                  />
+                </label>
+
+                <label class="research-field">
+                  <span>Summary</span>
+                  <textarea
+                    name="summary"
+                    rows="4"
+                    maxlength="420"
+                    placeholder="Short public summary. If left empty, the backend derives one from the body."
+                  ></textarea>
+                </label>
+
+                <label class="research-field research-field-full">
+                  <span>Research Body</span>
+                  <textarea
+                    name="content"
+                    rows="14"
+                    placeholder="Write the full research note, findings, rollout details, or technical explanation."
+                    required
+                  ></textarea>
+                </label>
+
+                <div class="research-form-actions research-field-full">
+                  <p class="helper-text">
+                    Use short paragraphs. The public page renders this as readable research
+                    notes without a separate CMS.
+                  </p>
+                  <button class="primary-button" type="submit">Publish Research</button>
+                </div>
+              </form>
+
+              <p id="researchFormStatus" class="form-status hidden"></p>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="section-label">Published</p>
+                  <h2>Live Research</h2>
+                </div>
+                <p id="researchCount" class="muted">0 published</p>
+              </div>
+              <div id="researchList" class="research-list"></div>
+            </section>
+          </section>
         </section>
       </section>
     </main>

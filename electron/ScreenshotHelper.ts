@@ -156,15 +156,15 @@ export class ScreenshotHelper {
   }
 
   private getHideDelay(): number {
-    return process.platform === "win32" ? 220 : 140;
+    return process.platform === "win32" ? 120 : 90;
   }
 
   private getRestoreDelay(): number {
-    return process.platform === "win32" ? 90 : 60;
+    return process.platform === "win32" ? 45 : 35;
   }
 
   private getEarlyRestoreDelay(): number {
-    return process.platform === "win32" ? 80 : 0;
+    return process.platform === "win32" ? 20 : 0;
   }
 
   private getOrderedCaptureDisplays(displays: Array<Record<string, any>>) {

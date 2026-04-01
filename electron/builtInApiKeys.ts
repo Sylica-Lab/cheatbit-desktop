@@ -6,7 +6,7 @@ export const BUILT_IN_API_KEYS: Record<ApiProvider, string> = {
   openai: "",
   gemini: "",
   anthropic: "",
-  together: "tgp_v1_JRv_8uhaM0eIEVjfh0NeapgsPToxrlNxkAlr1rKkQCw"
+  together: "tgp_v1_DKrAI03e9T8MqQ4CzQpL99VJsZje4eq7dMGoe0sDKDU"
 }
 
 export function getBuiltInApiKey(provider: ApiProvider): string {

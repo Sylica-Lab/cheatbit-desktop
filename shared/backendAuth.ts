@@ -1,3 +1,5 @@
+import type { ConnectedAppIntegration } from "./integrations";
+
 export type SubscriptionPlan = "free" | "pro" | "enterprise";
 
 export type SubscriptionStatus =
@@ -103,6 +105,7 @@ export interface UserDashboardData {
   user: AuthenticatedUser;
   usage: UsageSnapshot;
   billing: BillingSummary;
+  integrations: ConnectedAppIntegration[];
   recentEvents: UsageEventSummary[];
   dailyActivity: DailyActivityPoint[];
 }
