@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Install Sylica AI on macOS</title>
+  <meta
+    name="description"
+    content="Step-by-step instructions to install Sylica AI on macOS, including the first-launch right-click open step for unsigned builds."
+  />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta property="og:title" content="Install Sylica AI on macOS" />
+  <meta
+    property="og:description"
+    content="Download Sylica AI for Apple Silicon or Intel Macs and complete the first-launch open step."
+  />
+  <meta property="og:image" content="./logo.svg" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <link rel="icon" href="./logo.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="./logo.svg" />
+  <link rel="stylesheet" href="./site-pages.css" />
+</head>
+<body>
+  <div class="site-shell">
+    <header class="site-header">
+      <a class="site-brand" href="/">
+        <img src="./logo.svg" alt="Sylica AI logo" />
+        <span class="site-brand-copy">
+          <span class="site-brand-title">Sylica AI</span>
+          <span class="site-brand-subtitle">Desktop-first assistant</span>
+        </span>
+      </a>
+
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav" data-menu-toggle>
+        <span class="menu-toggle-line"></span>
+      </button>
+
+      <nav class="site-nav" id="site-nav" data-site-nav>
+        <a href="/">Home</a>
+        <a href="/blogs/">Blogs</a>
+        <a href="/research/">Research</a>
+        <a href="/changelog/">Changelog</a>
+        <a href="/security/">Security</a>
+        <a href="/privacy/">Privacy</a>
+        <a href="/terms/">Terms</a>
+      </nav>
+
+      <div class="site-actions">
+        <a class="button button-secondary small" href="/#download">Downloads</a>
+      </div>
+    </header>
+
+    <main>
+      <section class="section">
+        <div class="policy-shell">
+          <div class="policy-head reveal is-visible">
+            <div class="eyebrow">Install on macOS</div>
+            <h1>Get Sylica AI running on your Mac in under a minute.</h1>
+            <p>Pick the right download for your Mac, then complete a one-time first-launch step.</p>
+          </div>
+
+          <div class="policy-card reveal">
+            <article class="policy-article">
+              <div>
+                <h2>1. Choose your download</h2>
+                <p>Not sure which one you have? Click the Apple menu in the top-left corner of your Mac, then <strong>About This Mac</strong>. If you see "Apple M1", "M2", "M3", or "M4", pick Apple Silicon. If you see "Intel", pick Intel.</p>
+                <ul>
+                  <li><a href="https://github.com/Sylica-Lab/cheatbit-desktop/releases/latest/download/Sylica-AI-arm64.dmg"><strong>Apple Silicon (M1 / M2 / M3 / M4)</strong> &mdash; Sylica-AI-arm64.dmg</a></li>
+                  <li><a href="https://github.com/Sylica-Lab/cheatbit-desktop/releases/latest/download/Sylica-AI-x64.dmg"><strong>Intel Macs</strong> &mdash; Sylica-AI-x64.dmg</a></li>
+                </ul>
+              </div>
+
+              <div class="section-divider"></div>
+
+              <div>
+                <h2>2. Install the app</h2>
+                <ol>
+                  <li>Double-click the downloaded <code>.dmg</code> file.</li>
+                  <li>Drag the <strong>Sylica AI</strong> icon onto the <strong>Applications</strong> folder shortcut in the window that opens.</li>
+                  <li>Eject the DMG from your Desktop or Finder sidebar when the copy finishes.</li>
+                </ol>
+              </div>
+
+              <div class="section-divider"></div>
+
+              <div>
+                <h2>3. First launch &mdash; one-time security approval</h2>
+                <p>Because this build is not yet signed with an Apple Developer ID, macOS Gatekeeper requires a one-time approval the first time you open Sylica AI.</p>
+                <p><strong>If you double-click Sylica AI and see a dialog saying <em>"Apple cannot check it for malicious software"</em>:</strong></p>
+                <ol>
+                  <li>Close the dialog.</li>
+                  <li>Open <strong>Applications</strong> in Finder.</li>
+                  <li><strong>Right-click</strong> (or Control-click) the <strong>Sylica AI</strong> icon.</li>
+                  <li>Choose <strong>Open</strong> from the menu.</li>
+                  <li>In the new dialog that appears, click <strong>Open</strong> again.</li>
+                </ol>
+                <p>That's it. From the second launch onward you can double-click normally &mdash; macOS remembers your approval.</p>
+                <p><strong>If macOS 15 (Sequoia) doesn't show an Open button</strong>, the dialog only offers <em>Done</em>. In that case:</p>
+                <ol>
+                  <li>Click <strong>Done</strong> to dismiss it.</li>
+                  <li>Open <strong>System Settings &rarr; Privacy &amp; Security</strong>.</li>
+                  <li>Scroll to the <strong>Security</strong> section near the bottom.</li>
+                  <li>Click <strong>Open Anyway</strong> next to the Sylica AI notice.</li>
+                </ol>
+              </div>
+
+              <div class="section-divider"></div>
+
+              <div>
+                <h2>Troubleshooting</h2>
+                <ul>
+                  <li><strong>"App is damaged and can't be opened"</strong> &mdash; this is the Gatekeeper quarantine flag. Open the Terminal app and run <code>xattr -cr /Applications/Sylica\ AI.app</code>, then try again.</li>
+                  <li><strong>App opens but quits immediately</strong> &mdash; make sure you downloaded the right architecture for your Mac (Apple Silicon vs Intel above).</li>
+                  <li><strong>Microphone, screen recording, or accessibility prompts</strong> &mdash; grant them when asked. Sylica AI needs screen recording to see what you see, microphone for voice mode, and accessibility for global shortcuts. You can manage these any time in <em>System Settings &rarr; Privacy &amp; Security</em>.</li>
+                </ul>
+              </div>
+
+              <div class="section-divider"></div>
+
+              <div>
+                <h2>Coming soon &mdash; signed &amp; notarized builds</h2>
+                <p>We're enrolling in the Apple Developer Program so future Sylica AI releases install with no security prompt. When that lands, the download above stays the same &mdash; macOS will simply trust it automatically.</p>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-brand">
+        <a class="site-brand" href="/">
+          <img src="./logo.svg" alt="Sylica AI logo" />
+          <span class="site-brand-copy">
+            <span class="site-brand-title">Sylica AI</span>
+            <span class="site-brand-subtitle">Install on macOS</span>
+          </span>
+        </a>
+        <p>Right-click open is a one-time step for unsigned builds.</p>
+      </div>
+      <div class="footer-column">
+        <strong>Read</strong>
+        <a href="/blogs/">Blogs</a>
+        <a href="/research/">Research</a>
+        <a href="/changelog/">Changelog</a>
+      </div>
+      <div class="footer-column">
+        <strong>Trust</strong>
+        <a href="/security/">Security</a>
+        <a href="/privacy/">Privacy</a>
+        <a href="/terms/">Terms</a>
+      </div>
+      <div class="footer-column">
+        <strong>Product</strong>
+        <a href="/">Homepage</a>
+        <a href="/#download">Downloads</a>
+      </div>
+    </footer>
+  </div>
+
+  <script src="./site.js"></script>
+</body>
+</html>

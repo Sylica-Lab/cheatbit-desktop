@@ -11,12 +11,8 @@ permissions:
 
 jobs:
   build:
-    name: Build mac ${{ matrix.arch }}
+    name: Build macOS (arm64 + x64)
     runs-on: macos-14
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [arm64, x64]
 
     steps:
       - name: Checkout
@@ -84,18 +80,20 @@ jobs:
             echo "flag=never" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build (unsigned)
+      - name: Build (unsigned, both archs)
         if: steps.secrets.outputs.signed == 'false'
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          npx --no-install electron-builder build --mac --${{ matrix.arch }} \
+          npx --no-install electron-builder build --mac --arm64 --x64 \
+            --publish=${{ steps.publish.outputs.flag }} \
             --config.mac.identity=null \
             --config.mac.notarize=false \
             --config.mac.hardenedRuntime=false \
             --config.mac.gatekeeperAssess=false
 
-      - name: Build (signed + notarized)
+      - name: Build (signed + notarized, both archs)
         if: steps.secrets.outputs.signed == 'true'
         env:
           CSC_LINK: ${{ secrets.MAC_CERT_P12 }}
@@ -105,7 +103,8 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          npx --no-install electron-builder build --mac --${{ matrix.arch }} --publish=${{ steps.publish.outputs.flag }}
+          npx --no-install electron-builder build --mac --arm64 --x64 \
+            --publish=${{ steps.publish.outputs.flag }}
 
       - name: List release artifacts
         run: ls -la release/ || true
@@ -113,7 +112,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Sylica-AI-mac-${{ matrix.arch }}
+          name: Sylica-AI-mac
           path: |
             release/*.dmg
             release/*.zip

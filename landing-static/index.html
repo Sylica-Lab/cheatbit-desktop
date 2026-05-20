@@ -57,6 +57,21 @@
           text-rendering: optimizeLegibility;
         }
 
+        /* macOS first-launch helper link below the hero download buttons */
+        .hero-mac-helper-link {
+          display: inline-block;
+          margin-top: 0.5rem;
+          width: 100%;
+          font-size: 0.8125rem;
+          letter-spacing: 0.01em;
+          color: rgba(255, 255, 255, 0.55);
+          text-decoration: underline;
+          text-underline-offset: 3px;
+        }
+        .hero-mac-helper-link:hover {
+          color: rgba(255, 255, 255, 0.85);
+        }
+
         /* Focus state style for keyboard navigation for the focusable elements */
         *[tabindex]:focus-visible,
         input[type="file"]:focus-visible {
@@ -351,7 +366,41 @@ a,
                       </div>
                     </div>
                     <div class="button-innershadow"></div>
-                  </a><a data-wf--button--variant="contact-button" href="#pricing-section"
+                  </a><a data-wf--button--variant="base"
+                    href="https://github.com/Sylica-Lab/cheatbit-desktop/releases/latest/download/Sylica-AI-arm64.dmg"
+                    class="button w-inline-block" aria-label="Download Sylica AI for Apple Silicon Macs">
+                    <div class="button-inner">
+                      <div class="button-text-wrap">
+                        <div class="button-text">Download for Mac (Apple Silicon)</div>
+                      </div>
+                      <div class="button-icon">
+                        <div class="icon-button w-embed"><svg xmlns="http://www.w3.org/2000/svg" width="100%"
+                            height="100%" viewBox="0 0 16 16" fill="none" preserveAspectRatio="xMidYMid meet"
+                            aria-hidden="true" role="img">
+                            <path d="M11.182 8.5c0-1.86 1.518-2.756 1.586-2.798-.864-1.265-2.208-1.438-2.687-1.46-1.144-.117-2.234.673-2.815.673-.59 0-1.481-.658-2.44-.64C3.582 4.297 2.46 4.99 1.842 6.06c-1.297 2.243-.33 5.554.93 7.376.614.893 1.346 1.892 2.307 1.856.927-.037 1.276-.6 2.396-.6 1.118 0 1.434.6 2.412.582.997-.016 1.626-.91 2.235-1.804.703-1.038.99-2.05 1.008-2.102-.022-.011-1.934-.74-1.948-2.93zM9.473 3.158C9.97 2.554 10.31 1.715 10.218.88c-.715.029-1.58.475-2.094 1.077-.46.534-.862 1.39-.754 2.214.798.061 1.612-.405 2.103-1.013z"
+                              fill="currentColor" />
+                          </svg></div>
+                      </div>
+                    </div>
+                    <div class="button-innershadow"></div>
+                  </a><a data-wf--button--variant="base"
+                    href="https://github.com/Sylica-Lab/cheatbit-desktop/releases/latest/download/Sylica-AI-x64.dmg"
+                    class="button w-inline-block" aria-label="Download Sylica AI for Intel Macs">
+                    <div class="button-inner">
+                      <div class="button-text-wrap">
+                        <div class="button-text">Download for Mac (Intel)</div>
+                      </div>
+                      <div class="button-icon">
+                        <div class="icon-button w-embed"><svg xmlns="http://www.w3.org/2000/svg" width="100%"
+                            height="100%" viewBox="0 0 16 16" fill="none" preserveAspectRatio="xMidYMid meet"
+                            aria-hidden="true" role="img">
+                            <path d="M11.182 8.5c0-1.86 1.518-2.756 1.586-2.798-.864-1.265-2.208-1.438-2.687-1.46-1.144-.117-2.234.673-2.815.673-.59 0-1.481-.658-2.44-.64C3.582 4.297 2.46 4.99 1.842 6.06c-1.297 2.243-.33 5.554.93 7.376.614.893 1.346 1.892 2.307 1.856.927-.037 1.276-.6 2.396-.6 1.118 0 1.434.6 2.412.582.997-.016 1.626-.91 2.235-1.804.703-1.038.99-2.05 1.008-2.102-.022-.011-1.934-.74-1.948-2.93zM9.473 3.158C9.97 2.554 10.31 1.715 10.218.88c-.715.029-1.58.475-2.094 1.077-.46.534-.862 1.39-.754 2.214.798.061 1.612-.405 2.103-1.013z"
+                              fill="currentColor" />
+                          </svg></div>
+                      </div>
+                    </div>
+                    <div class="button-innershadow"></div>
+                  </a><a href="/install-mac.html" class="hero-mac-helper-link">First-launch instructions for macOS</a><a data-wf--button--variant="contact-button" href="#pricing-section"
                     class="button w-variant-9943b888-52fe-aefa-9593-d1e9001eb671 w-inline-block">
                     <div class="button-inner w-variant-9943b888-52fe-aefa-9593-d1e9001eb671">
                       <div class="button-contact-avt w-variant-9943b888-52fe-aefa-9593-d1e9001eb671"><img loading="lazy"
