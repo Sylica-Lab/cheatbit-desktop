@@ -1,4 +1,15 @@
-export type ApiProvider = "openai" | "gemini" | "anthropic" | "together";
+﻿export type ApiProvider = "openai" | "gemini" | "anthropic" | "together";
+export const DEFAULT_WIDGET_SCALE = 1.0;
+export const MIN_WIDGET_SCALE = 0.5;
+export const MAX_WIDGET_SCALE = 2.0;
+
+export function normalizeWidgetScale(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_WIDGET_SCALE;
+  }
+  return Math.max(MIN_WIDGET_SCALE, Math.min(MAX_WIDGET_SCALE, value));
+}
+
 
 export type ModelCategoryKey =
   | "extractionModel"

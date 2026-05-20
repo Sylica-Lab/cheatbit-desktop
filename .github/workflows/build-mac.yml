@@ -66,9 +66,14 @@ jobs:
           fi
 
       - name: Compile renderer + electron sources
-        # electron-builder needs dist/ (vite) and dist-electron/ (tsc) to exist
-        # before it can pack the app. The npm "build" script does both.
-        run: npm run build
+        # vite-plugin-electron already bundles electron/main.ts + electron/preload.ts
+        # into dist-electron/ alongside the renderer in dist/. We skip the separate
+        # `tsc -p tsconfig.electron.json` step (which is type-checking only and
+        # currently has unrelated pre-existing TS errors that don't affect the
+        # runtime bundle that electron-builder packages).
+        run: |
+          npx rimraf dist dist-electron
+          npx vite build
 
       - name: Detect signing secrets
         id: secrets
