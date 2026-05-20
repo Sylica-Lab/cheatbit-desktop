@@ -23,3 +23,11 @@ scripts/
 scripts/manual-notarize.js
 # Windows reserved device name — cannot be staged by Git
 /nul
+
+# Bundled JDK / large build toolchains — must never be committed (GitHub 100MB limit).
+mobile/jdk-win/
+mobile/jdk*-portable.zip
+mobile/jdk*-portable.tar.gz
+mobile/jdk*.zip
+mobile/tmp-jdk*.zip
+
