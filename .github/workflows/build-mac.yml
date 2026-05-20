@@ -1,0 +1,131 @@
+name: Build macOS
+
+on:
+  # Run on demand from the Actions tab.
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Publish to GitHub Releases (requires a tag-style version bump first)"
+        required: false
+        default: "false"
+  # Auto-publish a release for every v*.*.* tag.
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.arch }})
+    # macos-14 is Apple Silicon — supports both arm64 and x64 cross-targets.
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Python (for native module rebuilds)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install librsvg (for SVG → PNG icon conversion)
+        run: brew install librsvg
+
+      - name: Generate macOS .icns icon from SVG
+        run: |
+          mkdir -p assets/icons/mac
+          # Skip regeneration if a tracked icon already exists.
+          if [ -f assets/icons/mac/icon.icns ]; then
+            echo "icon.icns already present — skipping generation"
+            exit 0
+          fi
+
+          ICONSET=assets/icons/mac/icon.iconset
+          mkdir -p "$ICONSET"
+          for size in 16 32 64 128 256 512 1024; do
+            rsvg-convert -w $size -h $size assets/icons/logo.svg \
+              -o "$ICONSET/icon_${size}x${size}.png"
+          done
+          # Apple convention: also include @2x variants.
+          cp "$ICONSET/icon_32x32.png"    "$ICONSET/icon_16x16@2x.png"
+          cp "$ICONSET/icon_64x64.png"    "$ICONSET/icon_32x32@2x.png"
+          cp "$ICONSET/icon_256x256.png"  "$ICONSET/icon_128x128@2x.png"
+          cp "$ICONSET/icon_512x512.png"  "$ICONSET/icon_256x256@2x.png"
+          cp "$ICONSET/icon_1024x1024.png" "$ICONSET/icon_512x512@2x.png"
+          iconutil -c icns "$ICONSET" -o assets/icons/mac/icon.icns
+          ls -la assets/icons/mac/
+
+      - name: Install npm dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Detect signing secrets
+        id: secrets
+        env:
+          MAC_CERT_P12: ${{ secrets.MAC_CERT_P12 }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+        run: |
+          if [ -n "$MAC_CERT_P12" ] && [ -n "$APPLE_ID" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            echo "Signing secrets detected — will produce a signed + notarized build."
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "No signing secrets — will produce an unsigned build (run via right-click → Open on the target Mac)."
+          fi
+
+      # ------------- UNSIGNED PATH -------------
+      - name: Build (unsigned)
+        if: steps.secrets.outputs.signed == 'false'
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: |
+          npx --no-install electron-builder build --mac \
+            --${{ matrix.arch }} \
+            --config.mac.identity=null \
+            --config.mac.notarize=false \
+            --config.mac.hardenedRuntime=false \
+            --config.mac.gatekeeperAssess=false
+
+      # ------------- SIGNED + NOTARIZED PATH -------------
+      - name: Build (signed + notarized)
+        if: steps.secrets.outputs.signed == 'true'
+        env:
+          CSC_LINK: ${{ secrets.MAC_CERT_P12 }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_P12_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npx --no-install electron-builder build --mac \
+            --${{ matrix.arch }} \
+            --publish=${{ startsWith(github.ref, 'refs/tags/v') && 'always' || 'never' }}
+
+      - name: List build artifacts
+        run: ls -la release/ || true
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sylica-AI-mac-${{ matrix.arch }}
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.blockmap
+            release/latest-mac*.yml
+          if-no-files-found: warn
+          retention-days: 14
