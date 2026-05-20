@@ -14,7 +14,8 @@ export type UsageAction =
   | "debug"
   | "screenshot"
   | "live_interview"
-  | "computer_use";
+  | "computer_use"
+  | "agent";
 
 export interface UsageRateLimits {
   solveDaily: number;

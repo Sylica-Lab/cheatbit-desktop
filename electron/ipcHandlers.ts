@@ -1280,41 +1280,34 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     }
 
     const directive = String(payload?.directive || "").trim()
-    try {
-      if (directive) {
-        // Push a synthetic user turn so the assistant has something to respond
-        // to (used for greetings and other proactive prompts).
-        session.socket.send(
-          JSON.stringify({
-            type: "conversation.item.create",
-            item: {
-              type: "message",
-              role: "user",
-              content: [
-                {
-                  type: "input_text",
-                  text: directive,
-                },
-              ],
-            },
-          })
-        )
-      }
+    if (directive) {
       session.socket.send(
         JSON.stringify({
-          type: "response.create",
+          type: "conversation.item.create",
+          item: {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: directive,
+              },
+            ],
+          },
         })
       )
-      return { success: true as const }
-    } catch (error) {
-      return {
-        success: false as const,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to request realtime voice response.",
-      }
     }
+
+    session.socket.send(
+      JSON.stringify({
+        type: "response.create",
+        response: {
+          output_modalities: ["audio"],
+        },
+      })
+    )
+
+    return { success: true as const }
   })
 
   ipcMain.handle("voice-realtime:stop", async () => {

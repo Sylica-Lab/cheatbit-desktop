@@ -10,10 +10,14 @@ import {
   type ModelCategoryKey,
   DEFAULT_MODELS,
   DEFAULT_PROVIDER,
+  DEFAULT_WIDGET_SCALE,
+  FIREWORKS_BASE_URL,
   PROVIDER_DISPLAY_NAMES,
+  PROVIDER_ORDER,
   TOGETHER_BASE_URL,
   getDefaultModel,
   isValidProvider,
+  normalizeWidgetScale,
   sanitizeModelSelection,
 } from "../shared/aiConfig"
 import { getBuiltInApiKey } from "./builtInApiKeys"
@@ -22,12 +26,16 @@ export class ConfigHelper extends EventEmitter {
   private configPath: string;
   private defaultConfig: AppConfig = {
     apiKey: "",
+    apiKeys: {},
     apiProvider: DEFAULT_PROVIDER,
     extractionModel: DEFAULT_MODELS[DEFAULT_PROVIDER].extractionModel,
     solutionModel: DEFAULT_MODELS[DEFAULT_PROVIDER].solutionModel,
     debuggingModel: DEFAULT_MODELS[DEFAULT_PROVIDER].debuggingModel,
     language: "python",
-    opacity: 1.0
+    opacity: 1.0,
+    widgetScale: DEFAULT_WIDGET_SCALE,
+    screenRecordingVisible: false,
+    guideCursorEnabled: true
   };
 
   constructor() {
@@ -98,8 +106,16 @@ export class ConfigHelper extends EventEmitter {
       return "anthropic";
     }
 
+    if (trimmedKey.startsWith("fw_")) {
+      return "fireworks";
+    }
+
     if (trimmedKey.startsWith("sk-")) {
       return "openai";
+    }
+
+    if (fallbackProvider === "fireworks") {
+      return "fireworks";
     }
 
     if (fallbackProvider === "together") {
@@ -122,6 +138,8 @@ export class ConfigHelper extends EventEmitter {
   private sanitizeModels(config: AppConfig): AppConfig {
     return {
       ...config,
+      apiKeys: this.sanitizeStoredApiKeys(config.apiKeys),
+      configuredApiProviders: undefined,
       extractionModel: sanitizeModelSelection(
         config.apiProvider,
         "extractionModel",
@@ -137,7 +155,26 @@ export class ConfigHelper extends EventEmitter {
         "debuggingModel",
         config.debuggingModel
       ),
+      widgetScale: normalizeWidgetScale(config.widgetScale),
     };
+  }
+
+  private sanitizeStoredApiKeys(
+    apiKeys: unknown
+  ): Partial<Record<ApiProvider, string>> {
+    if (!apiKeys || typeof apiKeys !== "object" || Array.isArray(apiKeys)) {
+      return {};
+    }
+
+    return Object.entries(apiKeys).reduce<Partial<Record<ApiProvider, string>>>(
+      (result, [provider, key]) => {
+        if (isValidProvider(provider) && typeof key === "string" && key.trim()) {
+          result[provider] = key.trim();
+        }
+        return result;
+      },
+      {}
+    );
   }
 
   private resetCorruptedConfig(rawConfig: string, error: unknown): AppConfig {
@@ -190,11 +227,32 @@ export class ConfigHelper extends EventEmitter {
           ? parsedConfig.apiProvider
           : DEFAULT_PROVIDER;
 
-        return this.sanitizeModels({
+        const storedApiKeys = this.sanitizeStoredApiKeys(parsedConfig.apiKeys);
+        if (typeof parsedConfig.apiKey === "string" && parsedConfig.apiKey.trim()) {
+          storedApiKeys[provider] ||= parsedConfig.apiKey.trim();
+        }
+
+        const mergedConfig: AppConfig = {
           ...this.defaultConfig,
           ...parsedConfig,
           apiProvider: provider,
-        });
+          apiKey: "",
+          apiKeys: storedApiKeys,
+        };
+        const sanitizedConfig = this.sanitizeModels(mergedConfig);
+
+        const shouldPersistSanitizedConfig =
+          sanitizedConfig.extractionModel !== mergedConfig.extractionModel ||
+          sanitizedConfig.solutionModel !== mergedConfig.solutionModel ||
+          sanitizedConfig.debuggingModel !== mergedConfig.debuggingModel ||
+          sanitizedConfig.widgetScale !== mergedConfig.widgetScale ||
+          parsedConfig.configuredApiProviders !== undefined;
+
+        if (shouldPersistSanitizedConfig) {
+          this.saveConfig(sanitizedConfig);
+        }
+
+        return sanitizedConfig;
       }
       
       // If no config exists, create a default one
@@ -208,13 +266,38 @@ export class ConfigHelper extends EventEmitter {
   public getConfiguredApiKey(provider?: ApiProvider): string {
     const config = this.loadConfig()
     const resolvedProvider = provider || config.apiProvider
-    return getBuiltInApiKey(resolvedProvider)
+    const envApiKey = getBuiltInApiKey(resolvedProvider)
+    if (envApiKey) {
+      return envApiKey
+    }
+
+    const storedProviderKey = config.apiKeys?.[resolvedProvider]?.trim()
+    if (storedProviderKey) {
+      return storedProviderKey
+    }
+
+    if (resolvedProvider === config.apiProvider) {
+      return config.apiKey?.trim() || ""
+    }
+
+    return ""
   }
 
   public getPublicConfig(): AppConfig {
+    const config = this.loadConfig()
+    const configuredApiProviders = PROVIDER_ORDER.filter((provider) => {
+      return Boolean(
+        getBuiltInApiKey(provider) ||
+          config.apiKeys?.[provider]?.trim() ||
+          (provider === config.apiProvider && config.apiKey?.trim())
+      )
+    })
+
     return {
-      ...this.loadConfig(),
-      apiKey: ""
+      ...config,
+      apiKey: "",
+      apiKeys: {},
+      configuredApiProviders,
     }
   }
 
@@ -240,10 +323,26 @@ export class ConfigHelper extends EventEmitter {
    */
   public updateConfig(updates: Partial<AppConfig>): AppConfig {
     try {
-      const { apiKey: _ignoredApiKey, ...configUpdates } = updates;
+      const {
+        apiKey: incomingApiKey,
+        apiKeys: _ignoredApiKeys,
+        configuredApiProviders: _ignoredConfiguredApiProviders,
+        ...configUpdates
+      } = updates;
       const currentConfig = this.loadConfig();
       let provider: ApiProvider =
         configUpdates.apiProvider || currentConfig.apiProvider;
+      const nextApiKeys = this.sanitizeStoredApiKeys(currentConfig.apiKeys);
+      const trimmedIncomingApiKey =
+        typeof incomingApiKey === "string" ? incomingApiKey.trim() : "";
+
+      if (trimmedIncomingApiKey) {
+        const keyProvider = this.detectProviderFromApiKey(
+          trimmedIncomingApiKey,
+          provider
+        );
+        nextApiKeys[keyProvider] = trimmedIncomingApiKey;
+      }
       
       // If provider is changing, reset models to the default for that provider
       if (
@@ -284,6 +383,7 @@ export class ConfigHelper extends EventEmitter {
       const newConfig = this.sanitizeModels({
         ...currentConfig,
         ...configUpdates,
+        apiKeys: nextApiKeys,
         apiKey: "",
       });
       this.saveConfig(newConfig);
@@ -295,7 +395,8 @@ export class ConfigHelper extends EventEmitter {
         configUpdates.extractionModel !== undefined ||
         configUpdates.solutionModel !== undefined ||
         configUpdates.debuggingModel !== undefined ||
-        configUpdates.language !== undefined
+        configUpdates.language !== undefined ||
+        trimmedIncomingApiKey.length > 0
       ) {
         this.emit('config-updated', newConfig);
       }
@@ -324,8 +425,10 @@ export class ConfigHelper extends EventEmitter {
     }
     
     if (provider === "openai") {
-      // Basic format validation for OpenAI API keys
-      return /^sk-[a-zA-Z0-9]{32,}$/.test(apiKey.trim());
+      // Supports both legacy sk- keys and newer sk-proj- project keys.
+      return /^sk-[a-zA-Z0-9_-]{20,}$/.test(apiKey.trim());
+    } else if (provider === "fireworks") {
+      return /^fw_[a-zA-Z0-9]{20,}$/.test(apiKey.trim());
     } else if (provider === "gemini") {
       // Basic format validation for Gemini API keys (usually alphanumeric with no specific prefix)
       return apiKey.trim().length >= 10; // Assuming Gemini keys are at least 10 chars
@@ -351,11 +454,41 @@ export class ConfigHelper extends EventEmitter {
    * Set the window opacity value
    */
   public setOpacity(opacity: number): void {
-    // Keep the visible window readable instead of allowing near-transparent values.
-    const validOpacity = Math.min(1.0, Math.max(0.9, opacity));
+    const validOpacity = Math.min(1.0, Math.max(0, opacity));
     this.updateConfig({ opacity: validOpacity });
   }  
   
+  /**
+   * Whether the app window should be visible to screen recordings.
+   * Defaults to false (stealth/invisible) so the app keeps its anti-capture behavior.
+   */
+  public isScreenRecordingVisible(): boolean {
+    const config = this.loadConfig();
+    return config.screenRecordingVisible === true;
+  }
+
+  /**
+   * Set whether the app window should be visible to screen recordings.
+   */
+  public setScreenRecordingVisible(visible: boolean): void {
+    this.updateConfig({ screenRecordingVisible: !!visible });
+  }
+
+  /**
+   * Whether the small AI guide cursor should follow the real cursor.
+   */
+  public isGuideCursorEnabled(): boolean {
+    const config = this.loadConfig();
+    return config.guideCursorEnabled !== false;
+  }
+
+  /**
+   * Set whether the small AI guide cursor should be visible and reactive.
+   */
+  public setGuideCursorEnabled(enabled: boolean): void {
+    this.updateConfig({ guideCursorEnabled: !!enabled });
+  }
+
   /**
    * Get the preferred programming language
    */
@@ -388,6 +521,8 @@ export class ConfigHelper extends EventEmitter {
     
     if (provider === "openai") {
       return this.testOpenAIKey(apiKey);
+    } else if (provider === "fireworks") {
+      return this.testFireworksKey(apiKey);
     } else if (provider === "gemini") {
       return this.testGeminiKey(apiKey);
     } else if (provider === "anthropic") {
@@ -407,6 +542,13 @@ export class ConfigHelper extends EventEmitter {
   }
 
   /**
+   * Test Fireworks API key
+   */
+  private async testFireworksKey(apiKey: string): Promise<{valid: boolean, error?: string}> {
+    return this.testOpenAICompatibleKey(apiKey, "fireworks");
+  }
+
+  /**
    * Test Together AI API key
    */
   private async testTogetherKey(apiKey: string): Promise<{valid: boolean, error?: string}> {
@@ -415,12 +557,17 @@ export class ConfigHelper extends EventEmitter {
 
   private async testOpenAICompatibleKey(
     apiKey: string,
-    provider: "openai" | "together"
+    provider: "openai" | "fireworks" | "together"
   ): Promise<{valid: boolean, error?: string}> {
     try {
       const openai = new OpenAI({
         apiKey,
-        baseURL: provider === "together" ? TOGETHER_BASE_URL : undefined,
+        baseURL:
+          provider === "together"
+            ? TOGETHER_BASE_URL
+            : provider === "fireworks"
+            ? FIREWORKS_BASE_URL
+            : undefined,
       });
       // Make a simple API call to test the key
       await openai.models.list();

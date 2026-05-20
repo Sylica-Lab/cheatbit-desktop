@@ -1,4 +1,5 @@
 import { store } from "./store"
+import { randomUUID } from "node:crypto"
 import type {
   BillingSessionResponse,
   AuthSession,
@@ -26,15 +27,20 @@ import type {
   IntegrationProvider,
 } from "../shared/integrations"
 
-const DEFAULT_BACKEND_URL = "https://cheat.trybookai.com"
+const DEFAULT_BACKEND_URL = "https://api.sylicaai.com"
+const DEFAULT_DASHBOARD_URL = "https://sylicaai.com"
 const BACKEND_URL =
   process.env.SYLICA_AI_BACKEND_URL?.trim() ||
   process.env.CHEATBIT_BACKEND_URL?.trim() ||
   process.env.INTERVIEW_CODER_BACKEND_URL?.trim() ||
   DEFAULT_BACKEND_URL
+const DASHBOARD_URL =
+  process.env.SYLICA_AI_DASHBOARD_URL?.trim() ||
+  DEFAULT_DASHBOARD_URL
 
 interface BackendErrorShape {
-  error?: string
+  error?: string | { message?: string; type?: string }
+  message?: string
 }
 
 interface SessionResponse {
@@ -106,6 +112,10 @@ export class BackendClient {
     return BACKEND_URL
   }
 
+  public getWebLoginUrl(): string {
+    return `${DASHBOARD_URL.replace(/\/+$/, "")}/desktop-login`
+  }
+
   public getStoredSession(): AuthSession | null {
     return store.get("authSession") || null
   }
@@ -163,6 +173,16 @@ export class BackendClient {
     const response = await this.request<SessionResponse>("/api/auth/login", {
       method: "POST",
       body: { email, password },
+    })
+
+    this.setStoredSession(response.session)
+    return response.session
+  }
+
+  public async completeWebLogin(token: string): Promise<AuthSession> {
+    const response = await this.request<SessionResponse>("/api/auth/me", {
+      method: "GET",
+      token,
     })
 
     this.setStoredSession(response.session)
@@ -270,18 +290,25 @@ export class BackendClient {
   ): Promise<ChatThreadSummary[]> {
     const session = this.getStoredSession()
     if (!session?.token) {
-      throw new Error("Please log in before loading chat history.")
+      return this.listLocalChatThreads(mode)
     }
 
-    const response = await this.request<ChatThreadsResponse>(
-      `/api/chat/threads?mode=${encodeURIComponent(mode)}`,
-      {
-        method: "GET",
-        token: session.token,
-      }
-    )
+    try {
+      const response = await this.request<ChatThreadsResponse>(
+        `/api/chat/threads?mode=${encodeURIComponent(mode)}`,
+        {
+          method: "GET",
+          token: session.token,
+        }
+      )
 
-    return response.threads
+      return response.threads
+    } catch (error) {
+      if (this.shouldUseLocalChatFallback(error)) {
+        return this.listLocalChatThreads(mode)
+      }
+      throw error
+    }
   }
 
   public async createChatThread(
@@ -290,16 +317,23 @@ export class BackendClient {
   ): Promise<ChatThreadSummary> {
     const session = this.getStoredSession()
     if (!session?.token) {
-      throw new Error("Please log in before starting a new chat.")
+      return this.createLocalChatThread(mode, title)
     }
 
-    const response = await this.request<ChatThreadResponse>("/api/chat/threads", {
-      method: "POST",
-      token: session.token,
-      body: { mode, title },
-    })
+    try {
+      const response = await this.request<ChatThreadResponse>("/api/chat/threads", {
+        method: "POST",
+        token: session.token,
+        body: { mode, title },
+      })
 
-    return response.thread
+      return response.thread
+    } catch (error) {
+      if (this.shouldUseLocalChatFallback(error)) {
+        return this.createLocalChatThread(mode, title)
+      }
+      throw error
+    }
   }
 
   public async getChatMessages(
@@ -307,16 +341,27 @@ export class BackendClient {
   ): Promise<ChatMessagesResponse> {
     const session = this.getStoredSession()
     if (!session?.token) {
-      throw new Error("Please log in before opening chat history.")
+      return this.getLocalChatMessages(threadId)
     }
 
-    return this.request<ChatMessagesResponse>(
-      `/api/chat/threads/${encodeURIComponent(threadId)}/messages`,
-      {
-        method: "GET",
-        token: session.token,
+    if (this.isLocalChatThreadId(threadId)) {
+      return this.getLocalChatMessages(threadId)
+    }
+
+    try {
+      return await this.request<ChatMessagesResponse>(
+        `/api/chat/threads/${encodeURIComponent(threadId)}/messages`,
+        {
+          method: "GET",
+          token: session.token,
+        }
+      )
+    } catch (error) {
+      if (this.shouldUseLocalChatFallback(error)) {
+        return this.getLocalChatMessages(threadId)
       }
-    )
+      throw error
+    }
   }
 
   public async appendChatMessage(input: {
@@ -326,20 +371,31 @@ export class BackendClient {
   }): Promise<ChatMessageResponse> {
     const session = this.getStoredSession()
     if (!session?.token) {
-      throw new Error("Please log in before sending chat messages.")
+      return this.appendLocalChatMessage(input)
     }
 
-    return this.request<ChatMessageResponse>(
-      `/api/chat/threads/${encodeURIComponent(input.threadId)}/messages`,
-      {
-        method: "POST",
-        token: session.token,
-        body: {
-          role: input.role,
-          content: input.content,
-        },
+    if (this.isLocalChatThreadId(input.threadId)) {
+      return this.appendLocalChatMessage(input)
+    }
+
+    try {
+      return await this.request<ChatMessageResponse>(
+        `/api/chat/threads/${encodeURIComponent(input.threadId)}/messages`,
+        {
+          method: "POST",
+          token: session.token,
+          body: {
+            role: input.role,
+            content: input.content,
+          },
+        }
+      )
+    } catch (error) {
+      if (this.shouldUseLocalChatFallback(error)) {
+        return this.appendLocalChatMessage(input)
       }
-    )
+      throw error
+    }
   }
 
   public async createPhonePairingSession(input?: {
@@ -506,6 +562,148 @@ export class BackendClient {
     store.set("authSession", null)
   }
 
+  private shouldUseLocalChatFallback(error: unknown): boolean {
+    if (!(error instanceof BackendRequestError)) {
+      return false
+    }
+
+    const normalizedMessage = error.message.toLowerCase()
+    return (
+      error.status === undefined ||
+      error.status === 404 ||
+      (error.status === 401 && normalizedMessage.includes("invalid api key"))
+    )
+  }
+
+  private isLocalChatThreadId(threadId: string): boolean {
+    return threadId.startsWith("local-chat-")
+  }
+
+  private getLocalChatUserId(): string {
+    return this.getStoredSession()?.user?.id || "local-user"
+  }
+
+  private normalizeLocalThreadTitle(title?: string): string {
+    const normalized = String(title || "").replace(/\s+/g, " ").trim()
+    if (!normalized) {
+      return "New chat"
+    }
+
+    return normalized.length <= 80
+      ? normalized
+      : `${normalized.slice(0, 77).trimEnd()}...`
+  }
+
+  private listLocalChatThreads(mode: AssistantChatMode): ChatThreadSummary[] {
+    return store
+      .get("localChat")
+      .threads.filter((thread) => thread.mode === mode)
+      .sort((a, b) => {
+        const bTime = Date.parse(b.lastMessageAt || b.updatedAt || b.createdAt || "")
+        const aTime = Date.parse(a.lastMessageAt || a.updatedAt || a.createdAt || "")
+        return (Number.isFinite(bTime) ? bTime : 0) - (Number.isFinite(aTime) ? aTime : 0)
+      })
+  }
+
+  private createLocalChatThread(
+    mode: AssistantChatMode,
+    title?: string
+  ): ChatThreadSummary {
+    const now = new Date().toISOString()
+    const thread: ChatThreadSummary = {
+      id: `local-chat-${randomUUID()}`,
+      userId: this.getLocalChatUserId(),
+      mode,
+      title: this.normalizeLocalThreadTitle(title),
+      preview: "",
+      createdAt: now,
+      updatedAt: now,
+      lastMessageAt: now,
+    }
+    const localChat = store.get("localChat")
+    store.set("localChat", {
+      threads: [thread, ...localChat.threads.filter((entry) => entry.id !== thread.id)],
+      messagesByThreadId: {
+        ...localChat.messagesByThreadId,
+        [thread.id]: [],
+      },
+    })
+    return thread
+  }
+
+  private getLocalChatThread(threadId: string): ChatThreadSummary | null {
+    return (
+      store.get("localChat").threads.find((thread) => thread.id === threadId) || null
+    )
+  }
+
+  private getLocalChatMessages(threadId: string): ChatMessagesResponse {
+    const thread = this.getLocalChatThread(threadId)
+    if (!thread) {
+      throw new Error("Chat thread not found.")
+    }
+
+    return {
+      thread,
+      messages: store.get("localChat").messagesByThreadId[threadId] || [],
+    }
+  }
+
+  private appendLocalChatMessage(input: {
+    threadId: string
+    role: FollowUpRole
+    content: string
+  }): ChatMessageResponse {
+    const localChat = store.get("localChat")
+    const existingThread = localChat.threads.find(
+      (thread) => thread.id === input.threadId
+    )
+    if (!existingThread) {
+      throw new Error("Chat thread not found.")
+    }
+
+    const now = new Date().toISOString()
+    const content = input.content.replace(/\s+$/g, "")
+    const message: PersistedChatMessage = {
+      id: `local-msg-${randomUUID()}`,
+      threadId: existingThread.id,
+      userId: existingThread.userId || this.getLocalChatUserId(),
+      role: input.role,
+      content,
+      createdAt: now,
+    }
+    const previousMessages = localChat.messagesByThreadId[existingThread.id] || []
+    const preview = content.replace(/\s+/g, " ").slice(0, 160)
+    const title =
+      input.role === "user" &&
+      (!existingThread.title || existingThread.title === "New chat")
+        ? this.normalizeLocalThreadTitle(content)
+        : existingThread.title
+    const updatedThread: ChatThreadSummary = {
+      ...existingThread,
+      title,
+      preview,
+      updatedAt: now,
+      lastMessageAt: now,
+    }
+
+    store.set("localChat", {
+      threads: [
+        updatedThread,
+        ...localChat.threads.filter((thread) => thread.id !== existingThread.id),
+      ],
+      messagesByThreadId: {
+        ...localChat.messagesByThreadId,
+        [existingThread.id]: [...previousMessages, message].slice(-300),
+      },
+    })
+
+    return {
+      thread: updatedThread,
+      message,
+    }
+  }
+
   private async request<T>(
     pathname: string,
     options: {
@@ -555,7 +753,7 @@ export class BackendClient {
 
     if (!response.ok) {
       throw new BackendRequestError(
-        (data as BackendErrorShape).error ||
+        this.getBackendErrorMessage(data as BackendErrorShape) ||
           `Backend request failed with status ${response.status}.`,
         response.status
       )
@@ -586,6 +784,27 @@ export class BackendClient {
     }
 
     return "Unexpected backend error."
+  }
+
+  private getBackendErrorMessage(data: BackendErrorShape): string | null {
+    if (typeof data.error === "string" && data.error.trim()) {
+      return data.error
+    }
+
+    if (
+      data.error &&
+      typeof data.error === "object" &&
+      typeof data.error.message === "string" &&
+      data.error.message.trim()
+    ) {
+      return data.error.message
+    }
+
+    if (typeof data.message === "string" && data.message.trim()) {
+      return data.message
+    }
+
+    return null
   }
 }
 

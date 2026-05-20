@@ -1,14 +1,39 @@
 import fs from "node:fs"
 import path from "node:path"
 import { app } from "electron"
-import Store from "electron-store"
 import type { AuthSession } from "../shared/backendAuth"
+import type {
+  ChatThreadSummary,
+  PersistedChatMessage,
+} from "../shared/followUpChat"
+
+interface LocalChatStore {
+  threads: ChatThreadSummary[]
+  messagesByThreadId: Record<string, PersistedChatMessage[]>
+}
 
 interface StoreSchema {
   authSession: AuthSession | null
+  voiceMemory: {
+    summary: string
+    updatedAt: string | null
+  }
+  localChat: LocalChatStore
 }
 
-const STORE_ENCRYPTION_KEY = "your-encryption-key"
+type StoreKey = keyof StoreSchema
+
+const DEFAULT_STORE_STATE: StoreSchema = {
+  authSession: null,
+  voiceMemory: {
+    summary: "",
+    updatedAt: null,
+  },
+  localChat: {
+    threads: [],
+    messagesByThreadId: {},
+  },
+}
 
 function getSylicaAiDataDirectory(): string {
   try {
@@ -42,24 +67,103 @@ function ensureDirectoryExists(directory: string): void {
   }
 }
 
+function normalizeStoreState(value: unknown): StoreSchema {
+  if (!value || typeof value !== "object") {
+    return { ...DEFAULT_STORE_STATE }
+  }
+
+  const parsed = value as Partial<StoreSchema>
+  const localChat =
+    parsed.localChat &&
+    typeof parsed.localChat === "object" &&
+    !Array.isArray(parsed.localChat)
+      ? parsed.localChat
+      : DEFAULT_STORE_STATE.localChat
+
+  return {
+    authSession: parsed.authSession ?? null,
+    voiceMemory: {
+      summary:
+        typeof parsed.voiceMemory?.summary === "string"
+          ? parsed.voiceMemory.summary
+          : "",
+      updatedAt:
+        typeof parsed.voiceMemory?.updatedAt === "string"
+          ? parsed.voiceMemory.updatedAt
+          : null,
+    },
+    localChat: {
+      threads: Array.isArray(localChat.threads)
+        ? localChat.threads.filter((thread): thread is ChatThreadSummary => {
+            return (
+              !!thread &&
+              typeof thread === "object" &&
+              typeof thread.id === "string" &&
+              typeof thread.mode === "string"
+            )
+          })
+        : [],
+      messagesByThreadId:
+        localChat.messagesByThreadId &&
+        typeof localChat.messagesByThreadId === "object" &&
+        !Array.isArray(localChat.messagesByThreadId)
+          ? Object.fromEntries(
+              Object.entries(localChat.messagesByThreadId).map(
+                ([threadId, messages]) => [
+                  threadId,
+                  Array.isArray(messages)
+                    ? messages.filter(
+                        (message): message is PersistedChatMessage =>
+                          !!message &&
+                          typeof message === "object" &&
+                          typeof message.id === "string" &&
+                          typeof message.threadId === "string" &&
+                          typeof message.role === "string" &&
+                          typeof message.content === "string"
+                      )
+                    : [],
+                ]
+              )
+            )
+          : {},
+    },
+  }
+}
+
+function readStoreFile(filePath: string): StoreSchema {
+  if (!fs.existsSync(filePath)) {
+    return { ...DEFAULT_STORE_STATE }
+  }
+
+  try {
+    const raw = fs.readFileSync(filePath, "utf8").trim()
+    if (!raw) {
+      return { ...DEFAULT_STORE_STATE }
+    }
+
+    return normalizeStoreState(JSON.parse(raw))
+  } catch (error) {
+    console.warn(`Failed to read store file at ${filePath}:`, error)
+    return { ...DEFAULT_STORE_STATE }
+  }
+}
+
 const storeDirectory = getSylicaAiDataDirectory()
 ensureDirectoryExists(storeDirectory)
 
-const baseStore = new Store<StoreSchema>({
-  defaults: {
-    authSession: null,
-  },
-  encryptionKey: STORE_ENCRYPTION_KEY,
-  cwd: storeDirectory,
-  name: "session-store",
-}) as Store<StoreSchema> & {
-  store: StoreSchema
-  get: <K extends keyof StoreSchema>(key: K) => StoreSchema[K]
-  set: <K extends keyof StoreSchema>(key: K, value: StoreSchema[K]) => void
+const storeFilePath = path.join(storeDirectory, "session-store.json")
+let storeState: StoreSchema = readStoreFile(storeFilePath)
+
+function writeStoreFile(): void {
+  try {
+    fs.writeFileSync(storeFilePath, JSON.stringify(storeState, null, 2), "utf8")
+  } catch (error) {
+    console.warn("Failed to persist local store:", error)
+  }
 }
 
 function migrateLegacySession(): void {
-  if (baseStore.get("authSession")) {
+  if (storeState.authSession?.token) {
     return
   }
 
@@ -70,20 +174,14 @@ function migrateLegacySession(): void {
   }
 
   try {
-    const legacyStore = new Store<StoreSchema>({
-      defaults: {
-        authSession: null,
-      },
-      encryptionKey: STORE_ENCRYPTION_KEY,
-      cwd: legacyDirectory,
-      name: "config",
-    }) as Store<StoreSchema> & {
-      get: <K extends keyof StoreSchema>(key: K) => StoreSchema[K]
-    }
-
-    const legacySession = legacyStore.get("authSession")
+    const legacyState = readStoreFile(legacyPath)
+    const legacySession = legacyState.authSession
     if (legacySession?.token) {
-      baseStore.set("authSession", legacySession)
+      storeState = {
+        ...storeState,
+        authSession: legacySession,
+      }
+      writeStoreFile()
       console.log("Migrated auth session from legacy Electron store")
     }
   } catch (error) {
@@ -93,4 +191,18 @@ function migrateLegacySession(): void {
 
 migrateLegacySession()
 
-export const store = baseStore
+export const store = {
+  get store(): StoreSchema {
+    return storeState
+  },
+  get<K extends StoreKey>(key: K): StoreSchema[K] {
+    return storeState[key]
+  },
+  set<K extends StoreKey>(key: K, value: StoreSchema[K]): void {
+    storeState = {
+      ...storeState,
+      [key]: value,
+    }
+    writeStoreFile()
+  },
+}

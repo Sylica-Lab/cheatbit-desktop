@@ -3,7 +3,8 @@ export type AssistantChatMode =
   | "follow_up"
   | "general"
   | "live_interview"
-  | "computer_use";
+  | "computer_use"
+  | "agent";
 export type LiveInterviewStatus = "idle" | "starting" | "running" | "stopping";
 export type ComputerUseStatus =
   | "idle"
@@ -25,6 +26,8 @@ export interface TextFollowUpRequest {
   currentContext: string;
   chatHistory?: FollowUpChatTurn[];
   mode?: AssistantChatMode;
+  includeScreenContext?: boolean;
+  voiceMode?: boolean;
 }
 
 export interface TextFollowUpResponse {
@@ -37,6 +40,18 @@ export interface TextFollowUpStreamEvent {
   done: boolean;
   error?: string;
 }
+
+export type VoiceRealtimeEvent =
+  | { type: "ready" }
+  | { type: "session_updated" }
+  | { type: "speech_started" }
+  | { type: "speech_stopped" }
+  | { type: "input_transcript_delta"; delta: string }
+  | { type: "input_transcript"; transcript: string }
+  | { type: "text_delta"; text: string }
+  | { type: "audio_delta"; audio: string }
+  | { type: "response_done" }
+  | { type: "error"; error: string };
 
 export interface FollowUpChatMessage extends FollowUpChatTurn {
   id: string;
@@ -100,6 +115,45 @@ export type BrowserAgentAction =
   | { type: "select_option"; targetId: string; value: string }
   | { type: "upload_file"; targetId: string; filePath: string }
   | { type: "download_file"; targetId: string; suggestedPath?: string }
+  | { type: "system_open"; target: string }
+  | { type: "system_list_dir"; path: string; recursive?: boolean; pattern?: string }
+  | { type: "system_read_file"; path: string; encoding?: "utf8" | "base64" }
+  | {
+      type: "system_write_file"
+      path: string
+      content: string
+      encoding?: "utf8" | "base64"
+      append?: boolean
+    }
+  | { type: "system_delete"; path: string; recursive?: boolean }
+  | { type: "system_copy"; source: string; destination: string; recursive?: boolean; overwrite?: boolean }
+  | { type: "system_move"; source: string; destination: string; overwrite?: boolean }
+  | { type: "system_run_powershell"; command: string; elevated?: boolean; cwd?: string }
+  | { type: "system_run_cmd"; command: string; cwd?: string }
+  | { type: "system_screenshot"; region?: { x: number; y: number; width: number; height: number } }
+  | { type: "system_get_state" }
+  | { type: "exa_search"; query: string; numResults?: number }
+  | { type: "screen_get_info" }
+  | { type: "mouse_move"; x: number; y: number }
+  | {
+      type: "mouse_click"
+      x?: number
+      y?: number
+      button?: "left" | "right" | "middle"
+      double?: boolean
+    }
+  | {
+      type: "mouse_drag"
+      fromX: number
+      fromY: number
+      toX: number
+      toY: number
+      button?: "left" | "right" | "middle"
+    }
+  | { type: "mouse_scroll"; deltaY: number; x?: number; y?: number }
+  | { type: "keyboard_type"; text: string; delayMs?: number }
+  | { type: "keyboard_press"; keys: string }
+  | { type: "narrate"; message: string }
   | { type: "wait_for"; targetId?: string; timeoutMs?: number }
   | { type: "extract"; targetId?: string; question?: string }
   | { type: "finish"; result: string }
