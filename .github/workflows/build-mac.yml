@@ -66,14 +66,13 @@ jobs:
           fi
 
       - name: Compile renderer + electron sources
-        # vite-plugin-electron already bundles electron/main.ts + electron/preload.ts
-        # into dist-electron/ alongside the renderer in dist/. We skip the separate
-        # `tsc -p tsconfig.electron.json` step (which is type-checking only and
-        # currently has unrelated pre-existing TS errors that don't affect the
-        # runtime bundle that electron-builder packages).
+        # The package entry points at dist-electron/electron/main.js. Vite emits
+        # a renderer bundle plus temporary Electron chunks, then tsc writes the
+        # final Electron main/preload files that electron-builder packages.
         run: |
           npx rimraf dist dist-electron
           npx vite build
+          npx tsc -p tsconfig.electron.json
 
       - name: Detect signing secrets
         id: secrets
