@@ -57,6 +57,19 @@ jobs:
       - name: Install npm dependencies
         run: npm ci --no-audit --no-fund
 
+      - name: Create empty .env for extraResources
+        # package.json declares `.env` as an extraResource. CI has no .env, so we
+        # write an empty one to keep electron-builder from complaining at pack time.
+        run: |
+          if [ ! -f .env ]; then
+            touch .env
+          fi
+
+      - name: Compile renderer + electron sources
+        # electron-builder needs dist/ (vite) and dist-electron/ (tsc) to exist
+        # before it can pack the app. The npm "build" script does both.
+        run: npm run build
+
       - name: Detect signing secrets
         id: secrets
         env:
