@@ -1,18 +1,24 @@
-import React, { useEffect, useState } from "react"
+import React, { useEffect, useState, type CSSProperties } from "react"
 import {
-  Computer,
+  Brain,
   Focus,
   LayoutDashboard,
-  Radio,
-  ScanSearch,
-  Smartphone,
+  Mic2,
+  MousePointer2,
+  Sparkles,
 } from "lucide-react"
 import type { ComputerUseState } from "../../../shared/followUpChat"
 import type { DesktopUpdateState } from "../../../shared/desktopUpdates"
+import type { AgentState } from "../../../shared/agent"
 import { useToast } from "../../contexts/toast"
 import { COMMAND_KEY } from "../../utils/platform"
 import { CheatbitMark } from "../Brand/CheatbitMark"
 import InlineUpdateButton from "../Updates/InlineUpdateButton"
+import {
+  isRealtimeVoiceCurrentlyActive,
+  isRealtimeVoiceCurrentlyHearing,
+  isRealtimeVoiceCurrentlySpeaking,
+} from "../Chat/AssistantChat"
 
 function isComputerTaskActive(status: ComputerUseState["status"]): boolean {
   return (
@@ -24,16 +30,18 @@ function isComputerTaskActive(status: ComputerUseState["status"]): boolean {
 }
 
 interface QueueCommandsProps {
-  activeMode: "analyze" | "chat"
-  onModeChange: (mode: "analyze" | "chat") => void
+  activeMode: "analyze" | "voice" | "live" | "agent"
+  onOpenAnalyzeMode: () => void
+  onOpenAgentMode: () => void
+  onOpenVoiceMode?: () => void
   onTooltipVisibilityChange: (visible: boolean, height: number) => void
   screenshotCount?: number
   credits: number
   desktopUpdateState: DesktopUpdateState
   isMinimized: boolean
   onToggleMinimized: () => void
-  modeSwitchLocked?: boolean
   computerUseState: ComputerUseState
+  agentState: AgentState
   onDownloadUpdate: () => Promise<{ success: true } | { success: false; error: string }>
   onInstallUpdate: () => Promise<{ success: true } | { success: false; error: string }>
   onStartComputerTask: (task: string) => Promise<void> | void
@@ -44,56 +52,92 @@ interface QueueCommandsProps {
 
 const QueueCommands: React.FC<QueueCommandsProps> = ({
   activeMode,
-  onModeChange,
+  onOpenAnalyzeMode,
+  onOpenAgentMode,
+  onOpenVoiceMode,
   onTooltipVisibilityChange,
   screenshotCount = 0,
   credits,
   desktopUpdateState,
   isMinimized,
   onToggleMinimized,
-  modeSwitchLocked = false,
   computerUseState,
+  agentState,
   onDownloadUpdate,
   onInstallUpdate,
-  onStartComputerTask,
-  onStopComputerTask,
-  onResumeComputerTask,
   isDockOnly = false,
 }) => {
   const { showToast } = useToast()
-  const dragRegionStyle = { WebkitAppRegion: "drag" as const }
-  const noDragStyle = { WebkitAppRegion: "no-drag" as const }
-  const [isComputerPromptOpen, setIsComputerPromptOpen] = useState(false)
-  const [computerTask, setComputerTask] = useState("")
+  const dragRegionStyle: CSSProperties = { WebkitAppRegion: "drag" }
+  const noDragStyle: CSSProperties = { WebkitAppRegion: "no-drag" }
+  const [isGuideCursorEnabled, setIsGuideCursorEnabled] = useState(true)
+  // Seed from live globals so re-mounting the dock (e.g. after closing the
+  // voice window) doesn't drop the active animation while voice keeps running.
+  const [isVoiceActive, setIsVoiceActive] = useState(() =>
+    isRealtimeVoiceCurrentlyActive()
+  )
+  const [isVoiceHearing, setIsVoiceHearing] = useState(() =>
+    isRealtimeVoiceCurrentlyHearing()
+  )
+  const [isVoiceSpeaking, setIsVoiceSpeaking] = useState(() =>
+    isRealtimeVoiceCurrentlySpeaking()
+  )
+
+  useEffect(() => {
+    const handleVoiceActive = (event: Event) => {
+      const detail = (event as CustomEvent<boolean>).detail
+      setIsVoiceActive(Boolean(detail))
+    }
+    const handleVoiceHearing = (event: Event) => {
+      const detail = (event as CustomEvent<boolean>).detail
+      setIsVoiceHearing(Boolean(detail))
+    }
+    const handleVoiceSpeaking = (event: Event) => {
+      const detail = (event as CustomEvent<boolean>).detail
+      setIsVoiceSpeaking(Boolean(detail))
+    }
+    window.addEventListener("sylica-voice-active", handleVoiceActive)
+    window.addEventListener("sylica-voice-hearing", handleVoiceHearing)
+    window.addEventListener("sylica-voice-speaking", handleVoiceSpeaking)
+    // Re-sync on mount in case voice was already running when the dock mounted.
+    setIsVoiceActive(isRealtimeVoiceCurrentlyActive())
+    setIsVoiceHearing(isRealtimeVoiceCurrentlyHearing())
+    setIsVoiceSpeaking(isRealtimeVoiceCurrentlySpeaking())
+    return () => {
+      window.removeEventListener("sylica-voice-active", handleVoiceActive)
+      window.removeEventListener("sylica-voice-hearing", handleVoiceHearing)
+      window.removeEventListener("sylica-voice-speaking", handleVoiceSpeaking)
+    }
+  }, [])
 
   useEffect(() => {
     onTooltipVisibilityChange(false, 0)
   }, [isMinimized, onTooltipVisibilityChange])
 
   useEffect(() => {
-    if (computerUseState.status !== "idle") {
-      setIsComputerPromptOpen(false)
-      setComputerTask("")
-    }
-  }, [computerUseState.status])
+    let cancelled = false
+    void (async () => {
+      const result = await window.electronAPI.getGuideCursorState()
+      if (!cancelled && result.success) {
+        setIsGuideCursorEnabled(result.data.enabled)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
 
   const openAccountDashboard = () => {
     window.dispatchEvent(new CustomEvent("open-account-dashboard"))
   }
-
   const openPhoneRelayWindow = () => {
     window.dispatchEvent(new CustomEvent("open-phone-relay"))
   }
 
   const handleScreenshot = async () => {
+    onOpenAnalyzeMode()
     try {
       const result = await window.electronAPI.triggerScreenshot()
       if (!result.success) {
-        showToast(
-          "Error",
-          result.error || "Failed to take screenshot",
-          "error"
-        )
+        showToast("Error", result.error || "Failed to take screenshot", "error")
       }
     } catch (error) {
       console.error("Error taking screenshot:", error)
@@ -102,18 +146,12 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
   }
 
   const handleRegionScreenshot = async () => {
+    onOpenAnalyzeMode()
     try {
       const result = await window.electronAPI.triggerRegionScreenshot()
-      if (result.canceled) {
-        return
-      }
-
+      if (result.canceled) return
       if (!result.success) {
-        showToast(
-          "Error",
-          result.error || "Failed to capture selected area",
-          "error"
-        )
+        showToast("Error", result.error || "Failed to capture selected area", "error")
       }
     } catch (error) {
       console.error("Error taking region screenshot:", error)
@@ -122,18 +160,11 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
   }
 
   const handleSolve = async () => {
-    if (screenshotCount === 0) {
-      return
-    }
-
+    if (screenshotCount === 0) return
     try {
       const result = await window.electronAPI.triggerProcessScreenshots()
       if (!result.success) {
-        showToast(
-          "Error",
-          result.error || "Failed to process screenshots",
-          "error"
-        )
+        showToast("Error", result.error || "Failed to process screenshots", "error")
       }
     } catch (error) {
       console.error("Error processing screenshots:", error)
@@ -142,55 +173,48 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
   }
 
   const isComputerUseActive = isComputerTaskActive(computerUseState.status)
-  const isWaitingForSecret =
-    computerUseState.status === "waiting_for_secret" ||
-    computerUseState.needsSecretInput
-  const iconButtonClass =
-    "sylica-dock-tab sylica-glass-chip flex h-7 w-7 shrink-0 items-center justify-center rounded-[16px] text-white/76 transition-colors hover:text-white"
-  const chipButtonClass =
-    "sylica-dock-tab sylica-glass-chip flex items-center gap-1.5 rounded-[16px] px-2 py-1.5 text-[10px] font-medium text-white/88 transition-colors hover:text-white"
-  const keyHintClass =
-    "rounded-[10px] border border-white/10 bg-white/[0.08] px-1.25 py-[3px] text-[9px] leading-none text-white/54"
+  const isAgentActive =
+    agentState.status === "planning" ||
+    agentState.status === "awaiting_workspace" ||
+    agentState.status === "awaiting_approval" ||
+    agentState.status === "running"
 
-  const handleComputerSubmit = async () => {
-    const normalizedTask = computerTask.trim()
-    if (!normalizedTask) {
-      showToast("Computer Use", "Enter a browser task first.", "neutral")
+  const handleGuideCursorToggle = async () => {
+    const nextEnabled = !isGuideCursorEnabled
+    setIsGuideCursorEnabled(nextEnabled)
+    const result = await window.electronAPI.setGuideCursorEnabled({ enabled: nextEnabled })
+    if (!result.success) {
+      setIsGuideCursorEnabled(!nextEnabled)
+      showToast("AI Guide", result.error || "Failed to update guide cursor.", "error")
       return
     }
-
-    try {
-      await onStartComputerTask(normalizedTask)
-      setIsComputerPromptOpen(false)
-      setComputerTask("")
-    } catch (error) {
-      showToast(
-        "Computer Use",
-        error instanceof Error ? error.message : "Failed to start browser task.",
-        "error"
-      )
-    }
+    setIsGuideCursorEnabled(result.data.enabled)
+    showToast(
+      "AI Guide",
+      result.data.enabled
+        ? "Guide cursor is on. Hover text and press Ctrl+Space."
+        : "Guide cursor is off.",
+      "neutral"
+    )
   }
 
   if (isMinimized) {
     return (
-      <div className="w-fit">
+      <div className="w-fit" style={{ animationDelay: "0ms" }}>
         <div
-          className="sylica-liquid-dock flex cursor-move items-center rounded-[16px] p-1 text-xs text-white/90"
+          data-sylica-size-box="true"
+          className="sylica-widget-dock cursor-move"
           style={dragRegionStyle}
         >
           <button
             type="button"
-            className="rounded-[14px] transition-transform hover:scale-[1.03] focus:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+            className="sylica-dock-btn"
             onClick={onToggleMinimized}
-            aria-label="Expand widget"
-            title="Expand widget"
+            aria-label="Expand"
+            title="Expand"
             style={noDragStyle}
           >
-            <CheatbitMark
-              className="h-8 w-8 rounded-[12px] border-white/8 bg-white/[0.02] p-0.5 shadow-none"
-              rotating
-            />
+            <CheatbitMark className="h-6 w-6" rotating />
           </button>
         </div>
       </div>
@@ -198,305 +222,211 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
   }
 
   return (
-    <div className={isDockOnly ? "w-fit pt-1.5" : "w-full pt-1.5"}>
+    <div className={isDockOnly ? "w-fit" : "w-full"} style={{ animationDelay: "0ms" }}>
       <div
-        className={`sylica-liquid-dock flex cursor-move items-center justify-between gap-2 rounded-[18px] px-2 py-1.5 text-xs text-white/90 ${
-          isDockOnly ? "w-fit" : "w-full min-w-[284px]"
-        }`}
-        style={dragRegionStyle}
+        data-sylica-size-box="true"
+        className={`sylica-widget-dock cursor-move ${isDockOnly ? "w-fit" : "w-full"}`}
+        style={{ ...dragRegionStyle, animationDelay: "0ms" }}
       >
-        <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto whitespace-nowrap">
+        {/* Brand + Actions */}
+        <div className="flex items-center gap-0.5 min-w-0 flex-1 overflow-x-auto">
           <button
             type="button"
-              className="rounded-[14px] transition-transform hover:scale-[1.03] focus:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+            className="sylica-dock-btn shrink-0"
             onClick={onToggleMinimized}
-            aria-label="Minimize widget"
-            title="Minimize widget"
-            style={noDragStyle}
+            aria-label="Minimize"
+            title="Minimize"
+            style={{ ...noDragStyle, animationDelay: "30ms" }}
           >
-            <CheatbitMark
-                className="h-7 w-7 rounded-[12px] border-white/8 bg-white/[0.03] p-0.5 shadow-none"
-                rotating
-              />
-            </button>
+            <CheatbitMark className="h-6 w-6" rotating />
+          </button>
 
-          {activeMode === "analyze" && (
-            <>
-              <button
-                type="button"
-                className={iconButtonClass}
-                onClick={() => {
-                  void handleRegionScreenshot()
-                }}
-                aria-label="Select area"
-                title="Select Area"
-                style={noDragStyle}
-              >
-                <Focus className="h-2.5 w-2.5" />
-              </button>
+          <button
+            type="button"
+            className="sylica-dock-btn shrink-0"
+            onClick={() => void handleRegionScreenshot()}
+            aria-label="Select area"
+            title={`Select area (${COMMAND_KEY}+Shift+H)`}
+            style={{ ...noDragStyle, animationDelay: "60ms" }}
+          >
+            <Focus className="h-4 w-4" />
+          </button>
 
-              <button
-                type="button"
-                className={chipButtonClass}
-                onClick={() => {
-                  void handleScreenshot()
-                }}
-                style={noDragStyle}
-              >
-                <span className="max-w-[6.5rem] truncate text-[10px] leading-none">
-                  {screenshotCount === 0
-                    ? "Analyze"
-                    : screenshotCount === 1
-                    ? "Take second screenshot"
-                    : screenshotCount === 2
-                    ? "Take third screenshot"
-                    : screenshotCount === 3
-                    ? "Take fourth screenshot"
-                    : screenshotCount === 4
-                    ? "Take fifth screenshot"
-                    : "Next will replace first screenshot"}
-                </span>
-                <div className="flex gap-1">
-                  <span className={keyHintClass}>
-                    {COMMAND_KEY}
-                  </span>
-                  <span className={keyHintClass}>
-                    H
-                  </span>
-                  </div>
-                </button>
-            </>
-          )}
-
-          <div className="sylica-dock-pill flex shrink-0 items-center gap-1 rounded-full p-[3px]">
+          {screenshotCount > 0 && (
             <button
               type="button"
-              className={`sylica-dock-tab flex min-w-[3.5rem] items-center justify-center gap-1 rounded-full px-2 py-1.5 text-[10px] font-medium transition-colors ${
-                activeMode === "analyze"
-                  ? "sylica-dock-tab-active"
-                  : "text-white/[0.68] hover:text-white"
-              } ${modeSwitchLocked ? "cursor-not-allowed opacity-45" : ""}`}
-              onClick={() => onModeChange("analyze")}
-              disabled={modeSwitchLocked}
-              aria-label="Solve mode"
-              title="Solve"
-              style={noDragStyle}
-            >
-              <ScanSearch className="h-2.5 w-2.5" />
-              <span>Solve</span>
-            </button>
-            <button
-              type="button"
-              className={`sylica-dock-tab flex min-w-[3.5rem] items-center justify-center gap-1 rounded-full px-2 py-1.5 text-[10px] font-medium transition-colors ${
-                activeMode === "chat"
-                  ? "sylica-dock-tab-active"
-                  : "text-white/[0.68] hover:text-white"
-              }`}
-              onClick={() => onModeChange("chat")}
-              aria-label="Live mode"
-              title="Live"
-              style={noDragStyle}
-            >
-              <Radio className="h-2.5 w-2.5" />
-              <span>Live</span>
-            </button>
-          </div>
-
-          {isComputerPromptOpen ? (
-            <div
-              className="sylica-dock-pill flex shrink-0 items-center gap-1.5 rounded-full px-1.5 py-1"
-              style={noDragStyle}
-            >
-              <Computer className="h-2.5 w-2.5 text-[#7df9c7]" />
-              <input
-                type="text"
-                value={computerTask}
-                onChange={(event) => setComputerTask(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault()
-                    void handleComputerSubmit()
-                  }
-                  if (event.key === "Escape") {
-                    setIsComputerPromptOpen(false)
-                    setComputerTask("")
-                  }
-                }}
-                placeholder="What should Sylica do?"
-                className="w-[9.75rem] bg-transparent text-[10px] leading-none text-white outline-none placeholder:text-white/35"
-                autoFocus
-              />
-              <button
-                type="button"
-                className="rounded-full bg-[#dffcf1] px-2 py-1 text-[9.5px] font-semibold text-black"
-                onClick={() => {
-                  void handleComputerSubmit()
-                }}
-              >
-                Run
-              </button>
-              <button
-                type="button"
-                className="rounded-full border border-white/10 px-2 py-1 text-[9.5px] text-white/72 hover:text-white"
-                onClick={() => {
-                  setIsComputerPromptOpen(false)
-                  setComputerTask("")
-                }}
-              >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              className={`${iconButtonClass} ${
-                isComputerUseActive
-                  ? "bg-[rgba(159,247,214,0.14)] text-[#baf7df] hover:bg-[rgba(159,247,214,0.18)]"
-                  : ""
-              }`}
+              className={`sylica-dock-btn shrink-0 ${credits <= 0 ? "opacity-40" : ""}`}
               onClick={() => {
-                if (isComputerUseActive) {
-                  return
-                }
-                setIsComputerPromptOpen(true)
+                onOpenAnalyzeMode()
+                void handleSolve()
               }}
-              disabled={isComputerUseActive}
-              aria-label="Computer Use"
-              title="Computer Use"
-              style={noDragStyle}
+              disabled={credits <= 0}
+              aria-label="Solve"
+              title={`Solve (${COMMAND_KEY}+Enter)`}
+              style={{ ...noDragStyle, animationDelay: "120ms" }}
             >
-              <Computer className="h-3 w-3" />
+              <Sparkles className="h-4 w-4" />
             </button>
           )}
 
-          {activeMode === "analyze" && (
-            <>
-              {isComputerUseActive && (
-                <div
-                  className="flex shrink-0 items-center gap-1.5 rounded-full border border-[#7df9c7]/20 bg-[rgba(159,247,214,0.14)] px-2 py-1 text-[9.5px] text-[#e2fff3]"
-                  style={noDragStyle}
-                >
-                  <span className="max-w-[7.5rem] truncate">
-                    {isWaitingForSecret
-                      ? "Waiting for manual login"
-                      : computerUseState.currentAction || "Computer running"}
-                  </span>
-                  {isWaitingForSecret ? (
-                    <button
-                      type="button"
-                      className="rounded-full bg-white/10 px-2 py-1 text-[9.5px] text-white hover:bg-white/15"
-                      onClick={() => {
-                        void onResumeComputerTask()
-                      }}
-                    >
-                      Continue
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="rounded-full bg-white/10 px-2 py-1 text-[9.5px] text-white hover:bg-white/15"
-                      onClick={() => {
-                        void onStopComputerTask()
-                      }}
-                    >
-                      Stop
-                    </button>
-                  )}
-                </div>
-              )}
-              {screenshotCount > 0 && (
-                <button
-                  type="button"
-                  className={`${chipButtonClass} ${
-                    credits <= 0 ? "cursor-not-allowed opacity-50" : ""
-                  }`}
-                  onClick={() => {
-                    void handleSolve()
-                  }}
-                  style={noDragStyle}
-                >
-                  <span className="text-[11px] leading-none">Solve</span>
-                  <div className="flex gap-1">
-                    <span className={keyHintClass}>
-                      {COMMAND_KEY}
-                    </span>
-                    <span className={keyHintClass}>
-                      ↵
-                    </span>
-                  </div>
-                </button>
-              )}
-            </>
-          )}
-
-          {activeMode === "chat" && isComputerUseActive && (
-            <div
-              className="flex shrink-0 items-center gap-2 rounded-full border border-[#7df9c7]/20 bg-[rgba(159,247,214,0.14)] px-2.5 py-1 text-[10px] text-[#e2fff3]"
-              style={noDragStyle}
-            >
-              <span className="max-w-[9rem] truncate">
-                {isWaitingForSecret
-                  ? "Waiting for manual login"
-                  : computerUseState.currentAction || "Computer running"}
-              </span>
-              {isWaitingForSecret ? (
-                <button
-                  type="button"
-                  className="rounded-full bg-white/10 px-2.5 py-1 text-[10px] text-white hover:bg-white/15"
-                  onClick={() => {
-                    void onResumeComputerTask()
-                  }}
-                >
-                  Continue
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="rounded-full bg-white/10 px-2.5 py-1 text-[10px] text-white hover:bg-white/15"
-                  onClick={() => {
-                    void onStopComputerTask()
-                  }}
-                >
-                  Stop
-                </button>
-              )}
-            </div>
-          )}
         </div>
 
-        <div className="ml-2 flex shrink-0 items-center gap-2">
-          <InlineUpdateButton
-            state={desktopUpdateState}
-            onDownload={onDownloadUpdate}
-            onInstall={onInstallUpdate}
-          />
+        {/* Active task pills — clickable, each routes to its own surface.
+            When multiple are active we compact to icon-only chips so the dock
+            doesn't blow out and push the right-side tools off-screen. */}
+        {(() => {
+          const showVoicePill =
+            activeMode === "voice" || activeMode === "live" || isVoiceActive
+          const activeCount =
+            (isAgentActive ? 1 : 0) +
+            (isComputerUseActive ? 1 : 0) +
+            (showVoicePill ? 1 : 0)
+          const compact = activeCount >= 2
+          const pillBase =
+            "sylica-active-pill flex shrink-0 items-center justify-center rounded-full border transition focus:outline-none"
+          const pillSize = compact
+            ? "h-6 w-6 p-0"
+            : "gap-1.5 px-2 py-1 text-[9px] font-medium"
+
+          return (
+            <div className="flex shrink-0 items-center gap-1">
+              {isAgentActive && (
+                <button
+                  type="button"
+                  onClick={onOpenAgentMode}
+                  className={`${pillBase} ${pillSize} border-white/10 bg-white/5 text-white/75 hover:bg-white/10 hover:text-white`}
+                  aria-label="Open Agent — Working"
+                  title="Agent is working — click to open Agent"
+                  style={{ ...noDragStyle, animationDelay: "150ms" }}
+                >
+                  <span className="sylica-working-indicator scale-75" />
+                  {!compact && <span>Working</span>}
+                </button>
+              )}
+
+              {isComputerUseActive && (
+                <button
+                  type="button"
+                  onClick={onOpenAgentMode}
+                  className={`${pillBase} ${pillSize} border-white/10 bg-white/5 text-white/75 hover:bg-white/10 hover:text-white`}
+                  aria-label="Open Agent — Computer Use"
+                  title="Computer Use is running — click to open Agent"
+                  style={{ ...noDragStyle, animationDelay: "165ms" }}
+                >
+                  <span className="sylica-listening-indicator scale-75" />
+                  {!compact && <span>Using</span>}
+                </button>
+              )}
+
+              {showVoicePill && (
+                <button
+                  type="button"
+                  className={`${pillBase} ${pillSize} ${
+                    isVoiceActive
+                      ? isVoiceSpeaking
+                        ? "sylica-voice-state-speaking border-white/25 bg-white/[0.12] text-white"
+                        : "border-white/20 bg-white/10 text-white"
+                      : "border-white/10 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white"
+                  }`}
+                  onClick={() => onOpenVoiceMode?.()}
+                  aria-label={
+                    isVoiceActive
+                      ? isVoiceSpeaking
+                        ? "Voice is speaking — open Voice"
+                        : isVoiceHearing
+                          ? "Voice is hearing you — open Voice"
+                          : "Voice is live — open Voice"
+                      : "Open Voice"
+                  }
+                  title={
+                    isVoiceActive
+                      ? isVoiceSpeaking
+                        ? "Speaking — click to open Voice"
+                        : isVoiceHearing
+                          ? "Hearing you — click to open Voice"
+                          : "Listening — click to open Voice"
+                      : "Open Voice"
+                  }
+                  style={{ ...noDragStyle, animationDelay: "175ms" }}
+                >
+                  {isVoiceActive ? (
+                    <span
+                      className={`sylica-voice-wave scale-75 ${
+                        isVoiceSpeaking
+                          ? "is-speaking"
+                          : isVoiceHearing
+                            ? "is-hearing"
+                            : ""
+                      }`}
+                      aria-hidden
+                    >
+                      <span />
+                      <span />
+                      <span />
+                      <span />
+                    </span>
+                  ) : (
+                    <Mic2 className="h-3 w-3" />
+                  )}
+                  {!compact && (
+                    <span>
+                      {isVoiceActive
+                        ? isVoiceSpeaking
+                          ? "Speaking"
+                          : "Listening"
+                        : "Voice"}
+                    </span>
+                  )}
+                </button>
+              )}
+            </div>
+          )
+        })()}
+
+        {/* Tools */}
+        <div className="flex items-center gap-0.5 shrink-0">
+          <div className="sylica-dock-divider" style={{ animationDelay: "180ms" }} />
+
+          <div style={{ animationDelay: "210ms" }}>
+            <InlineUpdateButton
+              state={desktopUpdateState}
+              onDownload={onDownloadUpdate}
+              onInstall={onInstallUpdate}
+            />
+          </div>
 
           <button
             type="button"
-            className={iconButtonClass}
-            onClick={() => {
-              openPhoneRelayWindow()
-            }}
-            data-panel-trigger="phone-relay"
-            aria-label="Relay Manager"
-            title="Relay Manager"
-            style={noDragStyle}
+            className={`sylica-dock-btn ${isAgentActive || activeMode === "agent" ? "sylica-dock-btn-active" : ""}`}
+            onClick={onOpenAgentMode}
+            aria-label="Agent"
+            title="Agent"
+            style={{ ...noDragStyle, animationDelay: "240ms" }}
           >
-            <Smartphone className="h-3.5 w-3.5" />
+            <Brain className="h-4 w-4" />
           </button>
 
           <button
             type="button"
-            className={iconButtonClass}
+            className={`sylica-dock-btn ${isGuideCursorEnabled ? "sylica-dock-btn-active" : ""}`}
+            onClick={() => void handleGuideCursorToggle()}
+            aria-label="Guide"
+            title="AI Guide"
+            style={{ ...noDragStyle, animationDelay: "270ms" }}
+          >
+            <MousePointer2 className="h-4 w-4" />
+          </button>
+
+          <button
+            type="button"
+            className="sylica-dock-btn"
             onClick={openAccountDashboard}
-            data-panel-trigger="account-dashboard"
             aria-label="Dashboard"
             title="Dashboard"
-            style={noDragStyle}
+            style={{ ...noDragStyle, animationDelay: "300ms" }}
           >
-            <LayoutDashboard className="h-3.5 w-3.5" />
+            <LayoutDashboard className="h-4 w-4" />
           </button>
-
         </div>
       </div>
     </div>
@@ -504,3 +434,4 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
 }
 
 export default QueueCommands
+

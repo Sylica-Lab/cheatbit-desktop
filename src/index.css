@@ -30,29 +30,73 @@ body {
 :root {
   --sylica-spring: cubic-bezier(0.22, 1, 0.36, 1);
   --sylica-soft-spring: cubic-bezier(0.34, 1.2, 0.64, 1);
-  --sylica-glass-border: rgba(255, 255, 255, 0.12);
-  --sylica-glass-soft-border: rgba(255, 255, 255, 0.08);
+  /* Softer borders — lower contrast, warmer feel */
+  --sylica-glass-border: rgba(255, 255, 255, 0.06);
+  --sylica-glass-soft-border: rgba(255, 255, 255, 0.04);
+  /* Opaque surfaces — solid at max opacity (no see-through glass) */
   --sylica-glass-fill: linear-gradient(
-    180deg,
-    rgba(18, 24, 33, 0.72),
-    rgba(10, 14, 20, 0.46)
+    155deg,
+    #1c1e24,
+    #14161c 55%,
+    #181a20
   );
   --sylica-glass-fill-strong: linear-gradient(
-    180deg,
-    rgba(14, 18, 26, 0.9),
-    rgba(8, 10, 15, 0.74)
+    155deg,
+    #1a1c22,
+    #12141a
   );
+  /* Very subtle highlight — no cyan/glossy sheen */
   --sylica-glass-highlight: linear-gradient(
     135deg,
-    rgba(255, 255, 255, 0.22),
-    rgba(255, 255, 255, 0.03) 42%,
-    rgba(126, 216, 255, 0.08) 100%
+    rgba(255, 255, 255, 0.04),
+    rgba(255, 255, 255, 0.01) 50%,
+    transparent 100%
   );
-  --sylica-widget-panel-width: 19.5rem;
-  --sylica-widget-shell-width: 21.25rem;
-  --sylica-cyan: #8be7ff;
-  --sylica-mint: #9ff7d6;
-  --sylica-indigo: #7f97ff;
+  /* Core surface tokens — fully opaque, darker charcoal */
+  --sylica-surface: #16181e;
+  --sylica-surface-raised: #1c1e24;
+  --sylica-surface-muted: #12141a;
+  --sylica-surface-overlay: rgba(255, 255, 255, 0.06);
+  /* When window opacity is lowered via Ctrl+[ / ], surfaces can soften slightly */
+  --sylica-surface-alpha: 1;
+  --sylica-widget-panel-width: 16.25rem;
+  --sylica-widget-shell-width: 17.5rem;
+  --sylica-dock-height: 2.5rem;
+  --sylica-panel-max-height: min(22rem, 55vh);
+  --sylica-chat-scroll-max: min(20rem, 50vh);
+  --sylica-radius-shell: 20px;
+  --sylica-radius-panel: 18px;
+  --sylica-radius-chip: 9999px;
+  /* Softer accent — muted sage, not neon */
+  --sylica-cyan: #b8d4e3;
+  --sylica-mint: #c5e8d6;
+  --sylica-indigo: #b8b8d4;
+  --sylica-accent: #a8d8c4;
+  --sylica-accent-soft: rgba(168, 216, 196, 0.1);
+  --sylica-accent-strong: rgba(168, 216, 196, 0.18);
+  --sylica-text-muted: rgba(255, 255, 255, 0.55);
+  --sylica-text-soft: rgba(255, 255, 255, 0.72);
+}
+
+/* Window opacity tiers (set from App when user adjusts Ctrl+[ / ]) */
+html[data-opacity-tier="solid"] {
+  --sylica-surface: #12141a;
+  --sylica-surface-raised: #181a20;
+  --sylica-surface-muted: #0e1014;
+  --sylica-glass-border: rgba(255, 255, 255, 0.07);
+}
+
+html[data-opacity-tier="high"] {
+  --sylica-surface: #14161c;
+  --sylica-surface-raised: #1a1c22;
+  --sylica-surface-muted: #101218;
+}
+
+html[data-opacity-tier="medium"],
+html[data-opacity-tier="low"] {
+  --sylica-surface: rgba(18, 20, 26, 0.92);
+  --sylica-surface-raised: rgba(24, 26, 32, 0.9);
+  --sylica-surface-muted: rgba(14, 16, 22, 0.88);
 }
 
 * {
@@ -150,15 +194,137 @@ option {
 }
 
 .sylica-window-enter {
-  animation: sylicaWindowEnter 340ms var(--sylica-spring) both;
+  animation: sylicaWindowEnter 460ms var(--sylica-spring) both;
   transform-origin: top center;
   will-change: transform, opacity, filter;
+}
+
+.sylica-view-stage {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 0;
+  transform-origin: top left;
+  animation: sylicaViewStageIn 420ms var(--sylica-spring) both;
+  transition:
+    opacity 360ms var(--sylica-spring),
+    transform 420ms var(--sylica-spring),
+    filter 420ms var(--sylica-spring);
+  will-change: transform, opacity, filter;
+}
+
+.sylica-widget-layout {
+  transform-origin: top left;
+  transition:
+    min-width 460ms var(--sylica-spring),
+    max-width 460ms var(--sylica-spring),
+    width 460ms var(--sylica-spring),
+    opacity 360ms var(--sylica-spring),
+    transform 460ms var(--sylica-spring),
+    filter 460ms var(--sylica-spring);
+  will-change: width, transform, opacity, filter;
+}
+
+.sylica-widget-layout[data-minimized="true"] {
+  animation: sylicaDockExpand 420ms var(--sylica-spring) both;
+}
+
+.sylica-expand-slot {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transform: translateY(-8px) scale(0.985);
+  filter: blur(8px);
+  transform-origin: top center;
+  transition:
+    grid-template-rows 520ms var(--sylica-spring),
+    opacity 320ms ease,
+    transform 520ms var(--sylica-spring),
+    filter 420ms var(--sylica-spring),
+    margin 520ms var(--sylica-spring);
+  will-change: grid-template-rows, transform, opacity, filter;
+}
+
+.sylica-expand-slot-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  filter: blur(0);
+}
+
+.sylica-expand-slot-closed {
+  pointer-events: none;
+}
+
+.sylica-expand-slot-inner {
+  min-height: 0;
+  overflow: hidden;
 }
 
 .sylica-sheet-enter {
   animation: sylicaSheetEnter 260ms var(--sylica-spring) both;
   transform-origin: top center;
   will-change: transform, opacity;
+}
+
+.sylica-idle-island-strip {
+  position: relative;
+  display: block;
+  width: 4.5rem;
+  height: 1.15rem;
+  margin: 0 auto;
+  overflow: hidden;
+  cursor: default;
+  border: 0;
+  border-right: 1px solid rgba(255, 255, 255, 0.11);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+  border-left: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 0 0 9999px 9999px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02)),
+    #14161c;
+  box-shadow:
+    inset 0 -1px 0 rgba(255, 255, 255, 0.06),
+    0 6px 18px rgba(0, 0, 0, 0.28);
+  opacity: 0.92;
+  transform-origin: top center;
+  animation:
+    sylicaIdleIslandEnter 360ms var(--sylica-spring) both,
+    sylicaIdleIslandBreathe 2600ms ease-in-out 560ms infinite;
+  transition:
+    opacity 260ms var(--sylica-spring),
+    transform 260ms var(--sylica-spring),
+    height 260ms var(--sylica-spring);
+}
+
+.sylica-idle-island-strip::after {
+  content: "Sylica";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  display: inline-flex;
+  height: 0.58rem;
+  min-width: 3.4rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0 0.38rem;
+  border-radius: inherit;
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 0.42rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  line-height: 1;
+  text-transform: uppercase;
+  transform: translate(-50%, -42%);
+  opacity: 0.92;
+}
+
+.sylica-idle-island-strip:hover,
+.sylica-idle-island-strip:focus-visible {
+  height: 1.35rem;
+  opacity: 1;
+  outline: none;
+  transform: translateY(1px);
 }
 
 .sylica-panel-switch {
@@ -178,25 +344,729 @@ option {
     transform 180ms var(--sylica-spring),
     box-shadow 220ms var(--sylica-spring),
     background-color 180ms var(--sylica-spring);
-  box-shadow: 0 10px 30px rgba(125, 249, 199, 0.18);
+  box-shadow: 0 4px 14px rgba(142, 245, 212, 0.2);
 }
 
 .sylica-send-button:hover:not(:disabled) {
-  transform: translateY(-1px) scale(1.04);
-  box-shadow: 0 16px 36px rgba(125, 249, 199, 0.24);
+  transform: translateY(-1px) scale(1.03);
+  box-shadow: 0 8px 20px rgba(142, 245, 212, 0.26);
 }
 
 .sylica-send-button:active:not(:disabled) {
   transform: translateY(0) scale(0.98);
 }
 
+.sylica-panel-scroll {
+  max-height: var(--sylica-panel-max-height);
+  overflow-y: auto;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.sylica-panel-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.sylica-panel-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.sylica-icon-btn {
+  display: inline-flex;
+  height: 1.75rem;
+  width: 1.75rem;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--sylica-radius-chip);
+  border: 1px solid var(--sylica-glass-soft-border);
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.07),
+    rgba(255, 255, 255, 0.025)
+  );
+  color: rgba(255, 255, 255, 0.78);
+  transition:
+    transform 180ms var(--sylica-spring),
+    background-color 180ms var(--sylica-spring),
+    color 180ms var(--sylica-spring),
+    border-color 180ms var(--sylica-spring);
+}
+
+.sylica-icon-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: var(--sylica-glass-border);
+  background: var(--sylica-surface-overlay);
+  color: rgba(255, 255, 255, 0.94);
+}
+
+.sylica-icon-btn-active {
+  border-color: var(--sylica-accent-strong);
+  background: var(--sylica-accent-soft);
+  color: var(--sylica-accent);
+}
+
+.sylica-chip-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: var(--sylica-radius-chip);
+  border: 1px solid var(--sylica-glass-soft-border);
+  background: var(--sylica-surface-overlay);
+  padding: 0.3rem 0.55rem;
+  font-size: 0.625rem;
+  font-weight: 500;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.86);
+  transition:
+    transform 180ms var(--sylica-spring),
+    background-color 180ms var(--sylica-spring),
+    color 180ms var(--sylica-spring);
+}
+
+.sylica-chip-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  color: #fff;
+}
+
+/* Sylica Modern — clean minimal dock with Mac-style animations */
+
+/* Spring curves like macOS */
+:root {
+  --spring-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --spring-smooth: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Widget entry animation */
+@keyframes widget-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes widget-exit {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+}
+
+/* Panel expand like macOS sheet */
+@keyframes panel-expand {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes panel-collapse {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.99);
+  }
+}
+
+/* Button press bounce */
+@keyframes btn-press {
+  0% { transform: scale(1); }
+  40% { transform: scale(0.92); }
+  100% { transform: scale(1); }
+}
+
+/* Glow pulse for active state */
+@keyframes glow-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0); }
+  50% { box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.1); }
+}
+
+.sylica-widget-layout {
+  animation: widget-enter 300ms var(--spring-smooth) both;
+}
+
+.sylica-widget-layout[data-minimized="true"] {
+  animation: widget-enter 250ms var(--spring-smooth) both;
+}
+
+.sylica-widget-dock {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-height: 2.5rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 9999px;
+  background: var(--sylica-surface);
+  border: 1px solid var(--sylica-glass-border);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+  transition:
+    transform 200ms var(--spring-smooth),
+    box-shadow 200ms ease,
+    opacity 200ms ease,
+    width 300ms var(--spring-smooth);
+  will-change: transform;
+  min-width: 180px;
+}
+
+.sylica-widget-dock[data-expanded="true"] {
+  background: var(--sylica-surface-raised);
+  border-color: var(--sylica-glass-soft-border);
+  min-width: 240px;
+}
+
+/* Minimized dock — consistent width when resting at top */
+.sylica-widget-layout[data-minimized="true"] .sylica-widget-dock {
+  min-width: 48px;
+  max-width: 48px;
+  padding: 0.25rem;
+  justify-content: center;
+}
+
+.sylica-widget-dock:hover {
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.22);
+}
+
+.sylica-dock-btn {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  flex-shrink: 0;
+  border-radius: 9999px;
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.62);
+  cursor: pointer;
+  overflow: visible;
+  transition:
+    background-color 200ms var(--spring-smooth),
+    color 200ms ease,
+    transform 220ms var(--spring-bounce);
+  will-change: transform, background-color;
+}
+
+/* Click ripple — pseudo element scales out + fades */
+.sylica-dock-btn::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(circle at center, rgba(255, 255, 255, 0.35), transparent 60%);
+  opacity: 0;
+  transform: scale(0.6);
+  pointer-events: none;
+  transition: opacity 400ms ease, transform 400ms var(--spring-smooth);
+}
+
+.sylica-dock-btn:hover {
+  background: var(--sylica-surface-overlay);
+  color: rgba(255, 255, 255, 0.92);
+  transform: translateY(-1px) scale(1.06);
+}
+
+.sylica-dock-btn:hover > svg {
+  animation: dock-icon-wiggle 600ms var(--spring-bounce);
+}
+
+.sylica-dock-btn:active {
+  transform: scale(0.88);
+  transition: transform 80ms ease-out;
+}
+
+.sylica-dock-btn:active::after {
+  opacity: 1;
+  transform: scale(1.4);
+  transition: opacity 80ms ease-out, transform 80ms ease-out;
+}
+
+.sylica-dock-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(168, 216, 196, 0.4);
+}
+
+.sylica-dock-btn-active {
+  background: var(--sylica-accent-soft);
+  color: var(--sylica-accent);
+  animation: dock-btn-active-pulse 2400ms ease-in-out infinite;
+}
+
+.sylica-dock-btn-primary {
+  background: rgba(255, 255, 255, 0.88);
+  color: rgba(24, 26, 32, 0.92);
+  transition:
+    background-color 200ms ease,
+    color 200ms ease,
+    transform 220ms var(--spring-bounce);
+}
+
+.sylica-dock-btn-primary:hover {
+  background: rgba(255, 255, 255, 0.98);
+  transform: scale(1.08);
+  box-shadow: 0 3px 10px rgba(255, 255, 255, 0.14);
+}
+
+.sylica-dock-btn-primary:active {
+  transform: scale(0.92);
+}
+
+@keyframes dock-icon-wiggle {
+  0% { transform: rotate(0deg) scale(1); }
+  30% { transform: rotate(-8deg) scale(1.05); }
+  60% { transform: rotate(6deg) scale(1.05); }
+  100% { transform: rotate(0deg) scale(1); }
+}
+
+@keyframes dock-btn-active-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--sylica-accent-soft); }
+  50% { box-shadow: 0 0 0 5px rgba(168, 216, 196, 0); }
+}
+
+/* Generic "pop" button — for chips, send buttons, mode toggles inside panels */
+.sylica-pop-btn {
+  position: relative;
+  overflow: visible;
+  transition:
+    background-color 180ms var(--spring-smooth),
+    color 180ms ease,
+    border-color 180ms ease,
+    transform 200ms var(--spring-bounce);
+  will-change: transform;
+}
+
+.sylica-pop-btn:hover:not(:disabled) {
+  transform: translateY(-0.5px) scale(1.04);
+}
+
+.sylica-pop-btn:active:not(:disabled) {
+  transform: scale(0.92);
+  transition: transform 70ms ease-out;
+}
+
+.sylica-pop-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(168, 216, 196, 0.35);
+}
+
+/* Icon pop — small bouncy entrance when icons mount (e.g. brain badge) */
+.sylica-icon-pop {
+  animation: icon-pop-in 360ms var(--spring-bounce) both;
+}
+
+@keyframes icon-pop-in {
+  0% { transform: scale(0); opacity: 0; }
+  60% { transform: scale(1.18); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.sylica-dock-divider {
+  width: 1px;
+  height: 1.25rem;
+  background: rgba(255, 255, 255, 0.07);
+  margin: 0 0.25rem;
+  transition: opacity 200ms ease;
+}
+
+/* Panel animations */
 .sylica-liquid-shell {
   position: relative;
-  overflow: hidden;
+  overflow: visible;
+  border-radius: 18px;
   border: 1px solid var(--sylica-glass-border);
-  background: var(--sylica-glass-fill);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
-  backdrop-filter: blur(28px) saturate(150%);
+  background: var(--sylica-surface);
+  box-shadow:
+    0 8px 28px rgba(0, 0, 0, 0.32),
+    0 1px 0 rgba(255, 255, 255, 0.02) inset;
+  animation: panel-expand 350ms var(--spring-smooth) both;
+  transform-origin: top center;
+  transition:
+    opacity 250ms ease,
+    transform 250ms var(--spring-smooth);
+}
+
+.sylica-liquid-shell.closing {
+  animation: panel-collapse 250ms var(--ease-out-expo) forwards;
+}
+
+.sylica-liquid-panel {
+  position: relative;
+  overflow: visible;
+  border-radius: 14px;
+  border: 1px solid var(--sylica-glass-soft-border);
+  background: var(--sylica-surface-muted);
+  transition:
+    opacity 300ms ease,
+    transform 300ms var(--spring-smooth);
+}
+
+/* Expand slot animation */
+.sylica-expand-slot {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 400ms var(--spring-smooth),
+    opacity 300ms ease;
+}
+
+.sylica-expand-slot-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.sylica-expand-slot-closed {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.sylica-expand-slot-inner {
+  min-height: 0;
+  overflow: visible;
+}
+
+/* Content switch animation */
+@keyframes content-fade {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.sylica-panel-switch {
+  animation: content-fade 300ms var(--spring-smooth) both;
+}
+
+/* Message enter animation */
+@keyframes message-enter {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.sylica-message-enter {
+  animation: message-enter 300ms var(--spring-smooth) both;
+  animation-delay: calc(var(--message-index, 0) * 30ms);
+}
+
+/* Button badge bounce */
+@keyframes badge-pop {
+  0% { transform: scale(0); }
+  70% { transform: scale(1.2); }
+  100% { transform: scale(1); }
+}
+
+.badge-animated {
+  animation: badge-pop 300ms var(--spring-bounce) both;
+}
+
+/* Listening animation — soundwave pulse */
+@keyframes listening-pulse {
+  0%, 100% { 
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  50% { 
+    transform: scale(1.15);
+    opacity: 1;
+  }
+}
+
+@keyframes listening-ring {
+  0% {
+    transform: scale(1);
+    opacity: 0.5;
+  }
+  100% {
+    transform: scale(1.8);
+    opacity: 0;
+  }
+}
+
+/* Voice sound-wave indicator — equalizer-style vertical bars. */
+@keyframes sylica-voice-wave {
+  0%,
+  100% {
+    transform: scaleY(0.32);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.sylica-voice-wave {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  height: 12px;
+  width: 14px;
+  color: currentColor;
+}
+
+.sylica-voice-wave > span {
+  display: inline-block;
+  width: 2px;
+  height: 100%;
+  background: currentColor;
+  border-radius: 1px;
+  transform-origin: center;
+  animation: sylica-voice-wave 1s ease-in-out infinite;
+  will-change: transform;
+}
+
+.sylica-voice-wave > span:nth-child(1) {
+  animation-delay: 0s;
+  animation-duration: 0.95s;
+}
+.sylica-voice-wave > span:nth-child(2) {
+  animation-delay: 0.18s;
+  animation-duration: 1.05s;
+}
+.sylica-voice-wave > span:nth-child(3) {
+  animation-delay: 0.34s;
+  animation-duration: 0.9s;
+}
+.sylica-voice-wave > span:nth-child(4) {
+  animation-delay: 0.5s;
+  animation-duration: 1.1s;
+}
+
+.sylica-voice-wave.scale-75 {
+  height: 10px;
+  width: 12px;
+}
+
+/* Hearing the user — slightly more energetic / faster. */
+.sylica-voice-wave.is-hearing > span {
+  animation-duration: 0.7s;
+}
+.sylica-voice-wave.is-hearing > span:nth-child(1) {
+  animation-duration: 0.62s;
+}
+.sylica-voice-wave.is-hearing > span:nth-child(2) {
+  animation-duration: 0.78s;
+}
+.sylica-voice-wave.is-hearing > span:nth-child(3) {
+  animation-duration: 0.68s;
+}
+.sylica-voice-wave.is-hearing > span:nth-child(4) {
+  animation-duration: 0.82s;
+}
+
+/* Assistant speaking — bars sweep in a wider range, calmer cadence so it
+   visibly differs from the staccato listening state. */
+@keyframes sylica-voice-wave-speak {
+  0%,
+  100% {
+    transform: scaleY(0.22);
+  }
+  50% {
+    transform: scaleY(1.1);
+  }
+}
+
+.sylica-voice-wave.is-speaking > span {
+  animation-name: sylica-voice-wave-speak;
+  animation-duration: 0.55s;
+}
+.sylica-voice-wave.is-speaking > span:nth-child(1) {
+  animation-duration: 0.5s;
+}
+.sylica-voice-wave.is-speaking > span:nth-child(2) {
+  animation-duration: 0.6s;
+}
+.sylica-voice-wave.is-speaking > span:nth-child(3) {
+  animation-duration: 0.52s;
+}
+.sylica-voice-wave.is-speaking > span:nth-child(4) {
+  animation-duration: 0.58s;
+}
+
+.sylica-listening-indicator {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #fff;
+  animation: listening-pulse 1.2s ease-in-out infinite;
+}
+
+.sylica-listening-indicator::before {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.3);
+  animation: listening-ring 1.5s ease-out infinite;
+}
+
+.sylica-listening-indicator::after {
+  content: "";
+  position: absolute;
+  inset: -8px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.15);
+  animation: listening-ring 1.5s ease-out 0.5s infinite;
+}
+
+/* Working animation — orbiting dots */
+@keyframes working-orbit {
+  0% { transform: rotate(0deg) translateX(6px) rotate(0deg); }
+  100% { transform: rotate(360deg) translateX(6px) rotate(-360deg); }
+}
+
+@keyframes working-pulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+
+.sylica-working-indicator {
+  position: relative;
+  width: 20px;
+  height: 20px;
+}
+
+.sylica-working-indicator::before,
+.sylica-working-indicator::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  margin: -2px 0 0 -2px;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.sylica-working-indicator::before {
+  animation: working-orbit 1.5s linear infinite;
+}
+
+.sylica-working-indicator::after {
+  animation: working-orbit 1.5s linear infinite reverse;
+  animation-delay: -0.75s;
+}
+
+/* Active task pill in the dock — subtle border pulse so it feels alive */
+@keyframes sylica-active-pill-pulse {
+  0%, 100% {
+    border-color: rgba(255, 255, 255, 0.1);
+    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
+  }
+  50% {
+    border-color: rgba(255, 255, 255, 0.22);
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.04);
+  }
+}
+
+.sylica-active-pill {
+  animation: sylica-active-pill-pulse 2.4s ease-in-out infinite;
+  cursor: pointer;
+  transition: transform 160ms cubic-bezier(0.34, 1.56, 0.64, 1), background 160ms ease;
+}
+
+.sylica-active-pill:hover {
+  transform: translateY(-0.5px) scale(1.03);
+}
+
+.sylica-active-pill:active {
+  transform: translateY(0) scale(0.97);
+}
+
+/* Processing shimmer */
+@keyframes shimmer-slide {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.sylica-processing-shimmer {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.1) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer-slide 2s linear infinite;
+}
+
+/* Idle breathing animation for minimized dock */
+@keyframes idle-breathe {
+  0%, 100% { 
+    transform: scale(1);
+    opacity: 0.95;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  }
+  50% { 
+    transform: scale(1.02);
+    opacity: 1;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3), 0 0 20px rgba(255, 255, 255, 0.03);
+  }
+}
+
+.sylica-widget-layout[data-minimized="true"] .sylica-widget-dock {
+  animation: idle-breathe 4s ease-in-out infinite;
+}
+
+/* Minimized state morph */
+.sylica-widget-layout[data-minimized="true"] .sylica-widget-dock {
+  animation: widget-morph 300ms var(--spring-smooth) both;
+}
+
+@keyframes widget-morph {
+  from {
+    padding: 0.25rem 0.5rem;
+  }
+  to {
+    padding: 0.25rem;
+  }
+}
+
+.sylica-liquid-shell {
+  position: relative;
+  overflow: visible;
+  border-radius: 18px;
+  border: 1px solid var(--sylica-glass-border);
+  background: var(--sylica-surface);
+  box-shadow:
+    0 8px 28px rgba(0, 0, 0, 0.32),
+    0 1px 0 rgba(255, 255, 255, 0.02) inset;
+  transition:
+    border-radius 520ms var(--sylica-spring),
+    box-shadow 520ms var(--sylica-spring),
+    transform 520ms var(--sylica-spring),
+    opacity 420ms var(--sylica-spring);
+  will-change: transform, opacity;
 }
 
 .sylica-liquid-shell::before {
@@ -204,24 +1074,22 @@ option {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background:
-    radial-gradient(circle at top left, rgba(139, 231, 255, 0.15), transparent 32%),
-    radial-gradient(circle at top right, rgba(159, 247, 214, 0.14), transparent 28%),
-    linear-gradient(135deg, rgba(255, 255, 255, 0.16), transparent 34%);
-  opacity: 0.95;
+  border-radius: inherit;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.025) 0%,
+    rgba(255, 255, 255, 0) 35%
+  );
+  opacity: 0.6;
 }
 
 .sylica-liquid-panel {
   position: relative;
-  overflow: hidden;
+  overflow: visible;
+  border-radius: 14px;
   border: 1px solid var(--sylica-glass-soft-border);
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.1),
-    rgba(255, 255, 255, 0.04)
-  );
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
-  backdrop-filter: blur(18px) saturate(145%);
+  background: var(--sylica-surface-muted);
+  backdrop-filter: blur(12px);
 }
 
 .sylica-liquid-panel::before {
@@ -229,19 +1097,34 @@ option {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: var(--sylica-glass-highlight);
-  opacity: 0.72;
+  border-radius: inherit;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.02) 0%,
+    rgba(255, 255, 255, 0) 40%
+  );
+  opacity: 0.5;
 }
 
 .sylica-liquid-dock {
   position: relative;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.03)),
-    linear-gradient(180deg, rgba(7, 11, 17, 0.7), rgba(7, 11, 17, 0.54));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
-  backdrop-filter: blur(26px) saturate(150%);
+  min-height: var(--sylica-dock-height);
+  border-radius: var(--sylica-radius-chip);
+  border: 1px solid var(--sylica-glass-border);
+  background: var(--sylica-surface);
+  box-shadow:
+    0 4px 16px rgba(0, 0, 0, 0.26),
+    inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  transition:
+    width 520ms var(--sylica-spring),
+    min-width 520ms var(--sylica-spring),
+    padding 520ms var(--sylica-spring),
+    border-radius 520ms var(--sylica-spring),
+    transform 420ms var(--sylica-spring),
+    box-shadow 520ms var(--sylica-spring),
+    opacity 360ms var(--sylica-spring);
+  will-change: width, transform, opacity;
 }
 
 .sylica-liquid-dock::before {
@@ -249,21 +1132,16 @@ option {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background:
-    radial-gradient(circle at 15% 0%, rgba(139, 231, 255, 0.16), transparent 28%),
-    radial-gradient(circle at 85% 0%, rgba(127, 151, 255, 0.16), transparent 24%);
-  opacity: 0.08;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 50%);
+  opacity: 0.5;
 }
 
 .sylica-dock-pill {
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.1),
-    rgba(255, 255, 255, 0.03)
-  );
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
-  backdrop-filter: blur(16px);
+  border-radius: 9999px;
+  border: 1px solid var(--sylica-glass-border);
+  background: var(--sylica-surface-overlay);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(12px);
 }
 
 .sylica-dock-tab {
@@ -279,25 +1157,17 @@ option {
 }
 
 .sylica-dock-tab-active {
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.96),
-    rgba(226, 246, 255, 0.9)
-  );
-  color: rgba(5, 10, 16, 0.94);
+  background: rgba(255, 255, 255, 0.92);
+  color: rgba(24, 26, 32, 0.94);
   box-shadow:
-    0 10px 22px rgba(139, 231, 255, 0.18),
-    inset 0 1px 0 rgba(255, 255, 255, 0.55);
+    0 4px 14px rgba(0, 0, 0, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
 }
 
 .sylica-glass-chip {
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.08),
-    rgba(255, 255, 255, 0.03)
-  );
-  backdrop-filter: blur(14px);
+  border-radius: 9999px;
+  border: 1px solid var(--sylica-glass-soft-border);
+  background: var(--sylica-surface-overlay);
 }
 
 .sylica-soft-orb {
@@ -317,14 +1187,48 @@ option {
 
 .sylica-float:hover {
   transform: translateY(-1px);
-  box-shadow: 0 18px 36px rgba(3, 6, 18, 0.22);
+  box-shadow: 0 6px 18px rgba(3, 6, 18, 0.08);
 }
 
 @keyframes sylicaWindowEnter {
   from {
     opacity: 0;
-    transform: translateY(18px) scale(0.965);
+    transform: translateY(16px) scale(0.96);
+    filter: blur(12px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes sylicaViewStageIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.972);
     filter: blur(10px);
+  }
+
+  60% {
+    opacity: 1;
+    transform: translateY(-1px) scale(1.004);
+    filter: blur(1px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes sylicaDockExpand {
+  from {
+    opacity: 0.86;
+    transform: translateY(4px) scale(0.94);
+    filter: blur(6px);
   }
 
   to {
@@ -343,6 +1247,41 @@ option {
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes sylicaIdleIslandEnter {
+  from {
+    opacity: 0;
+    transform: translateY(-10px) scaleX(0.74);
+    filter: blur(7px);
+  }
+
+  68% {
+    opacity: 0.72;
+    transform: translateY(1px) scaleX(1.04);
+    filter: blur(1px);
+  }
+
+  to {
+    opacity: 0.78;
+    transform: translateY(0) scaleX(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes sylicaIdleIslandBreathe {
+  0%,
+  100% {
+    box-shadow:
+      inset 0 -1px 0 rgba(255, 255, 255, 0.08),
+      0 6px 18px rgba(0, 0, 0, 0.2);
+  }
+
+  50% {
+    box-shadow:
+      inset 0 -1px 0 rgba(255, 255, 255, 0.12),
+      0 6px 20px rgba(0, 0, 0, 0.24);
   }
 }
 
@@ -372,19 +1311,207 @@ option {
   }
 }
 
+@keyframes sylicaAuthFloat {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+
+  50% {
+    transform: translate3d(0, -10px, 0);
+  }
+}
+
+@keyframes sylicaAuthFloatSlow {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+
+  50% {
+    transform: translate3d(0, -6px, 0) rotate(2deg);
+  }
+}
+
+@keyframes sylicaAuthOrbDrift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 0.55;
+  }
+
+  50% {
+    transform: translate3d(12px, -14px, 0) scale(1.08);
+    opacity: 0.75;
+  }
+}
+
+@keyframes sylicaAuthPulse {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1.18);
+  }
+}
+
+@keyframes sylicaAuthSparkle {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.85);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+}
+
+@keyframes sylicaAuthLineSweep {
+  0% {
+    stroke-dashoffset: 220;
+    opacity: 0;
+  }
+
+  20% {
+    opacity: 1;
+  }
+
+  100% {
+    stroke-dashoffset: 0;
+    opacity: 0.6;
+  }
+}
+
+.sylica-auth-orb {
+  position: absolute;
+  border-radius: 9999px;
+  pointer-events: none;
+  filter: blur(48px);
+  will-change: transform, opacity;
+}
+
+.sylica-auth-orb-a {
+  animation: sylicaAuthOrbDrift 11s ease-in-out infinite;
+}
+
+.sylica-auth-orb-b {
+  animation: sylicaAuthOrbDrift 13s ease-in-out -3s infinite;
+}
+
+.sylica-auth-orb-c {
+  animation: sylicaAuthOrbDrift 15s ease-in-out -6s infinite;
+}
+
+.sylica-auth-float {
+  animation: sylicaAuthFloat 6s ease-in-out infinite;
+  will-change: transform;
+}
+
+.sylica-auth-float-slow {
+  animation: sylicaAuthFloatSlow 9s ease-in-out infinite;
+  will-change: transform;
+}
+
+.sylica-auth-pulse {
+  animation: sylicaAuthPulse 3.4s ease-in-out infinite;
+  transform-origin: center;
+  will-change: transform, opacity;
+}
+
+.sylica-auth-sparkle {
+  animation: sylicaAuthSparkle 2.4s ease-in-out infinite;
+  transform-origin: center;
+  transform-box: fill-box;
+  will-change: transform, opacity;
+}
+
+.sylica-auth-sparkle-delay-1 {
+  animation-delay: 0.6s;
+}
+
+.sylica-auth-sparkle-delay-2 {
+  animation-delay: 1.2s;
+}
+
+.sylica-auth-sparkle-delay-3 {
+  animation-delay: 1.8s;
+}
+
+.sylica-auth-line-sweep {
+  stroke-dasharray: 220;
+  animation: sylicaAuthLineSweep 4s ease-in-out infinite;
+}
+
+.sylica-view-transitioning::view-transition-old(root) {
+  animation: sylicaViewFadeOut 260ms var(--sylica-spring) both;
+}
+
+.sylica-view-transitioning::view-transition-new(root) {
+  animation: sylicaViewFadeIn 420ms var(--sylica-spring) both;
+}
+
+@keyframes sylicaViewFadeOut {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+
+  to {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.982);
+    filter: blur(8px);
+  }
+}
+
+@keyframes sylicaViewFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.972);
+    filter: blur(12px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sylica-logo-spin {
     animation: none;
   }
 
   .sylica-window-enter,
+  .sylica-view-stage,
   .sylica-sheet-enter,
+  .sylica-idle-island-strip,
   .sylica-panel-switch,
-  .sylica-message-enter {
+  .sylica-message-enter,
+  .sylica-auth-orb-a,
+  .sylica-auth-orb-b,
+  .sylica-auth-orb-c,
+  .sylica-auth-float,
+  .sylica-auth-float-slow,
+  .sylica-auth-pulse,
+  .sylica-auth-sparkle,
+  .sylica-auth-line-sweep {
     animation: none;
   }
 
-  .sylica-send-button {
+  .sylica-send-button,
+  .sylica-idle-island-strip,
+  .sylica-widget-layout,
+  .sylica-expand-slot,
+  .sylica-liquid-shell,
+  .sylica-liquid-dock {
     transition: none;
   }
 }

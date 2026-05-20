@@ -19,7 +19,8 @@ import type {
   PersistedChatMessage,
   TextFollowUpRequest,
   TextFollowUpStreamEvent,
-  TextFollowUpResponse
+  TextFollowUpResponse,
+  VoiceRealtimeEvent
 } from "../shared/followUpChat"
 import type { DesktopUpdateState } from "../shared/desktopUpdates"
 import type {
@@ -31,6 +32,7 @@ import type {
   CreateLocalPhonePairingSessionResponse,
   LocalPhoneRelayState,
 } from "../shared/localPhoneRelay"
+import type { AgentState } from "../shared/agent"
 import type {
   ConnectedAppIntegration,
   IntegrationConnectResponse,
@@ -61,9 +63,13 @@ const LIVE_INTERVIEW_STATE_EVENT = "live-interview-state"
 const COMPUTER_USE_STATE_EVENT = "computer-use-state"
 const TEXT_FOLLOW_UP_STREAM_EVENT = "text-follow-up-stream"
 const SOLUTION_STREAM_EVENT = "solution-stream"
+const PROCESSING_STATUS_EVENT = "processing-status"
 const DESKTOP_UPDATE_STATE_EVENT = "updates:state"
 const SHOW_UNINSTALL_OFFBOARDING_EVENT = "show-uninstall-offboarding"
 const LOCAL_PHONE_RELAY_STATE_EVENT = "local-phone-relay-state"
+const VOICE_REALTIME_EVENT = "voice-realtime-event"
+const AUTH_STATE_UPDATED_EVENT = "auth-state-updated"
+const AGENT_STATE_EVENT = "agent-state"
 
 // At the top of the file
 console.log("Preload script is running")
@@ -74,6 +80,17 @@ const electronAPI = {
     ipcRenderer.invoke("auth:register", payload) as Promise<AuthState>,
   login: (payload: { email: string; password: string }) =>
     ipcRenderer.invoke("auth:login", payload) as Promise<AuthState>,
+  startWebLogin: () =>
+    ipcRenderer.invoke("auth:start-web-login") as Promise<
+      { success: true } | { success: false; error: string }
+    >,
+  onAuthStateUpdated: (callback: (state: AuthState) => void) => {
+    const subscription = (_: unknown, state: AuthState) => callback(state)
+    ipcRenderer.on(AUTH_STATE_UPDATED_EVENT, subscription)
+    return () => {
+      ipcRenderer.removeListener(AUTH_STATE_UPDATED_EVENT, subscription)
+    }
+  },
   logout: () =>
     ipcRenderer.invoke("auth:logout") as Promise<{ success: boolean }>,
   getAccountDashboard: () =>
@@ -123,6 +140,45 @@ const electronAPI = {
         }
       } | { success: false; error: string }
     >,
+  getAgentState: () =>
+    ipcRenderer.invoke("agent:get-state") as Promise<
+      { success: true; data: { state: AgentState } } | { success: false; error: string }
+    >,
+  selectAgentWorkspace: () =>
+    ipcRenderer.invoke("agent:select-workspace") as Promise<
+      { success: true; data: { workspacePath: string } } | { success: false; error: string }
+    >,
+  startAgentTask: (payload: { prompt: string; workspacePath?: string }) =>
+    ipcRenderer.invoke("agent:start-task", payload) as Promise<
+      { success: true; data: { state: AgentState } } | { success: false; error: string }
+    >,
+  approveAgentPhase: (payload: { taskId: string; phaseId: string }) =>
+    ipcRenderer.invoke("agent:approve-phase", payload) as Promise<
+      { success: true; data: { state: AgentState } } | { success: false; error: string }
+    >,
+  rejectAgentPhase: (payload: { taskId: string; phaseId: string; reason?: string }) =>
+    ipcRenderer.invoke("agent:reject-phase", payload) as Promise<
+      { success: true; data: { state: AgentState } } | { success: false; error: string }
+    >,
+  stopAgentTask: () =>
+    ipcRenderer.invoke("agent:stop") as Promise<
+      { success: true; data: { state: AgentState } } | { success: false; error: string }
+    >,
+  openAgentArtifact: (payload: { artifactId: string }) =>
+    ipcRenderer.invoke("agent:open-artifact", payload) as Promise<
+      { success: true } | { success: false; error: string }
+    >,
+  openAgentWorkspace: () =>
+    ipcRenderer.invoke("agent:open-workspace") as Promise<
+      { success: true } | { success: false; error: string }
+    >,
+  onAgentState: (callback: (state: AgentState) => void) => {
+    const subscription = (_: unknown, state: AgentState) => callback(state)
+    ipcRenderer.on(AGENT_STATE_EVENT, subscription)
+    return () => {
+      ipcRenderer.removeListener(AGENT_STATE_EVENT, subscription)
+    }
+  },
   openPhoneRelayWindow: () =>
     ipcRenderer.invoke("app:open-phone-relay-window") as Promise<
       { success: true } | { success: false; error: string }
@@ -183,6 +239,37 @@ const electronAPI = {
     ipcRenderer.invoke("live:add-audio-chunk", payload) as Promise<
       { success: true; data: LiveInterviewTranscriptData } | { success: false; error: string }
     >,
+  transcribeVoiceAudio: (payload: { audioBase64: string; mimeType: string }) =>
+    ipcRenderer.invoke("voice:transcribe-audio", payload) as Promise<
+      { success: true; data: { transcript: string } } | { success: false; error: string }
+    >,
+  startVoiceRealtime: (payload: { instructions: string; voice?: string }) =>
+    ipcRenderer.invoke("voice-realtime:start", payload) as Promise<
+      { success: true; data: { model: string } } | { success: false; error: string }
+    >,
+  appendVoiceRealtimeAudio: (payload: { audioBase64: string }) =>
+    ipcRenderer.invoke("voice-realtime:append-audio", payload) as Promise<
+      { success: true } | { success: false; error: string }
+    >,
+  updateVoiceRealtimeInstructions: (payload: { instructions: string; voice?: string }) =>
+    ipcRenderer.invoke("voice-realtime:update-instructions", payload) as Promise<
+      { success: true } | { success: false; error: string }
+    >,
+  stopVoiceRealtime: () =>
+    ipcRenderer.invoke("voice-realtime:stop") as Promise<
+      { success: true } | { success: false; error: string }
+    >,
+  requestVoiceRealtimeResponse: (payload?: { directive?: string }) =>
+    ipcRenderer.invoke("voice-realtime:request-response", payload || {}) as Promise<
+      { success: true } | { success: false; error: string }
+    >,
+  onVoiceRealtimeEvent: (callback: (event: VoiceRealtimeEvent) => void) => {
+    const subscription = (_: unknown, event: VoiceRealtimeEvent) => callback(event)
+    ipcRenderer.on(VOICE_REALTIME_EVENT, subscription)
+    return () => {
+      ipcRenderer.removeListener(VOICE_REALTIME_EVENT, subscription)
+    }
+  },
   getComputerUseState: () =>
     ipcRenderer.invoke("computer-use:get-state") as Promise<
       { success: true; data: { state: ComputerUseState } } | { success: false; error: string }
@@ -221,6 +308,22 @@ const electronAPI = {
     >,
   updateContentDimensions: (dimensions: { width: number; height: number }) =>
     ipcRenderer.invoke("update-content-dimensions", dimensions),
+  setDynamicIslandMode: (payload: { collapsed: boolean }) =>
+    ipcRenderer.invoke("app:set-dynamic-island-mode", payload) as Promise<
+      { success: true } | { success: false; error: string }
+    >,
+  getGuideCursorState: () =>
+    ipcRenderer.invoke("app:get-guide-cursor-state") as Promise<
+      { success: true; data: { enabled: boolean } } | { success: false; error: string }
+    >,
+  setGuideCursorEnabled: (payload: { enabled: boolean }) =>
+    ipcRenderer.invoke("app:set-guide-cursor-enabled", payload) as Promise<
+      { success: true; data: { enabled: boolean } } | { success: false; error: string }
+    >,
+  setMousePassthrough: (enabled: boolean) =>
+    ipcRenderer.invoke("app:set-mouse-passthrough", enabled) as Promise<
+      { success: true } | { success: false; error: string }
+    >,
   clearStore: () => ipcRenderer.invoke("clear-store"),
   getScreenshots: () => ipcRenderer.invoke("get-screenshots"),
   deleteScreenshot: (path: string) =>
@@ -335,6 +438,16 @@ const electronAPI = {
       ipcRenderer.removeListener(SOLUTION_STREAM_EVENT, subscription)
     }
   },
+  onProcessingStatus: (
+    callback: (data: { message?: string; progress?: number }) => void
+  ) => {
+    const subscription = (_: unknown, data: { message?: string; progress?: number }) =>
+      callback(data)
+    ipcRenderer.on(PROCESSING_STATUS_EVENT, subscription)
+    return () => {
+      ipcRenderer.removeListener(PROCESSING_STATUS_EVENT, subscription)
+    }
+  },
   onUnauthorized: (callback: () => void) => {
     const subscription = () => callback()
     ipcRenderer.on(PROCESSING_EVENTS.UNAUTHORIZED, subscription)
@@ -445,6 +558,10 @@ const electronAPI = {
   validateApiKey: (apiKey: string, provider?: ApiProvider) => 
     ipcRenderer.invoke("validate-api-key", apiKey, provider),
   openExternal: (url: string) => ipcRenderer.invoke("open-external-url", url),
+  openLocalPath: (targetPath: string) =>
+    ipcRenderer.invoke("open-local-path", targetPath) as Promise<{
+      success: true
+    } | { success: false; error: string }>,
   onApiKeyInvalid: (callback: () => void) => {
     const subscription = () => callback()
     ipcRenderer.on(PROCESSING_EVENTS.API_KEY_INVALID, subscription)
@@ -462,7 +579,23 @@ const electronAPI = {
       ipcRenderer.removeListener("delete-last-screenshot", subscription)
     }
   },
-  deleteLastScreenshot: () => ipcRenderer.invoke("delete-last-screenshot")
+  deleteLastScreenshot: () => ipcRenderer.invoke("delete-last-screenshot"),
+  onCloseExpandedPanel: (callback: () => void) => {
+    const subscription = () => callback()
+    ipcRenderer.on("close-expanded-panel", subscription)
+    return () => {
+      ipcRenderer.removeListener("close-expanded-panel", subscription)
+    }
+  },
+  onWindowOpacityChanged: (callback: (opacity: number) => void) => {
+    const subscription = (_event: Electron.IpcRendererEvent, opacity: number) => {
+      callback(opacity)
+    }
+    ipcRenderer.on("window-opacity-changed", subscription)
+    return () => {
+      ipcRenderer.removeListener("window-opacity-changed", subscription)
+    }
+  },
 }
 
 // Before exposing the API

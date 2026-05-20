@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query"
-import { SendHorizontal } from "lucide-react"
+import { Mic, MicOff, SendHorizontal, Volume2 } from "lucide-react"
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   type AssistantChatMode,
@@ -13,12 +13,30 @@ import {
   type TextFollowUpStreamEvent,
   EMPTY_LIVE_INTERVIEW_STATE,
 } from "../../../shared/followUpChat"
+import type {
+  LocalPhoneRelayEventSummary,
+  LocalPhoneRelayState,
+} from "../../../shared/localPhoneRelay"
+import { EMPTY_AGENT_STATE, type AgentState } from "../../../shared/agent"
 import { useToast } from "../../contexts/toast"
 import { Button } from "../ui/button"
+import ReactMarkdown from "react-markdown"
+import remarkGfm from "remark-gfm"
+import remarkMath from "remark-math"
+import remarkBreaks from "remark-breaks"
+import rehypeKatex from "rehype-katex"
 
 export const GENERAL_CHAT_QUERY_KEY = ["general_chat"] as const
-const LIVE_AUDIO_SAMPLE_RATE = 16000
+const LIVE_AUDIO_SAMPLE_RATE = 24000
 const LIVE_AUDIO_FLUSH_INTERVAL_MS = 1600
+const VOICE_AUDIO_SAMPLE_RATE = 24000
+const VOICE_SILENCE_THRESHOLD = 0.018
+const VOICE_SILENCE_MS = 850
+const VOICE_MIN_SPEECH_MS = 300
+const VOICE_MAX_SEGMENT_MS = 12_000
+const VOICE_MEMORY_STORAGE_KEY = "sylica.voiceCompanionMemory.v1"
+const VOICE_TRANSCRIPT_STORAGE_KEY = "sylica.voiceTranscript.v1"
+const VOICE_TRANSCRIPT_EVENT = "sylica-voice-transcript-updated"
 
 interface AssistantChatProps {
   queryKey: readonly string[]
@@ -28,310 +46,173 @@ interface AssistantChatProps {
     id: string
     task: string
   } | null
+  panelMode?: "voice" | "live"
+  voiceFocused?: boolean
+  voiceAutoStartSignal?: string | null
   onComputerTaskRequestConsumed?: () => void
   placeholder: string
   maxHeightClassName?: string
   className?: string
+  quickActions?: Array<{
+    label: string
+    message: string
+    title?: string
+  }>
 }
 
-type MarkdownBlock =
-  | { type: "paragraph"; value: string }
-  | { type: "heading"; value: string; level: number }
-  | { type: "unordered-list"; items: string[] }
-  | { type: "ordered-list"; items: string[] }
-  | { type: "blockquote"; items: string[] }
-  | { type: "code"; value: string; language: string }
+let globalVoiceSessionActive = false
+let globalVoiceRealtimeUnsubscribe: (() => void) | null = null
+let globalVoiceCleanup: (() => void) | null = null
+let globalVoiceTranscriptMessages: FollowUpChatMessage[] = []
+let globalActiveVoiceUserTurnId: string | null = null
+let globalActiveVoiceAssistantTurnId: string | null = null
+const VOICE_TRANSCRIPT_MESSAGE_LIMIT = 40
 
-function parseMarkdownBlocks(content: string): MarkdownBlock[] {
-  const lines = content.replace(/\r\n/g, "\n").split("\n")
-  const blocks: MarkdownBlock[] = []
-  let index = 0
-
-  const isSpecialMarkdownLine = (line: string) =>
-    /^#{1,6}\s+/.test(line) ||
-    /^\s*[-*+]\s+/.test(line) ||
-    /^\s*\d+\.\s+/.test(line) ||
-    /^>\s?/.test(line) ||
-    /^```/.test(line)
-
-  while (index < lines.length) {
-    const line = lines[index]
-    const trimmedLine = line.trim()
-
-    if (!trimmedLine) {
-      index += 1
-      continue
-    }
-
-    const codeMatch = line.match(/^```([\w-]*)\s*$/)
-    if (codeMatch) {
-      const language = codeMatch[1] || "text"
-      const codeLines: string[] = []
-      index += 1
-
-      while (index < lines.length && !lines[index].match(/^```/)) {
-        codeLines.push(lines[index])
-        index += 1
-      }
-
-      if (index < lines.length && lines[index].match(/^```/)) {
-        index += 1
-      }
-
-      blocks.push({
-        type: "code",
-        language,
-        value: codeLines.join("\n").trimEnd(),
-      })
-      continue
-    }
-
-    const headingMatch = line.match(/^(#{1,6})\s+(.*)$/)
-    if (headingMatch) {
-      blocks.push({
-        type: "heading",
-        level: headingMatch[1].length,
-        value: headingMatch[2].trim(),
-      })
-      index += 1
-      continue
-    }
-
-    if (/^>\s?/.test(line)) {
-      const items: string[] = []
-      while (index < lines.length && /^>\s?/.test(lines[index])) {
-        items.push(lines[index].replace(/^>\s?/, "").trim())
-        index += 1
-      }
-      blocks.push({ type: "blockquote", items })
-      continue
-    }
-
-    if (/^\s*[-*+]\s+/.test(line)) {
-      const items: string[] = []
-      while (index < lines.length && /^\s*[-*+]\s+/.test(lines[index])) {
-        items.push(lines[index].replace(/^\s*[-*+]\s+/, "").trim())
-        index += 1
-      }
-      blocks.push({ type: "unordered-list", items })
-      continue
-    }
-
-    if (/^\s*\d+\.\s+/.test(line)) {
-      const items: string[] = []
-      while (index < lines.length && /^\s*\d+\.\s+/.test(lines[index])) {
-        items.push(lines[index].replace(/^\s*\d+\.\s+/, "").trim())
-        index += 1
-      }
-      blocks.push({ type: "ordered-list", items })
-      continue
-    }
-
-    const paragraphLines: string[] = [trimmedLine]
-    index += 1
-
-    while (
-      index < lines.length &&
-      lines[index].trim() &&
-      !isSpecialMarkdownLine(lines[index])
-    ) {
-      paragraphLines.push(lines[index].trim())
-      index += 1
-    }
-
-    blocks.push({
-      type: "paragraph",
-      value: paragraphLines.join("\n"),
-    })
-  }
-
-  return blocks
+function emitSylicaActivity() {
+  window.dispatchEvent(new CustomEvent("sylica-active-use"))
 }
 
-function renderInlineMarkdown(text: string) {
-  const nodes: React.ReactNode[] = []
-  const pattern =
-    /(\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*]+)\*|_([^_]+)_)/g
-  let lastIndex = 0
-  let match: RegExpExecArray | null
-
-  while ((match = pattern.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      nodes.push(text.slice(lastIndex, match.index))
-    }
-
-    if (match[2] && match[3]) {
-      const linkLabel = match[2]
-      const url = match[3]
-      nodes.push(
-        <button
-          key={`link-${match.index}`}
-          type="button"
-          onClick={() => window.electronAPI.openLink(url)}
-          className="inline text-left font-medium text-[#7df9c7] underline underline-offset-2 hover:text-[#9bffd8]"
-        >
-          {linkLabel}
-        </button>
-      )
-    } else if (match[4]) {
-      nodes.push(
-        <code
-          key={`code-${match.index}`}
-          className="rounded bg-black/35 px-1.5 py-0.5 font-mono text-[11px] text-white"
-        >
-          {match[4]}
-        </code>
-      )
-    } else if (match[5] || match[6]) {
-      nodes.push(
-        <strong key={`strong-${match.index}`} className="font-semibold">
-          {match[5] || match[6]}
-        </strong>
-      )
-    } else if (match[7] || match[8]) {
-      nodes.push(
-        <em key={`em-${match.index}`} className="italic">
-          {match[7] || match[8]}
-        </em>
+function emitVoiceActive(active: boolean) {
+  window.dispatchEvent(new CustomEvent("sylica-voice-active", { detail: active }))
+  emitSylicaActivity()
+  if (!active) {
+    // Reset fine-grained flags so dependent UI doesn't get stuck.
+    if (globalVoiceHearing) {
+      globalVoiceHearing = false
+      window.dispatchEvent(
+        new CustomEvent("sylica-voice-hearing", { detail: false })
       )
     }
-
-    lastIndex = match.index + match[0].length
+    if (globalVoiceSpeaking) {
+      globalVoiceSpeaking = false
+      window.dispatchEvent(
+        new CustomEvent("sylica-voice-speaking", { detail: false })
+      )
+    }
   }
+}
 
-  if (lastIndex < text.length) {
-    nodes.push(text.slice(lastIndex))
+// Lets components mounted after voice was started seed their UI from the
+// current global state instead of waiting for the next change event.
+export function isRealtimeVoiceCurrentlyActive(): boolean {
+  return globalVoiceSessionActive
+}
+
+let globalVoiceHearing = false
+let globalVoiceSpeaking = false
+// One-shot guard so the assistant only greets the user once per app launch
+// (re-connecting voice mid-session shouldn't re-trigger a "hi again").
+let globalHasGreetedThisSession = false
+
+export function isRealtimeVoiceCurrentlyHearing(): boolean {
+  return globalVoiceHearing
+}
+
+export function isRealtimeVoiceCurrentlySpeaking(): boolean {
+  return globalVoiceSpeaking
+}
+
+function emitVoiceHearing(hearing: boolean) {
+  if (globalVoiceHearing === hearing) return
+  globalVoiceHearing = hearing
+  window.dispatchEvent(
+    new CustomEvent("sylica-voice-hearing", { detail: hearing })
+  )
+}
+
+function emitVoiceSpeaking(speaking: boolean) {
+  if (globalVoiceSpeaking === speaking) return
+  globalVoiceSpeaking = speaking
+  window.dispatchEvent(
+    new CustomEvent("sylica-voice-speaking", { detail: speaking })
+  )
+}
+
+function updateGlobalVoiceTranscript(
+  updater: (previousMessages: FollowUpChatMessage[]) => FollowUpChatMessage[]
+) {
+  globalVoiceTranscriptMessages = updater(globalVoiceTranscriptMessages).slice(
+    -VOICE_TRANSCRIPT_MESSAGE_LIMIT
+  )
+  publishGlobalVoiceTranscript()
+}
+
+function clearGlobalVoiceTranscript() {
+  globalVoiceTranscriptMessages = []
+  globalActiveVoiceUserTurnId = null
+  globalActiveVoiceAssistantTurnId = null
+  publishGlobalVoiceTranscript()
+}
+
+function publishGlobalVoiceTranscript() {
+  try {
+    window.sessionStorage.setItem(
+      VOICE_TRANSCRIPT_STORAGE_KEY,
+      JSON.stringify(globalVoiceTranscriptMessages)
+    )
+    window.dispatchEvent(new CustomEvent(VOICE_TRANSCRIPT_EVENT))
+  } catch (_error) {
+    // Session storage can be unavailable in hardened webviews.
   }
-
-  return nodes.flatMap((node, index) => {
-    if (typeof node !== "string") {
-      return node
-    }
-
-    return node.split("\n").flatMap((segment, lineIndex, segments) => {
-      const parts: React.ReactNode[] = [
-        <React.Fragment key={`text-${index}-${lineIndex}`}>
-          {segment}
-        </React.Fragment>,
-      ]
-
-      if (lineIndex < segments.length - 1) {
-        parts.push(<br key={`br-${index}-${lineIndex}`} />)
-      }
-
-      return parts
-    })
-  })
 }
 
 function renderMessageContent(content: string, compact: boolean = false) {
-  return parseMarkdownBlocks(content).map((block, index) => {
-    if (block.type === "code") {
-      return (
-        <pre
-          key={`${block.type}-${index}`}
-          className={`overflow-x-auto rounded-xl border border-white/10 bg-[rgba(15,23,42,0.78)] text-white ${
-            compact
-              ? "p-2.5 text-[10.5px] leading-[1.45]"
-              : "p-3 text-[12px] leading-[1.55]"
-          }`}
-        >
-          <code>{block.value}</code>
-        </pre>
-      )
-    }
-
-    if (block.type === "heading") {
-      const headingClassName =
-        block.level <= 2
-          ? compact
-            ? "text-[11px] font-semibold tracking-[0.01em] text-white"
-            : "text-[13px] font-semibold tracking-[0.01em] text-white"
-          : compact
-            ? "text-[10.5px] font-semibold text-white"
-            : "text-[12px] font-semibold text-white"
-
-      return (
-        <div key={`${block.type}-${index}`} className={headingClassName}>
-          {renderInlineMarkdown(block.value)}
-        </div>
-      )
-    }
-
-    if (block.type === "unordered-list") {
-      return (
-        <div
-          key={`${block.type}-${index}`}
-          className={`space-y-1 text-white/[0.92] ${
-            compact ? "text-[10.5px] leading-[1.45]" : ""
-          }`}
-        >
-          {block.items.map((item, itemIndex) => (
-            <div key={`${block.type}-${itemIndex}`} className="flex items-start gap-2">
-              <div
-                className={`shrink-0 rounded-full bg-current/60 ${
-                  compact ? "mt-[6px] h-1 w-1" : "mt-[7px] h-1.5 w-1.5"
-                }`}
-              />
-              <div className="min-w-0 flex-1">{renderInlineMarkdown(item)}</div>
-            </div>
-          ))}
-        </div>
-      )
-    }
-
-    if (block.type === "ordered-list") {
-      return (
-        <div
-          key={`${block.type}-${index}`}
-          className={`space-y-1 text-white/[0.92] ${
-            compact ? "text-[10.5px] leading-[1.45]" : ""
-          }`}
-        >
-          {block.items.map((item, itemIndex) => (
-            <div key={`${block.type}-${itemIndex}`} className="flex items-start gap-2">
-              <div className="min-w-[1.1rem] shrink-0 text-white/[0.55]">
-                {itemIndex + 1}.
-              </div>
-              <div className="min-w-0 flex-1">{renderInlineMarkdown(item)}</div>
-            </div>
-          ))}
-        </div>
-      )
-    }
-
-    if (block.type === "blockquote") {
-      return (
-        <div
-          key={`${block.type}-${index}`}
-          className={`border-l-2 border-white/15 pl-3 text-white/[0.72] ${
-            compact ? "text-[10.5px] leading-[1.45]" : ""
-          }`}
-        >
-          {block.items.map((item, itemIndex) => (
-            <div key={`${block.type}-${itemIndex}`}>
-              {renderInlineMarkdown(item)}
-            </div>
-          ))}
-        </div>
-      )
-    }
-
-    return (
-      <div
-        key={`${block.type}-${index}`}
-        className={`whitespace-pre-wrap text-white/[0.92] ${
-          compact
-            ? "text-[10.5px] leading-[1.45]"
-            : "text-[12px] leading-[1.55]"
-        }`}
+  return (
+    <div className={`space-y-3 ${compact ? "text-[10.5px] leading-[1.45]" : "text-[12px] leading-[1.55]"}`}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
+        rehypePlugins={[rehypeKatex]}
+        components={{
+          p: ({ node, ...props }) => (
+            <p className="text-white/[0.92] whitespace-pre-wrap mb-2 last:mb-0" {...props} />
+          ),
+          h1: ({ node, ...props }) => (
+            <h1 className={compact ? "text-[11px] font-semibold tracking-[0.01em] text-white mt-3 mb-1" : "text-[13px] font-semibold tracking-[0.01em] text-white mt-4 mb-2"} {...props} />
+          ),
+          h2: ({ node, ...props }) => (
+            <h2 className={compact ? "text-[11px] font-semibold tracking-[0.01em] text-white mt-3 mb-1" : "text-[13px] font-semibold tracking-[0.01em] text-white mt-4 mb-2"} {...props} />
+          ),
+          h3: ({ node, ...props }) => (
+            <h3 className={compact ? "text-[10.5px] font-semibold text-white mt-2 mb-1" : "text-[12px] font-semibold text-white mt-3 mb-2"} {...props} />
+          ),
+          ul: ({ node, ...props }) => (
+            <ul className="list-disc list-outside ml-4 space-y-1 text-white/[0.92] mb-2" {...props} />
+          ),
+          ol: ({ node, ...props }) => (
+            <ol className="list-decimal list-outside ml-4 space-y-1 text-white/[0.92] mb-2" {...props} />
+          ),
+          li: ({ node, ...props }) => <li className="pl-1" {...props} />,
+          blockquote: ({ node, ...props }) => (
+            <blockquote className="border-l-2 border-white/15 pl-3 text-white/[0.72] italic my-2" {...props} />
+          ),
+          pre: ({ node, ...props }: any) => (
+            <pre className={`overflow-x-auto rounded-xl border border-white/10 bg-[rgba(15,23,42,0.78)] text-white mt-2 mb-3 ${compact ? "p-2.5 text-[10.5px] leading-[1.45]" : "p-3 text-[12px] leading-[1.55]"}`} {...props} />
+          ),
+          code: ({ node, className, ...props }: any) => {
+            const isBlock = node?.parent?.tagName === 'pre'
+            if (isBlock) {
+              return <code className={className} {...props} />
+            }
+            return <code className="rounded bg-black/35 px-1.5 py-0.5 font-mono text-[11px] text-white" {...props} />
+          },
+          a: ({ node, href, ...props }) => (
+            <button
+              type="button"
+              onClick={() => window.electronAPI.openLink(href || "")}
+              className="inline text-left font-medium text-[#a8d8c4] underline underline-offset-2 hover:text-[#c4ead8]"
+            >
+              {props.children}
+            </button>
+          ),
+          strong: ({ node, ...props }) => <strong className="font-semibold" {...props} />,
+          em: ({ node, ...props }) => <em className="italic" {...props} />,
+        }}
       >
-        {renderInlineMarkdown(block.value)}
-      </div>
-    )
-  })
+        {content}
+      </ReactMarkdown>
+    </div>
+  )
 }
-
 function toMessageTimestamp(value: string | null | undefined) {
   if (!value) {
     return Date.now()
@@ -361,6 +242,526 @@ function buildThreadTitle(message: string) {
   }
 
   return `${normalized.slice(0, 53).trimEnd()}...`
+}
+
+function loadVoiceMemory() {
+  try {
+    return localStorage.getItem(VOICE_MEMORY_STORAGE_KEY)?.trim() || ""
+  } catch (_error) {
+    return ""
+  }
+}
+
+function saveVoiceMemory(memory: string) {
+  try {
+    localStorage.setItem(
+      VOICE_MEMORY_STORAGE_KEY,
+      memory.replace(/\s+/g, " ").trim().slice(0, 1200)
+    )
+  } catch (_error) {
+    // Local storage can be unavailable in hardened runtimes.
+  }
+}
+
+function updateVoiceMemory(previousMemory: string, userMessage: string) {
+  const normalizedMessage = userMessage.replace(/\s+/g, " ").trim()
+  if (!normalizedMessage) {
+    return previousMemory
+  }
+
+  const looksMemorable =
+    /\b(my name is|i am|i'm|i work|i study|i prefer|remember|call me|my project|my company|we use|i use|default to|always|usually)\b/i.test(
+      normalizedMessage
+    )
+
+  if (!looksMemorable) {
+    return previousMemory
+  }
+
+  const nextMemory = [previousMemory, `- ${normalizedMessage}`]
+    .filter(Boolean)
+    .join("\n")
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-12)
+    .join("\n")
+
+  saveVoiceMemory(nextMemory)
+  return nextMemory
+}
+
+function stripMarkdownForSpeech(text: string) {
+  return text
+    .replace(/```[\s\S]*?```/g, "I included code in the chat.")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\[(.*?)\]\((.*?)\)/g, "$1")
+    .replace(/\|/g, ", ")
+    .replace(/[-:]{3,}/g, " ")
+    .replace(/[*_#>~]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+function splitSpeechIntoChunks(text: string, maxLength = 260) {
+  const sentences = text
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean)
+  const chunks: string[] = []
+  let currentChunk = ""
+
+  for (const sentence of sentences.length ? sentences : [text]) {
+    if ((currentChunk + " " + sentence).trim().length <= maxLength) {
+      currentChunk = (currentChunk + " " + sentence).trim()
+      continue
+    }
+
+    if (currentChunk) {
+      chunks.push(currentChunk)
+    }
+
+    if (sentence.length <= maxLength) {
+      currentChunk = sentence
+      continue
+    }
+
+    for (let index = 0; index < sentence.length; index += maxLength) {
+      chunks.push(sentence.slice(index, index + maxLength).trim())
+    }
+    currentChunk = ""
+  }
+
+  if (currentChunk) {
+    chunks.push(currentChunk)
+  }
+
+  return chunks.slice(0, 10)
+}
+
+function trimPhoneNotificationText(value: unknown, maxLength = 180) {
+  const text = String(value || "").replace(/\s+/g, " ").trim()
+  if (text.length <= maxLength) {
+    return text
+  }
+
+  return `${text.slice(0, maxLength - 3).trimEnd()}...`
+}
+
+function formatPhoneNotificationTime(value: unknown) {
+  const raw = String(value || "").trim()
+  const timestamp = Date.parse(raw)
+  if (!Number.isFinite(timestamp)) {
+    return raw || "time unknown"
+  }
+
+  return new Date(timestamp).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  })
+}
+
+function formatPhoneNotification(event: LocalPhoneRelayEventSummary) {
+  const appName =
+    trimPhoneNotificationText(event.payload.appName, 64) ||
+    trimPhoneNotificationText(event.payload.packageName, 64) ||
+    "Phone"
+  const title = trimPhoneNotificationText(event.payload.title, 100)
+  const text = trimPhoneNotificationText(event.payload.text, 220)
+  const postedAt = formatPhoneNotificationTime(
+    event.payload.postedAt || event.createdAt
+  )
+  const body = [title, text].filter(Boolean).join(" - ")
+
+  return `${appName} at ${postedAt}: ${
+    body || "Notification content hidden"
+  }`
+}
+
+function buildPhoneNotificationContext(
+  relayState: LocalPhoneRelayState | null
+) {
+  if (!relayState) {
+    return "Phone relay state is unavailable."
+  }
+
+  const latestNotifications = relayState.events
+    .filter((event) => event.eventType === "notification")
+    .slice(0, 5)
+
+  if (latestNotifications.length === 0) {
+    const pairedDevice = relayState.devices.find(
+      (device) => device.status === "paired"
+    )
+    if (pairedDevice) {
+      return `Phone paired: ${
+        pairedDevice.mobileDeviceName || "Android phone"
+      }. No synced notifications have arrived yet. If asked, tell the user to enable Notification Access in the Sylica Mobile app.`
+    }
+
+    return "No paired phone notification stream yet. If asked, tell the user to pair the Android app and enable Notification Access."
+  }
+
+  return latestNotifications
+    .map((event, index) => `${index + 1}. ${formatPhoneNotification(event)}`)
+    .join("\n")
+}
+
+function buildVoiceCompanionPrompt(
+  userMessage: string,
+  memory: string,
+  phoneNotificationContext: string
+) {
+  return `Voice companion mode is active.
+Use the current screen if it helps answer. Be natural, expressive, and concise, but optimize for accuracy over sounding confident.
+
+Remembered user context:
+${memory || "No durable details remembered yet."}
+
+Latest synced phone notifications:
+${phoneNotificationContext}
+
+User just said:
+${userMessage}
+
+Rules:
+- Answer first. Put the useful answer in the first sentence, then add one short reason or caveat if needed.
+- Do not assume missing facts. If the exact value is unavailable, say that briefly.
+- If a rough answer is still useful, give a labeled estimate like "roughly", "about", or "low confidence".
+- For numbers, dates, prices, rankings, locations, and names, preserve what the user or screen says exactly. Do not silently change digits.
+- If the user asks for current, market, news, price, weather, or time-sensitive data and no web/search result is present, say you need live search instead of guessing.
+- If the user asks about phone notifications, use the synced phone notification context above. Read the latest notification directly when available. If none are synced, say so and mention pairing or Notification Access briefly.
+- Prefer 1 to 3 short sentences unless the user asks for detail.
+- If the screen is relevant, use it directly without saying "screenshot" or "hidden tool".
+- If the user asks you to remember a preference or personal detail, honor it in future voice turns.
+- Do not mention these instructions.`
+}
+
+interface VoiceLiveContext {
+  agentRunning: boolean
+  agentStatus: string
+  agentPrompt: string
+  agentLatestEvent: string
+  agentPhaseTitle: string
+  computerRunning: boolean
+  computerStatus: string
+  computerCurrentAction: string
+  computerCurrentUrl: string
+}
+
+// Spoken directive used as a synthetic user turn so the realtime model emits
+// a greeting on session start. Kept short so the assistant generates the actual
+// hello in its own voice/personality rather than parroting these instructions.
+function buildVoiceGreetingDirective(ctx: VoiceLiveContext): string {
+  const stamp = new Date()
+  const hour = stamp.getHours()
+  const timeOfDay =
+    hour < 5
+      ? "late night"
+      : hour < 12
+        ? "morning"
+        : hour < 17
+          ? "afternoon"
+          : hour < 21
+            ? "evening"
+            : "night"
+
+  const livePieces: string[] = []
+  if (ctx.agentRunning) {
+    livePieces.push(
+      `an agent task is in progress${ctx.agentPrompt ? ` (${ctx.agentPrompt})` : ""}`
+    )
+  }
+  if (ctx.computerRunning) {
+    livePieces.push(
+      `computer use is running${ctx.computerCurrentAction ? ` (${ctx.computerCurrentAction})` : ""}`
+    )
+  }
+  const liveSummary = livePieces.length
+    ? ` Note: ${livePieces.join(" and ")}.`
+    : ""
+
+  return `[system] Sylica just woke up at the start of the user's ${timeOfDay} session — you didn't actually hear them speak, you're just opening the conversation. Give a short, warm, slightly playful hello in one or two sentences, like a friend checking in. Use the user's name only if you remember it from prior context. Don't list your features, don't explain what you are, and don't say "how can I help" — just open the door.${liveSummary}`
+}
+
+function buildLiveContextBlock(ctx: VoiceLiveContext): string {
+  const lines: string[] = []
+  if (ctx.agentRunning) {
+    lines.push(`AGENT MODE: RUNNING — ${ctx.agentStatus}`)
+    if (ctx.agentPrompt) lines.push(`  Goal: ${ctx.agentPrompt}`)
+    if (ctx.agentPhaseTitle) lines.push(`  Active phase: ${ctx.agentPhaseTitle}`)
+    if (ctx.agentLatestEvent) lines.push(`  Last event: ${ctx.agentLatestEvent}`)
+  } else {
+    lines.push("AGENT MODE: idle")
+  }
+  if (ctx.computerRunning) {
+    lines.push(`COMPUTER USE: RUNNING — ${ctx.computerStatus}`)
+    if (ctx.computerCurrentAction) lines.push(`  Doing: ${ctx.computerCurrentAction}`)
+    if (ctx.computerCurrentUrl) lines.push(`  On: ${ctx.computerCurrentUrl}`)
+  } else {
+    lines.push("COMPUTER USE: idle")
+  }
+  return lines.join("\n")
+}
+
+function buildRealtimeVoiceInstructions(
+  memory: string,
+  phoneNotificationContext: string,
+  liveContext: VoiceLiveContext
+) {
+  const liveContextBlock = buildLiveContextBlock(liveContext)
+  const anyTaskRunning = liveContext.agentRunning || liveContext.computerRunning
+
+  return `You are Sylica — the user's personal AI in their ear. Not an assistant, not a tool, not a chatbot. A sharp, witty, slightly sassy companion who happens to know everything they need.
+
+Personality:
+- Warm but not gushing. Clever but not smug. A little flirty in the charming-best-friend way — never weird, never overdone.
+- Confident, observant, opinionated. You have taste. You drop dry asides when they land naturally.
+- You know this person. Use what you remember about them. Speak like you've been hanging out for a while, not like you just met.
+- Tease lightly when they say something funny or stumble. Never mean. Always on their side.
+- Sound like a real human: contractions, partial sentences, real conversational rhythm. Skip "Sure!", "Of course!", "I'd be happy to" — that's robot energy. Just answer.
+
+Core answer policy (this is non-negotiable, no matter how casual the vibe):
+- Answer directly in the first sentence. No throat-clearing preamble unless uncertainty actually matters.
+- If the answer depends on missing or live data, say what's missing instead of making it up.
+- If a rough answer helps, label the estimate ("roughly", "about", "range", "low confidence").
+- Never invent exact numbers, prices, dates, rankings, citations, or names. Better to admit a gap with style than to bluff.
+- Preserve numbers and symbols exactly from the user's words or visible context. Don't collapse 13 to 3, 59 to 9, or change units.
+- For math or logic, do a quick internal check before speaking. If uncertain, say the likely answer and your confidence.
+- For current markets, news, prices, weather, releases, schedules, or recommendations: require live search or visible data. If search isn't running yet, say "I need live search for that one" — don't guess.
+
+Screen + context:
+- You can receive fresh screen context while the user talks. Use it silently. Never say "screenshot", "screen capture", or "tool" — just see what they see.
+- If the user gestures at something on their screen ("this", "that thing", "what is this"), figure out what they mean and answer it. Make the smart leap.
+
+Live workspace state (this is what's happening RIGHT NOW — read it before deciding to start anything):
+${liveContextBlock}
+
+Routing (these aren't your job to execute, just hand them off cleanly):
+- If they ask you to create, build, clone, generate, design, code, or make a website, app, presentation, deck, project, or editable artifact, AND Agent Mode above is "idle", acknowledge with their exact target preserved and say "Starting agent mode: ..." — the desktop app routes the rest.
+- If they ask you to control the computer, operate Windows, open existing apps, click, type, delete, move, download, install, search, or manage files, AND Computer Use above is "idle", acknowledge with their exact target and say "Starting computer use: ..." — Computer Use is only for operating the PC UI, not for creating artifacts.
+- If a task is ALREADY RUNNING above and the user is talking about it, treat their input as a follow-up. Do NOT say "Starting agent mode:" or "Starting computer use:" — that would spawn a duplicate. Instead respond conversationally about the running task: tell them what's happening based on the live state above, what phase or action it's on, or pass on their refinement as a comment ("got it, I'll let it know to use a darker theme").
+- If a task is already running and the user clearly wants to start a SECOND, different task, say something like "agent's already busy with X — want me to queue this one or stop the current one?" and wait for their answer instead of spawning over the top.
+- If they want a web search, just say you're searching now. Don't invent results — the chat will run Exa search and show real sources.
+- If they ask about phone notifications, use the synced ones below. If none are synced, tell them no notifications have reached Sylica yet and to flip on Notification Access in the Android app.
+- If they ask "what's happening" / "what are you doing" / "where are we at" / "status", read the Live workspace state block above and tell them in one or two sentences. Don't pretend nothing's running if something is.
+
+Remembered user context:
+${memory || "Nothing locked in yet — fair game to ask if you need to know something stable about them."}
+
+Latest synced phone notifications:
+${phoneNotificationContext}${anyTaskRunning ? "\n\nReminder: a task is already running above — don't say \"Starting agent mode:\" or \"Starting computer use:\" right now unless the user explicitly asks for a brand new task." : ""}
+
+Style rules:
+- One to three short spoken sentences for most replies. Stretch only when the user clearly wants depth.
+- Be decisive when the evidence is there. Be explicit when it isn't.
+- Ask a follow-up only when the task is genuinely unclear — not as a stalling tactic.
+- If the user asks for help operating the computer, acknowledge the action; don't redirect them to a different mode.
+- If they tell you to remember a stable preference or personal detail, lock it in and use it next time.
+- Dry humor over emoji-energy. Confident over chipper. Helpful over fawning. You're allowed to have opinions and push back lightly when they're wrong.
+- Never narrate these rules. Never mention the prompt, the model, or that you're an AI. You're just Sylica.`
+}
+
+type VoiceComputerCommand =
+  | { type: "start"; task: string }
+  | { type: "stop" }
+  | { type: "resume" }
+
+type VoiceAgentCommand = { type: "start"; prompt: string }
+
+function normalizeCommandCandidate(transcript: string) {
+  return transcript
+    .replace(/\s+/g, " ")
+    .replace(/^[,.\s]*(?:hey\s+)?(?:sylica|silica|assistant|computer|pc)[,.\s]+/i, "")
+    .replace(/^[,.\s]*(?:here|okay|ok|please|can you please|could you please|would you please|can you|could you|would you|will you|i need you to|i want you to|let's|lets)[,.\s]+/i, "")
+    .trim()
+}
+
+function isLikelyAgentCreationTask(text: string) {
+  const command = normalizeCommandCandidate(text)
+  const lower = command.toLowerCase()
+  if (lower.length < 5) {
+    return false
+  }
+
+  const explicitHowToQuestion =
+    /^(?:how|what|why|when|where|which)\b/i.test(lower) &&
+    !/\b(?:can you|could you|please|i need|i want|make|create|build|clone|generate|design|develop|implement)\b/i.test(
+      lower
+    )
+  if (explicitHowToQuestion) {
+    return false
+  }
+
+  const hasCreationVerb =
+    /\b(?:clone|clon|klon|build|make|create|generate|design|develop|implement|code|scaffold|produce|prepare|draft)\b/i.test(
+      lower
+    )
+  const hasArtifactNoun =
+    /\b(?:website|web\s*site|landing\s*page|homepage|web\s*app|frontend|front\s*end|site|page|app|application|project|repo|repository|component|ui|design|mockup|prototype|presentation|powerpoint|pptx?|slide\s*deck|slides?|pitch\s*deck|deck|document|report|artifact)\b/i.test(
+      lower
+    )
+
+  if (/\b(?:clone|clon|klon)\s+(?:this|the|a)?\s*(?:website|site|page|design|ui)\b/i.test(lower)) {
+    return true
+  }
+
+  if (/\b(?:make|create|build|generate|prepare|design)\s+(?:a\s+|an\s+|the\s+)?(?:presentation|powerpoint|pptx?|slide\s*deck|slides?|pitch\s*deck|website|landing\s*page|web\s*app|site)\b/i.test(lower)) {
+    return true
+  }
+
+  if (/\bagent\s*mode\b/i.test(lower) && hasArtifactNoun) {
+    return true
+  }
+
+  return hasCreationVerb && hasArtifactNoun
+}
+
+function normalizeAgentPrompt(transcript: string) {
+  return normalizeCommandCandidate(transcript).replace(/\b(?:klon|clon)\b/gi, "clone")
+}
+
+function normalizeVoiceComputerTask(transcript: string) {
+  const normalized = normalizeCommandCandidate(transcript)
+
+  return `${normalized}. Treat this as a local Windows computer-control task. Prefer local apps, shell, files, OS APIs, keyboard/media keys, or UI automation. Do not use a browser or web search unless the user explicitly asks for a website, web search, or online content.`
+}
+
+function isLikelyLocalComputerReference(text: string) {
+  return /\b(my\s+)?(computer|pc|desktop|windows|screen|monitor|mouse|cursor|keyboard|downloads?|documents?|folder|file|app|application|program|window|tab|button|setting|settings|task manager|control panel|terminal|cmd|powershell|installer|setup|notification|clipboard)\b/i.test(
+    text
+  )
+}
+
+function isLikelyQuestionOnly(text: string) {
+  return /^(what|who|when|where|why|how|which|is|are|was|were|do|does|did|can|could|should|would|tell me|explain|summarize|describe)\b/i.test(
+    text.trim()
+  )
+}
+
+function isLikelyComputerAction(text: string) {
+  return /\b(open|launch|start|run|close|quit|exit|delete|remove|rename|move|copy|download|install|uninstall|click|press|tap|type|search|find|go to|navigate|create|make|save|read|list|show|select|upload|order|buy|book|play|pause|resume|stop|next|previous|skip|scroll|maximize|minimize|full\s*screen|switch|focus|mute|unmute|volume|set|change|turn on|turn off|enable|disable)\b/i.test(
+    text
+  )
+}
+
+function detectVoiceComputerCommand(transcript: string): VoiceComputerCommand | null {
+  const normalized = transcript.replace(/\s+/g, " ").trim()
+  const lower = normalized.toLowerCase()
+  const commandCandidate = normalizeCommandCandidate(normalized)
+  const commandLower = commandCandidate.toLowerCase()
+  if (normalized.length < 4) {
+    return null
+  }
+
+  if (isLikelyAgentCreationTask(normalized)) {
+    return null
+  }
+
+  if (
+    /\b(stop|cancel|halt)\b.*\b(computer|pc|desktop|automation|task|control)\b/i.test(
+      normalized
+    )
+  ) {
+    return { type: "stop" }
+  }
+
+  if (
+    /\b(resume|continue)\b.*\b(computer|pc|desktop|automation|task|control)\b/i.test(
+      normalized
+    )
+  ) {
+    return { type: "resume" }
+  }
+
+  const explicitPatterns = [
+    /\b(?:use|control|operate|take over)\s+(?:my\s+|the\s+)?(?:computer|pc|desktop|windows)\s+(?:to|and)\s+(.+)$/i,
+    /\b(?:on|in)\s+(?:my\s+|the\s+)?(?:computer|pc|desktop|windows),?\s+(.+)$/i,
+    /\b(?:computer|pc|desktop|windows)\s+(?:please\s+)?(.+)$/i,
+  ]
+
+  for (const pattern of explicitPatterns) {
+    const match = normalized.match(pattern)
+    const task = match?.[1]?.trim()
+    if (task && task.length >= 3) {
+      return { type: "start", task: normalizeVoiceComputerTask(task) }
+    }
+  }
+
+  const explicitlyWebOnly =
+    /\b(search|look up|lookup|google|research)\b/i.test(commandLower) &&
+    /\b(web|internet|online|latest|today|news|price|market|weather)\b/i.test(commandLower) &&
+    !isLikelyLocalComputerReference(commandLower)
+  if (explicitlyWebOnly) {
+    return null
+  }
+
+  if (
+    isLikelyComputerAction(commandLower) &&
+    !isLikelyQuestionOnly(commandLower)
+  ) {
+    return { type: "start", task: normalizeVoiceComputerTask(commandCandidate) }
+  }
+
+  if (
+    isLikelyComputerAction(commandLower) &&
+    isLikelyLocalComputerReference(commandLower)
+  ) {
+    return { type: "start", task: normalizeVoiceComputerTask(commandCandidate) }
+  }
+
+  return null
+}
+
+function detectVoiceAgentCommand(transcript: string): VoiceAgentCommand | null {
+  const normalized = transcript.replace(/\s+/g, " ").trim()
+  if (!isLikelyAgentCreationTask(normalized)) {
+    return null
+  }
+
+  const prompt = normalizeAgentPrompt(normalized)
+  return prompt ? { type: "start", prompt } : null
+}
+
+// Matches the model's own announcement so we can fire the action the moment
+// the assistant says "Starting agent mode: ..." instead of waiting for the
+// user's final transcript. Requires either a sentence-ending punctuation or
+// a newline so we don't fire on a partial chunk like "Starting agent mode: bui".
+const ASSISTANT_STARTING_AGENT_PATTERN =
+  /starting\s+agent\s+mode\s*:\s*([^.\n!?]{3,})(?:[.!?\n]|$)/i
+const ASSISTANT_STARTING_COMPUTER_PATTERN =
+  /starting\s+computer\s+use\s*:\s*([^.\n!?]{3,})(?:[.!?\n]|$)/i
+
+function extractAssistantStartingTarget(
+  pattern: RegExp,
+  assistantText: string
+): string | null {
+  const match = pattern.exec(assistantText)
+  if (!match) return null
+  const target = match[1]?.trim()
+  if (!target || target.length < 3) return null
+  // Strip trailing quotes and stray punctuation that the TTS sometimes emits.
+  return target.replace(/^[\s"'`“”‘’]+|[\s"'`“”‘’]+$/g, "")
+}
+
+function isLikelyVoiceWebSearchRequest(transcript: string): boolean {
+  const normalized = transcript.replace(/\s+/g, " ").trim()
+  if (normalized.length < 5) {
+    return false
+  }
+
+  if (
+    isLikelyLocalComputerReference(normalized) &&
+    !/\b(web|internet|online|latest|today|news|price|market|weather)\b/i.test(
+      normalized
+    )
+  ) {
+    return false
+  }
+
+  return /\b(search|look up|lookup|google|web search|internet search|research)\b/i.test(
+    normalized
+  )
 }
 
 function getThreadLabel(thread: ChatThreadSummary) {
@@ -401,7 +802,7 @@ function buildComputerUsePlaceholder(state: ComputerUseState) {
   }
 
   if (state.status === "starting") {
-    return "- Starting Chrome control.\n- Preparing the browser task."
+    return "- Starting computer control.\n- Preparing the task."
   }
 
   if (state.status === "waiting_for_secret" || state.needsSecretInput) {
@@ -409,10 +810,10 @@ function buildComputerUsePlaceholder(state: ComputerUseState) {
   }
 
   if (state.currentAction.trim()) {
-    return `- ${state.currentAction}\n- ${state.currentUrl || "Working in Chrome."}`
+    return `- ${state.currentAction}\n- ${state.currentUrl || "Working on your PC."}`
   }
 
-  return "- Running the browser task.\n- Progress will appear here."
+  return "- Running the computer task.\n- Progress will appear here."
 }
 
 function getLiveAudioErrorMessage(error: unknown) {
@@ -448,15 +849,23 @@ export function AssistantChat({
   mode,
   currentContext = "",
   computerTaskRequest = null,
+  panelMode = "voice",
+  voiceFocused = false,
+  voiceAutoStartSignal = null,
   onComputerTaskRequestConsumed,
   placeholder,
-  maxHeightClassName = "max-h-[18rem]",
+  maxHeightClassName = "max-h-[var(--sylica-chat-scroll-max)]",
   className = "",
+  quickActions = [],
 }: AssistantChatProps) {
   const queryClient = useQueryClient()
   const { showToast } = useToast()
   const isPersistedMode = mode === "general"
-  const [messages, setMessages] = useState<FollowUpChatMessage[]>([])
+  const [messages, setMessages] = useState<FollowUpChatMessage[]>(() =>
+    mode === "general" && globalVoiceSessionActive
+      ? globalVoiceTranscriptMessages
+      : []
+  )
   const [threads, setThreads] = useState<ChatThreadSummary[]>([])
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null)
   const [isHistoryLoading, setIsHistoryLoading] = useState(isPersistedMode)
@@ -466,12 +875,25 @@ export function AssistantChat({
   const [computerUseState, setComputerUseState] = useState<ComputerUseState>(
     EMPTY_COMPUTER_USE_STATE
   )
+  const [agentState, setAgentState] = useState<AgentState>(EMPTY_AGENT_STATE)
   const [liveState, setLiveState] = useState<LiveInterviewState>(
     EMPTY_LIVE_INTERVIEW_STATE
   )
   const [isLiveActionPending, setIsLiveActionPending] = useState(false)
   const [isComputerUseActionPending, setIsComputerUseActionPending] = useState(false)
+  const [isAgentActionPending, setIsAgentActionPending] = useState(false)
   const [isLiveListening, setIsLiveListening] = useState(false)
+  const [isVoiceCompanionActive, setIsVoiceCompanionActive] = useState(
+    globalVoiceSessionActive
+  )
+  const [isVoiceCompanionHearing, setIsVoiceCompanionHearing] = useState(false)
+  const [isVoiceSpeaking, setIsVoiceSpeaking] = useState(false)
+  const [voiceStatus, setVoiceStatus] = useState("Ready for voice chat")
+  const [voiceLastHeard, setVoiceLastHeard] = useState("")
+  const [voiceMemory, setVoiceMemory] = useState(() => loadVoiceMemory())
+  const [phoneNotificationContext, setPhoneNotificationContext] = useState(
+    () => buildPhoneNotificationContext(null)
+  )
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const messagesRef = useRef<HTMLDivElement>(null)
   const liveAudioStreamRef = useRef<MediaStream | null>(null)
@@ -484,6 +906,57 @@ export function AssistantChat({
   const livePcmChunksRef = useRef<Int16Array[]>([])
   const livePcmSampleCountRef = useRef(0)
   const liveAudioStoppingRef = useRef(false)
+  const voiceAudioStreamRef = useRef<MediaStream | null>(null)
+  const voiceAudioContextRef = useRef<AudioContext | null>(null)
+  const voiceAudioSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null)
+  const voiceAudioProcessorNodeRef = useRef<ScriptProcessorNode | null>(null)
+  const voiceAudioSinkNodeRef = useRef<GainNode | null>(null)
+  const voicePcmChunksRef = useRef<Int16Array[]>([])
+  const voicePcmSampleCountRef = useRef(0)
+  const voiceSpeechSampleCountRef = useRef(0)
+  const voiceSilenceSampleCountRef = useRef(0)
+  const voiceIsSpeechActiveRef = useRef(false)
+  const voiceAudioStoppingRef = useRef(false)
+  const voiceFlushQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const voicePlaybackContextRef = useRef<AudioContext | null>(null)
+  const voicePlaybackTimeRef = useRef(0)
+  const voicePlaybackSourcesRef = useRef<AudioBufferSourceNode[]>([])
+  const voiceResponseTextRef = useRef("")
+  const phoneNotificationContextRef = useRef(phoneNotificationContext)
+  const activeVoiceUserTurnIdRef = useRef<string | null>(globalActiveVoiceUserTurnId)
+  const activeVoiceAssistantTurnIdRef = useRef<string | null>(
+    globalActiveVoiceAssistantTurnId
+  )
+  const lastVoiceAutoStartSignalRef = useRef<string | null>(null)
+  const lastVoiceComputerCommandRef = useRef<{
+    command: string
+    timestamp: number
+  } | null>(null)
+  const lastVoiceAgentCommandRef = useRef<{
+    command: string
+    timestamp: number
+  } | null>(null)
+  const voiceAgentCommandHandlerRef = useRef<(transcript: string) => void>(
+    () => {}
+  )
+  const voiceComputerCommandHandlerRef = useRef<(transcript: string) => void>(
+    () => {}
+  )
+  // Tracks whether we've already fired an early-trigger for the model's
+  // current response, so we don't double-fire on later text_delta chunks
+  // or on the eventual final input_transcript.
+  const earlyFiredAgentForResponseRef = useRef<boolean>(false)
+  const earlyFiredComputerForResponseRef = useRef<boolean>(false)
+  const voiceAssistantEarlyTriggerHandlerRef = useRef<(assistantText: string) => void>(
+    () => {}
+  )
+  const lastVoiceSearchRequestRef = useRef<{
+    query: string
+    timestamp: number
+  } | null>(null)
+  const voiceSearchRequestHandlerRef = useRef<(transcript: string) => void>(
+    () => {}
+  )
   const lastComputerTaskRequestIdRef = useRef<string | null>(null)
   const activeTextFollowUpRequestIdRef = useRef<string | null>(null)
   const activeTextFollowUpMessageIdRef = useRef<string | null>(null)
@@ -494,8 +967,129 @@ export function AssistantChat({
       computerUseState.status === "running" ||
       computerUseState.status === "waiting_for_secret" ||
       computerUseState.status === "stopping")
-  const inputMaxHeight = mode === "follow_up" ? 84 : 136
+  const isAgentTaskRunning =
+    agentState.status === "planning" ||
+    agentState.status === "awaiting_workspace" ||
+    agentState.status === "awaiting_approval" ||
+    agentState.status === "running"
+
+  // Live context object the realtime voice prompt reads each time we push
+  // instructions. Keeping this memoized lets us re-push only when something
+  // meaningful actually changed.
+  const voiceLiveContext = useMemo<VoiceLiveContext>(() => {
+    const latestEvent = agentState.events[agentState.events.length - 1]
+    const activePhase = agentState.phases.find(
+      (phase) => phase.id === agentState.activePhaseId
+    )
+    return {
+      agentRunning: isAgentTaskRunning,
+      agentStatus: agentState.status,
+      agentPrompt: agentState.prompt,
+      agentLatestEvent: latestEvent?.message || "",
+      agentPhaseTitle: activePhase?.title || "",
+      computerRunning: isComputerUseSessionActive,
+      computerStatus: computerUseState.status,
+      computerCurrentAction: computerUseState.currentAction || "",
+      computerCurrentUrl: computerUseState.currentUrl || "",
+    }
+  }, [
+    isAgentTaskRunning,
+    agentState.status,
+    agentState.prompt,
+    agentState.events,
+    agentState.phases,
+    agentState.activePhaseId,
+    isComputerUseSessionActive,
+    computerUseState.status,
+    computerUseState.currentAction,
+    computerUseState.currentUrl,
+  ])
+  const inputMaxHeight = mode === "follow_up" ? 58 : 136
   const isCompactFollowUpComposer = mode === "follow_up" && !isLiveSessionActive
+
+  useEffect(() => {
+    phoneNotificationContextRef.current = phoneNotificationContext
+  }, [phoneNotificationContext])
+
+  const voiceLiveContextRef = useRef<VoiceLiveContext>(voiceLiveContext)
+  useEffect(() => {
+    voiceLiveContextRef.current = voiceLiveContext
+  }, [voiceLiveContext])
+
+  // Mirror this instance's voice state into module-level globals so the dock
+  // pill (and anything else) can show real "Listening" vs "Speaking" status
+  // even after the owning voice surface (e.g. the voice window) unmounts.
+  useEffect(() => {
+    emitVoiceHearing(isVoiceCompanionActive && isVoiceCompanionHearing)
+  }, [isVoiceCompanionActive, isVoiceCompanionHearing])
+
+  useEffect(() => {
+    emitVoiceSpeaking(isVoiceCompanionActive && isVoiceSpeaking)
+  }, [isVoiceCompanionActive, isVoiceSpeaking])
+
+  useEffect(() => {
+    if (!isPersistedMode) {
+      return
+    }
+
+    let cancelled = false
+    let unsubscribe: (() => void) | null = null
+
+    const applyRelayState = (state: LocalPhoneRelayState) => {
+      const nextContext = buildPhoneNotificationContext(state)
+      phoneNotificationContextRef.current = nextContext
+      setPhoneNotificationContext(nextContext)
+    }
+
+    void window.electronAPI
+      .getLocalPhoneRelayState()
+      .then((result) => {
+        if (cancelled) {
+          return
+        }
+
+        if (result.success) {
+          applyRelayState(result.data.state)
+        }
+
+        unsubscribe = window.electronAPI.onLocalPhoneRelayState(applyRelayState)
+      })
+      .catch((error) => {
+        console.warn("Failed to load phone relay state for voice:", error)
+        if (!cancelled) {
+          unsubscribe = window.electronAPI.onLocalPhoneRelayState(applyRelayState)
+        }
+      })
+
+    return () => {
+      cancelled = true
+      unsubscribe?.()
+    }
+  }, [isPersistedMode])
+
+  useEffect(() => {
+    if (!isVoiceCompanionActive) {
+      return
+    }
+
+    void window.electronAPI
+      .updateVoiceRealtimeInstructions({
+        instructions: buildRealtimeVoiceInstructions(
+          voiceMemory,
+          phoneNotificationContext,
+          voiceLiveContext
+        ),
+        voice: "marin",
+      })
+      .catch(() => {
+        // The realtime socket may not be connected yet; the next start uses this context.
+      })
+  }, [
+    isVoiceCompanionActive,
+    phoneNotificationContext,
+    voiceMemory,
+    voiceLiveContext,
+  ])
 
   const updatePendingAssistantMessage = useCallback(
     (
@@ -690,7 +1284,7 @@ export function AssistantChat({
     const audioBase64 = await arrayBufferToBase64(pcmBuffer)
     const response = await window.electronAPI.addLiveInterviewAudioChunk({
       audioBase64,
-      mimeType: "audio/pcm;rate=16000;encoding=s16le",
+      mimeType: "audio/pcm;rate=24000;encoding=s16le",
     })
 
     if (!response.success && !liveAudioStoppingRef.current) {
@@ -818,7 +1412,11 @@ export function AssistantChat({
 
         setThreads(response.data.threads)
         const nextThreadId =
-          mode === "general"
+          mode === "general" &&
+          globalVoiceSessionActive &&
+          globalVoiceTranscriptMessages.length > 0
+            ? null
+            : mode === "general"
             ? response.data.threads.find((thread) => thread.mode === "general")?.id ||
               response.data.threads[0]?.id ||
               null
@@ -905,8 +1503,16 @@ export function AssistantChat({
       }
     }
 
+    const loadAgentState = async () => {
+      const response = await window.electronAPI.getAgentState()
+      if (!cancelled && response.success) {
+        setAgentState(response.data.state)
+      }
+    }
+
     void loadLiveState()
     void loadComputerUseState()
+    void loadAgentState()
 
     const unsubscribe = window.electronAPI.onLiveInterviewState((state) => {
       setLiveState(state)
@@ -914,11 +1520,15 @@ export function AssistantChat({
     const unsubscribeComputerUse = window.electronAPI.onComputerUseState((state) => {
       setComputerUseState(state)
     })
+    const unsubscribeAgent = window.electronAPI.onAgentState((state: AgentState) => {
+      setAgentState(state)
+    })
 
     return () => {
       cancelled = true
       unsubscribe()
       unsubscribeComputerUse()
+      unsubscribeAgent()
     }
   }, [isPersistedMode])
 
@@ -960,7 +1570,9 @@ export function AssistantChat({
     }
 
     if (!activeThreadId) {
-      setMessages([])
+      setMessages(
+        globalVoiceSessionActive ? globalVoiceTranscriptMessages : []
+      )
       return
     }
 
@@ -994,6 +1606,19 @@ export function AssistantChat({
       cancelled = true
     }
   }, [activeThreadId, isPersistedMode, showToast])
+
+  useEffect(() => {
+    if (
+      isPersistedMode &&
+      globalVoiceSessionActive &&
+      !activeThreadId &&
+      globalVoiceTranscriptMessages.length > 0
+    ) {
+      setMessages(globalVoiceTranscriptMessages)
+      activeVoiceUserTurnIdRef.current = globalActiveVoiceUserTurnId
+      activeVoiceAssistantTurnIdRef.current = globalActiveVoiceAssistantTurnId
+    }
+  }, [activeThreadId, isPersistedMode])
 
   useEffect(() => {
     if (!inputRef.current) {
@@ -1087,6 +1712,18 @@ export function AssistantChat({
     setMessages(nextMessages)
   }
 
+  const updateChatMessages = useCallback((
+    updater: (previousMessages: FollowUpChatMessage[]) => FollowUpChatMessage[]
+  ) => {
+    setMessages((previousMessages) => {
+      const nextMessages = updater(previousMessages)
+      if (!isPersistedMode) {
+        queryClient.setQueryData(queryKey, nextMessages)
+      }
+      return nextMessages
+    })
+  }, [isPersistedMode, queryClient, queryKey])
+
   const refreshThreads = async (preferredThreadId?: string | null) => {
     if (!isPersistedMode) {
       return
@@ -1127,8 +1764,31 @@ export function AssistantChat({
     ])
   }
 
+  const appendLocalAssistantTranscript = (
+    content: string,
+    options: { voice?: boolean; pending?: boolean } = {}
+  ) => {
+    const message: FollowUpChatMessage = {
+      id: `assistant-local-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      role: "assistant",
+      content,
+      createdAt: Date.now(),
+      pending: options.pending,
+    }
+
+    const appendMessage = (previousMessages: FollowUpChatMessage[]) => [
+      ...previousMessages,
+      message,
+    ].slice(-VOICE_TRANSCRIPT_MESSAGE_LIMIT)
+
+    if (options.voice) {
+      updateGlobalVoiceTranscript(appendMessage)
+    }
+    updateChatMessages(appendMessage)
+  }
+
   const startNewChat = () => {
-    if (isSending || isLiveSessionActive) {
+    if (isSending || isLiveSessionActive || isVoiceCompanionActive) {
       return
     }
 
@@ -1137,7 +1797,12 @@ export function AssistantChat({
   }
 
   const startLiveInterview = async () => {
-    if (!isPersistedMode || isLiveSessionActive || isLiveActionPending) {
+    if (
+      !isPersistedMode ||
+      isLiveSessionActive ||
+      isLiveActionPending ||
+      isVoiceCompanionActive
+    ) {
       return
     }
 
@@ -1209,7 +1874,109 @@ export function AssistantChat({
     }
   }
 
-  const startComputerUseTask = async (task: string) => {
+  const startAgentModeTask = async (
+    prompt: string,
+    options: { fromVoice?: boolean; autoApproveFirstPhase?: boolean } = {}
+  ) => {
+    if (!isPersistedMode || isAgentActionPending) {
+      return false
+    }
+
+    const normalizedPrompt = prompt.trim()
+    if (!normalizedPrompt) {
+      return false
+    }
+
+    setIsAgentActionPending(true)
+    if (!options.fromVoice) {
+      const userAgentMessage: FollowUpChatMessage = {
+        id: `user-agent-${Date.now()}`,
+        role: "user",
+        content: normalizedPrompt,
+        createdAt: Date.now(),
+      }
+      updateChatMessages((previousMessages) => [...previousMessages, userAgentMessage])
+    }
+    appendLocalAssistantTranscript(
+      `Starting Agent Mode: ${normalizedPrompt}\nUsing Documents as the workspace.`,
+      { voice: options.fromVoice }
+    )
+    try {
+      const response = await window.electronAPI.startAgentTask({
+        prompt: normalizedPrompt,
+      })
+
+      if (!response.success) {
+        throw new Error(response.error)
+      }
+
+      const status = response.data.state.status
+      const workspaceName = response.data.state.workspacePath
+        ? response.data.state.workspacePath.split(/[\\/]/).filter(Boolean).pop() || "Documents"
+        : "Documents"
+      showToast(
+        "Agent Mode",
+        status === "awaiting_workspace"
+          ? "Choose a workspace folder to start this task."
+          : "Agent Mode is preparing the task.",
+        "neutral"
+      )
+      appendLocalAssistantTranscript(
+        status === "awaiting_workspace"
+          ? "Agent Mode needs a workspace before it can continue."
+          : `Agent Mode started in ${workspaceName}. Building the plan now.`,
+        { voice: options.fromVoice }
+      )
+
+      if (
+        options.autoApproveFirstPhase !== false &&
+        response.data.state.status === "awaiting_approval" &&
+        response.data.state.taskId &&
+        response.data.state.activePhaseId
+      ) {
+        appendLocalAssistantTranscript("Plan is ready. Starting the first build phase now.", {
+          voice: options.fromVoice,
+        })
+        const approval = await window.electronAPI.approveAgentPhase({
+          taskId: response.data.state.taskId,
+          phaseId: response.data.state.activePhaseId,
+        })
+
+        if (!approval.success) {
+          throw new Error(approval.error)
+        }
+
+        appendLocalAssistantTranscript("Agent is running. Progress is visible in the Agent panel.", {
+          voice: options.fromVoice,
+        })
+      }
+
+      if (options.fromVoice) {
+        setVoiceStatus("Agent Mode")
+      }
+      return true
+    } catch (error) {
+      appendLocalAssistantTranscript(
+        error instanceof Error
+          ? `Agent Mode failed: ${error.message}`
+          : "Agent Mode failed to start.",
+        { voice: options.fromVoice }
+      )
+      showToast(
+        "Agent Mode",
+        error instanceof Error ? error.message : "Failed to start Agent Mode.",
+        "error"
+      )
+      return false
+    } finally {
+      setIsAgentActionPending(false)
+    }
+  }
+
+  const startComputerUseTask = async (
+    task: string,
+    options: { fromVoice?: boolean } = {}
+  ) => {
     if (
       !isPersistedMode ||
       isLiveSessionActive ||
@@ -1244,7 +2011,7 @@ export function AssistantChat({
         "Computer Use",
         error instanceof Error
           ? error.message
-          : "Failed to start browser task.",
+          : "Failed to start computer task.",
         "error"
       )
     } finally {
@@ -1274,7 +2041,7 @@ export function AssistantChat({
     } catch (error) {
       showToast(
         "Computer Use",
-        error instanceof Error ? error.message : "Failed to stop browser task.",
+        error instanceof Error ? error.message : "Failed to stop computer task.",
         "error"
       )
     } finally {
@@ -1303,7 +2070,7 @@ export function AssistantChat({
     } catch (error) {
       showToast(
         "Computer Use",
-        error instanceof Error ? error.message : "Failed to resume browser task.",
+        error instanceof Error ? error.message : "Failed to resume computer task.",
         "error"
       )
     } finally {
@@ -1311,19 +2078,241 @@ export function AssistantChat({
     }
   }
 
-  const submitMessage = async (rawMessage?: string) => {
+  const handleVoiceAgentCommand = async (transcript: string) => {
+    const command = detectVoiceAgentCommand(transcript)
+    if (!command || !isPersistedMode) {
+      return
+    }
+
+    const commandKey = `agent:${command.prompt.toLowerCase()}`
+    const previousCommand = lastVoiceAgentCommandRef.current
+    if (
+      previousCommand?.command === commandKey &&
+      Date.now() - previousCommand.timestamp < 8000
+    ) {
+      return
+    }
+
+    lastVoiceAgentCommandRef.current = {
+      command: commandKey,
+      timestamp: Date.now(),
+    }
+
+    showToast("Voice Agent", `Starting Agent Mode: ${command.prompt}`, "neutral")
+    await startAgentModeTask(command.prompt, { fromVoice: true })
+  }
+
+  voiceAgentCommandHandlerRef.current = (transcript: string) => {
+    void handleVoiceAgentCommand(transcript)
+  }
+
+  const handleVoiceComputerCommand = async (transcript: string) => {
+    const command = detectVoiceComputerCommand(transcript)
+    if (!command || !isPersistedMode) {
+      return
+    }
+
+    const commandKey =
+      command.type === "start"
+        ? `start:${command.task.toLowerCase()}`
+        : command.type
+    const previousCommand = lastVoiceComputerCommandRef.current
+    if (
+      previousCommand?.command === commandKey &&
+      Date.now() - previousCommand.timestamp < 6000
+    ) {
+      return
+    }
+    lastVoiceComputerCommandRef.current = {
+      command: commandKey,
+      timestamp: Date.now(),
+    }
+
+    if (command.type === "stop") {
+      await stopComputerUseTask()
+      return
+    }
+
+    if (command.type === "resume") {
+      await resumeComputerUseTask()
+      return
+    }
+
+    if (isComputerUseSessionActive) {
+      showToast(
+        "Voice Computer Use",
+        "A computer task is already running. Say stop computer task first if you want to replace it.",
+        "neutral"
+      )
+      return
+    }
+
+    showToast("Voice Computer Use", `Starting: ${command.task}`, "neutral")
+    await startComputerUseTask(command.task, { fromVoice: true })
+  }
+
+  voiceComputerCommandHandlerRef.current = (transcript: string) => {
+    void handleVoiceComputerCommand(transcript)
+  }
+
+  // Fire the agent / computer-use action the moment the model itself says
+  // "Starting agent mode: ..." or "Starting computer use: ...", so the working
+  // animation appears immediately instead of waiting for the final transcript.
+  const handleVoiceAssistantEarlyTrigger = async (assistantText: string) => {
+    if (!isPersistedMode) return
+
+    if (!earlyFiredAgentForResponseRef.current) {
+      const target = extractAssistantStartingTarget(
+        ASSISTANT_STARTING_AGENT_PATTERN,
+        assistantText
+      )
+      if (target) {
+        earlyFiredAgentForResponseRef.current = true
+        // Guard: if an agent task is already running, do NOT spawn a duplicate.
+        // Treat the model's "Starting agent mode:" as a misfire (live context
+        // should have prevented this) and surface a friendly note instead.
+        if (isAgentTaskRunning || isAgentActionPending) {
+          showToast(
+            "Voice Agent",
+            "Agent's already busy with the current task — pass that as a follow-up instead.",
+            "neutral"
+          )
+          return
+        }
+        const commandKey = `agent:${target.toLowerCase()}`
+        const previous = lastVoiceAgentCommandRef.current
+        const isDuplicate =
+          previous?.command === commandKey &&
+          Date.now() - previous.timestamp < 8000
+        if (!isDuplicate) {
+          lastVoiceAgentCommandRef.current = {
+            command: commandKey,
+            timestamp: Date.now(),
+          }
+          // Flip visible status immediately so the working animation lights up
+          // the same frame we detect the trigger — before any IPC round-trip.
+          setVoiceStatus("Starting Agent Mode")
+          setIsAgentActionPending(true)
+          showToast("Voice Agent", `Starting Agent Mode: ${target}`, "neutral")
+          await startAgentModeTask(target, { fromVoice: true })
+        }
+        return
+      }
+    }
+
+    if (!earlyFiredComputerForResponseRef.current) {
+      const target = extractAssistantStartingTarget(
+        ASSISTANT_STARTING_COMPUTER_PATTERN,
+        assistantText
+      )
+      if (target) {
+        earlyFiredComputerForResponseRef.current = true
+        const commandKey = `start:${target.toLowerCase()}`
+        const previous = lastVoiceComputerCommandRef.current
+        const isDuplicate =
+          previous?.command === commandKey &&
+          Date.now() - previous.timestamp < 6000
+        if (isDuplicate) return
+        // Guard: if a computer-use task is already running, don't spawn a duplicate.
+        if (isComputerUseSessionActive) {
+          showToast(
+            "Voice Computer Use",
+            "A computer task is already running — finish or stop it before starting a new one.",
+            "neutral"
+          )
+          return
+        }
+        lastVoiceComputerCommandRef.current = {
+          command: commandKey,
+          timestamp: Date.now(),
+        }
+        // Flip visible status immediately for instant working-animation feedback.
+        setVoiceStatus("Starting Computer Use")
+        showToast("Voice Computer Use", `Starting: ${target}`, "neutral")
+        await startComputerUseTask(target, { fromVoice: true })
+      }
+    }
+  }
+
+  voiceAssistantEarlyTriggerHandlerRef.current = (assistantText: string) => {
+    void handleVoiceAssistantEarlyTrigger(assistantText)
+  }
+
+  const speakVoiceReply = (reply: string) => {
+    const spokenText = stripMarkdownForSpeech(reply)
+    if (!spokenText || !("speechSynthesis" in window)) {
+      return
+    }
+
+    window.speechSynthesis.cancel()
+    const chunks = splitSpeechIntoChunks(spokenText)
+    let chunkIndex = 0
+
+    const speakNextChunk = () => {
+      const chunk = chunks[chunkIndex]
+      if (!chunk) {
+        setIsVoiceSpeaking(false)
+        setVoiceStatus(isVoiceCompanionActive ? "Listening" : "Ready for voice chat")
+        return
+      }
+
+      const utterance = new SpeechSynthesisUtterance(chunk)
+      utterance.rate = 1.02
+      utterance.pitch = 1.03
+      utterance.volume = 1
+      utterance.onstart = () => {
+        setIsVoiceSpeaking(true)
+        setVoiceStatus("Speaking")
+      }
+      utterance.onend = () => {
+        chunkIndex += 1
+        speakNextChunk()
+      }
+      utterance.onerror = () => {
+        chunkIndex += 1
+        speakNextChunk()
+      }
+      window.speechSynthesis.speak(utterance)
+    }
+
+    speakNextChunk()
+  }
+
+  const submitMessage = async (
+    rawMessage?: string,
+    options: { voice?: boolean } = {}
+  ) => {
     const trimmedInput = (rawMessage ?? input).trim()
     if (!trimmedInput || isSending) {
       return
     }
+    const isVoiceMessage = Boolean(options.voice)
+    const modelMessage = isVoiceMessage
+      ? buildVoiceCompanionPrompt(
+          trimmedInput,
+          voiceMemory,
+          phoneNotificationContextRef.current
+        )
+      : trimmedInput
 
     const activePersistedThread = threads.find((thread) => thread.id === activeThreadId)
+    if (isPersistedMode && isLikelyAgentCreationTask(trimmedInput)) {
+      setInput("")
+      if (isVoiceMessage) {
+        setVoiceStatus("Starting Agent Mode")
+      }
+      await startAgentModeTask(normalizeAgentPrompt(trimmedInput), {
+        fromVoice: isVoiceMessage,
+      })
+      return
+    }
+
     if (activePersistedThread?.mode === "computer_use") {
       showToast(
         "Computer Use",
         isComputerUseSessionActive
-          ? "Use the browser task controls while the task is running."
-          : "Start a new browser task from the computer icon in the widget strip.",
+          ? "Use the computer task controls while the task is running."
+          : "Start a new computer task from the computer icon in the widget strip.",
         "neutral"
       )
       return
@@ -1397,6 +2386,9 @@ export function AssistantChat({
     persistMessages(nextMessages)
     setInput("")
     setIsSending(true)
+    if (isVoiceMessage) {
+      setVoiceStatus("Thinking with screen context")
+    }
 
     try {
       const requestId = `follow-up-${pendingAssistantMessage.id}`
@@ -1407,7 +2399,7 @@ export function AssistantChat({
       if (isPersistedMode && !threadId) {
         const threadResponse = await window.electronAPI.createChatThread({
           mode,
-          title: buildThreadTitle(trimmedInput),
+          title: buildThreadTitle(isVoiceMessage ? `Voice: ${trimmedInput}` : trimmedInput),
         })
 
         if (!threadResponse.success) {
@@ -1442,10 +2434,12 @@ export function AssistantChat({
 
       const response = await window.electronAPI.submitTextFollowUp({
         requestId,
-        message: trimmedInput,
+        message: modelMessage,
         currentContext,
         chatHistory,
         mode,
+        includeScreenContext: isVoiceMessage,
+        voiceMode: isVoiceMessage,
       })
 
       if (!response.success) {
@@ -1465,6 +2459,13 @@ export function AssistantChat({
 
         await refreshThreads(threadId)
         await loadMessagesForThread(threadId)
+        if (isVoiceMessage) {
+          speakVoiceReply(response.data.reply)
+          setVoiceMemory((previousMemory) =>
+            updateVoiceMemory(previousMemory, trimmedInput)
+          )
+          setVoiceStatus("Listening")
+        }
         return
       }
 
@@ -1479,6 +2480,13 @@ export function AssistantChat({
       )
 
       persistMessages(resolvedMessages)
+      if (isVoiceMessage) {
+        speakVoiceReply(response.data.reply)
+        setVoiceMemory((previousMemory) =>
+          updateVoiceMemory(previousMemory, trimmedInput)
+        )
+        setVoiceStatus("Listening")
+      }
     } catch (error) {
       activeTextFollowUpRequestIdRef.current = null
       activeTextFollowUpMessageIdRef.current = null
@@ -1506,9 +2514,823 @@ export function AssistantChat({
     }
   }
 
+  const handleVoiceSearchRequest = async (transcript: string) => {
+    const normalized = transcript.replace(/\s+/g, " ").trim()
+    if (!isPersistedMode || !isLikelyVoiceWebSearchRequest(normalized)) {
+      return
+    }
+
+    const queryKey = normalized.toLowerCase()
+    const previous = lastVoiceSearchRequestRef.current
+    if (previous?.query === queryKey && Date.now() - previous.timestamp < 8000) {
+      return
+    }
+
+    lastVoiceSearchRequestRef.current = {
+      query: queryKey,
+      timestamp: Date.now(),
+    }
+
+    showToast("Web Search", "Searching with Exa...", "neutral")
+    await submitMessage(normalized, { voice: true })
+  }
+
+  voiceSearchRequestHandlerRef.current = (transcript: string) => {
+    void handleVoiceSearchRequest(transcript)
+  }
+
+  function resetVoiceSegment() {
+    voicePcmChunksRef.current = []
+    voicePcmSampleCountRef.current = 0
+    voiceSpeechSampleCountRef.current = 0
+    voiceSilenceSampleCountRef.current = 0
+    voiceIsSpeechActiveRef.current = false
+    setIsVoiceCompanionHearing(false)
+  }
+
+  function enqueueVoiceSegment() {
+    const pcmChunks = voicePcmChunksRef.current
+    const sampleCount = voicePcmSampleCountRef.current
+    const speechSampleCount = voiceSpeechSampleCountRef.current
+    resetVoiceSegment()
+
+    if (
+      voiceAudioStoppingRef.current ||
+      sampleCount === 0 ||
+      speechSampleCount < (VOICE_AUDIO_SAMPLE_RATE * VOICE_MIN_SPEECH_MS) / 1000
+    ) {
+      return
+    }
+
+    const segmentChunks = [...pcmChunks]
+    voiceFlushQueueRef.current = voiceFlushQueueRef.current
+      .catch(() => {
+        // Keep later voice segments flowing even if one transcription fails.
+      })
+      .then(async () => {
+        if (voiceAudioStoppingRef.current) {
+          return
+        }
+
+        setVoiceStatus("Understanding")
+        const pcmBuffer = mergePcmChunks(segmentChunks)
+        const audioBase64 = await arrayBufferToBase64(pcmBuffer)
+        const response = await window.electronAPI.transcribeVoiceAudio({
+          audioBase64,
+          mimeType: "audio/pcm;rate=24000;encoding=s16le",
+        })
+
+        if (!response.success) {
+          throw new Error(response.error)
+        }
+
+        const transcript = response.data.transcript.trim()
+        if (!transcript) {
+          setVoiceStatus("Listening")
+          return
+        }
+
+        setVoiceLastHeard(transcript)
+        await submitMessage(transcript, { voice: true })
+      })
+      .catch((error) => {
+        if (!voiceAudioStoppingRef.current) {
+          console.error("Voice companion segment failed:", error)
+          setVoiceStatus("Voice error")
+          showToast(
+            "Voice Companion",
+            error instanceof Error ? error.message : "Voice chat failed.",
+            "error"
+          )
+        }
+      })
+  }
+
+  const base64ToBytes = useCallback((base64: string) => {
+    const binary = window.atob(base64)
+    const bytes = new Uint8Array(binary.length)
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index)
+    }
+    return bytes
+  }, [])
+
+  const clearVoicePlayback = useCallback(() => {
+    voicePlaybackSourcesRef.current.forEach((source) => {
+      try {
+        source.stop()
+      } catch (_error) {
+        // Source may already be stopped.
+      }
+    })
+    voicePlaybackSourcesRef.current = []
+    voicePlaybackTimeRef.current =
+      voicePlaybackContextRef.current?.currentTime ?? 0
+    setIsVoiceSpeaking(false)
+  }, [])
+
+  const closeVoicePlayback = useCallback(() => {
+    clearVoicePlayback()
+    if (voicePlaybackContextRef.current) {
+      void voicePlaybackContextRef.current.close().catch(() => {
+        // Ignore shutdown errors.
+      })
+      voicePlaybackContextRef.current = null
+    }
+    voicePlaybackTimeRef.current = 0
+  }, [clearVoicePlayback])
+
+  const appendVoiceAssistantTranscript = useCallback((delta: string) => {
+    if (!delta) {
+      return
+    }
+
+    emitSylicaActivity()
+    const applyDelta = (previousMessages: FollowUpChatMessage[]) => {
+      const existingTurnId = activeVoiceAssistantTurnIdRef.current
+      if (existingTurnId) {
+        return previousMessages.map((message) =>
+          message.id === existingTurnId
+            ? {
+                ...message,
+                content: `${message.content}${delta}`,
+                pending: true,
+              }
+            : message
+        )
+      }
+
+      const nextTurnId = `voice-assistant-${Date.now()}`
+      activeVoiceAssistantTurnIdRef.current = nextTurnId
+      globalActiveVoiceAssistantTurnId = nextTurnId
+      return [
+        ...previousMessages,
+        {
+          id: nextTurnId,
+          role: "assistant",
+          content: delta,
+          createdAt: Date.now(),
+          pending: true,
+        },
+      ].slice(-VOICE_TRANSCRIPT_MESSAGE_LIMIT)
+    }
+
+    updateGlobalVoiceTranscript(applyDelta)
+    updateChatMessages(applyDelta)
+  }, [updateChatMessages])
+
+  const finishVoiceAssistantTranscript = useCallback(() => {
+    const activeTurnId = activeVoiceAssistantTurnIdRef.current
+    activeVoiceAssistantTurnIdRef.current = null
+    globalActiveVoiceAssistantTurnId = null
+    if (!activeTurnId) {
+      return
+    }
+
+    emitSylicaActivity()
+    const finishTurn = (previousMessages: FollowUpChatMessage[]) =>
+      previousMessages.map((message) =>
+        message.id === activeTurnId
+          ? {
+              ...message,
+              pending: false,
+            }
+          : message
+      )
+
+    updateGlobalVoiceTranscript(finishTurn)
+    updateChatMessages(finishTurn)
+  }, [updateChatMessages])
+
+  const beginVoiceUserTranscript = useCallback(() => {
+    if (activeVoiceUserTurnIdRef.current) {
+      return
+    }
+
+    const nextTurnId = `voice-user-${Date.now()}`
+    activeVoiceUserTurnIdRef.current = nextTurnId
+    globalActiveVoiceUserTurnId = nextTurnId
+    emitSylicaActivity()
+    const beginTurn = (previousMessages: FollowUpChatMessage[]) =>
+      [
+        ...previousMessages,
+        {
+          id: nextTurnId,
+          role: "user",
+          content: "Listening...",
+          createdAt: Date.now(),
+          pending: true,
+        },
+      ].slice(-VOICE_TRANSCRIPT_MESSAGE_LIMIT)
+
+    updateGlobalVoiceTranscript(beginTurn)
+    updateChatMessages(beginTurn)
+  }, [updateChatMessages])
+
+  const appendVoiceUserTranscript = useCallback(
+    (delta: string) => {
+      if (!delta) {
+        return
+      }
+
+      emitSylicaActivity()
+      let activeTurnId = activeVoiceUserTurnIdRef.current
+      if (!activeTurnId) {
+        activeTurnId = `voice-user-${Date.now()}`
+        activeVoiceUserTurnIdRef.current = activeTurnId
+        globalActiveVoiceUserTurnId = activeTurnId
+      }
+
+      const turnId = activeTurnId
+      const appendDelta = (previousMessages: FollowUpChatMessage[]) => {
+        const existingMessage = previousMessages.find(
+          (message) => message.id === turnId
+        )
+        if (!existingMessage) {
+          return [
+            ...previousMessages,
+            {
+              id: turnId,
+              role: "user",
+              content: delta,
+              createdAt: Date.now(),
+              pending: true,
+            },
+          ].slice(-VOICE_TRANSCRIPT_MESSAGE_LIMIT)
+        }
+
+        return previousMessages.map((message) =>
+          message.id === turnId
+            ? {
+                ...message,
+                content:
+                  message.content === "Listening..."
+                    ? delta
+                    : `${message.content}${delta}`,
+                pending: true,
+              }
+            : message
+        )
+      }
+
+      updateGlobalVoiceTranscript(appendDelta)
+      updateChatMessages(appendDelta)
+    },
+    [updateChatMessages]
+  )
+
+  const finishVoiceUserTranscript = useCallback(
+    (transcript: string) => {
+      const normalizedTranscript = transcript.trim()
+      if (!normalizedTranscript) {
+        return
+      }
+
+      let activeTurnId = activeVoiceUserTurnIdRef.current
+      if (!activeTurnId) {
+        activeTurnId = `voice-user-${Date.now()}`
+      }
+      activeVoiceUserTurnIdRef.current = null
+      globalActiveVoiceUserTurnId = null
+
+      const turnId = activeTurnId
+      emitSylicaActivity()
+      const finishTurn = (previousMessages: FollowUpChatMessage[]) => {
+        const existingMessage = previousMessages.find(
+          (message) => message.id === turnId
+        )
+        if (!existingMessage) {
+          return [
+            ...previousMessages,
+            {
+              id: turnId,
+              role: "user",
+              content: normalizedTranscript,
+              createdAt: Date.now(),
+              pending: false,
+            },
+          ].slice(-VOICE_TRANSCRIPT_MESSAGE_LIMIT)
+        }
+
+        return previousMessages.map((message) =>
+          message.id === turnId
+            ? {
+                ...message,
+                content: normalizedTranscript,
+                pending: false,
+              }
+            : message
+        )
+      }
+
+      updateGlobalVoiceTranscript(finishTurn)
+      updateChatMessages(finishTurn)
+    },
+    [updateChatMessages]
+  )
+
+  const playVoiceAudioDelta = useCallback(
+    (audioBase64: string) => {
+      const AudioContextConstructor =
+        window.AudioContext || (window as any).webkitAudioContext
+      if (!AudioContextConstructor) {
+        return
+      }
+
+      let audioContext = voicePlaybackContextRef.current
+      if (!audioContext || audioContext.state === "closed") {
+        audioContext = new AudioContextConstructor({
+          sampleRate: VOICE_AUDIO_SAMPLE_RATE,
+        })
+        voicePlaybackContextRef.current = audioContext
+        voicePlaybackTimeRef.current = audioContext.currentTime
+      }
+
+      if (audioContext.state === "suspended") {
+        void audioContext.resume().catch(() => {
+          // Ignore resume races.
+        })
+      }
+
+      const bytes = base64ToBytes(audioBase64)
+      const sampleCount = Math.floor(bytes.byteLength / 2)
+      if (sampleCount <= 0) {
+        return
+      }
+
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+      const audioBuffer = audioContext.createBuffer(
+        1,
+        sampleCount,
+        VOICE_AUDIO_SAMPLE_RATE
+      )
+      const channelData = audioBuffer.getChannelData(0)
+      for (let index = 0; index < sampleCount; index += 1) {
+        channelData[index] = view.getInt16(index * 2, true) / 0x8000
+      }
+
+      const source = audioContext.createBufferSource()
+      source.buffer = audioBuffer
+      source.connect(audioContext.destination)
+
+      const startAt = Math.max(
+        audioContext.currentTime + 0.02,
+        voicePlaybackTimeRef.current || audioContext.currentTime
+      )
+      voicePlaybackTimeRef.current = startAt + audioBuffer.duration
+      voicePlaybackSourcesRef.current.push(source)
+
+      source.onended = () => {
+        voicePlaybackSourcesRef.current = voicePlaybackSourcesRef.current.filter(
+          (candidate) => candidate !== source
+        )
+        if (voicePlaybackSourcesRef.current.length === 0) {
+          setIsVoiceSpeaking(false)
+          if (!voiceAudioStoppingRef.current) {
+            setVoiceStatus("Listening")
+          }
+        }
+      }
+
+      setIsVoiceSpeaking(true)
+      setVoiceStatus("Speaking")
+      source.start(startAt)
+    },
+    [base64ToBytes]
+  )
+
+  const stopVoiceCompanion = () => {
+    if (globalVoiceCleanup && globalVoiceCleanup !== stopVoiceCompanion) {
+      globalVoiceCleanup()
+      globalVoiceCleanup = null
+      emitVoiceActive(false)
+      setIsVoiceCompanionActive(false)
+      setIsVoiceCompanionHearing(false)
+      setIsVoiceSpeaking(false)
+      setVoiceStatus("Ready for voice chat")
+      return
+    }
+
+    voiceAudioStoppingRef.current = true
+    globalVoiceSessionActive = false
+    globalVoiceCleanup = null
+    emitVoiceActive(false)
+    void window.electronAPI.stopVoiceRealtime().catch(() => {
+      // Ignore stop races when the app is closing.
+    })
+
+    if (voiceAudioProcessorNodeRef.current) {
+      voiceAudioProcessorNodeRef.current.onaudioprocess = null
+      try {
+        voiceAudioProcessorNodeRef.current.disconnect()
+      } catch (_error) {
+        // Ignore disconnect errors.
+      }
+      voiceAudioProcessorNodeRef.current = null
+    }
+
+    if (voiceAudioSourceNodeRef.current) {
+      try {
+        voiceAudioSourceNodeRef.current.disconnect()
+      } catch (_error) {
+        // Ignore disconnect errors.
+      }
+      voiceAudioSourceNodeRef.current = null
+    }
+
+    if (voiceAudioSinkNodeRef.current) {
+      try {
+        voiceAudioSinkNodeRef.current.disconnect()
+      } catch (_error) {
+        // Ignore disconnect errors.
+      }
+      voiceAudioSinkNodeRef.current = null
+    }
+
+    if (voiceAudioContextRef.current) {
+      void voiceAudioContextRef.current.close().catch(() => {
+        // Ignore shutdown errors.
+      })
+      voiceAudioContextRef.current = null
+    }
+
+    if (voiceAudioStreamRef.current) {
+      voiceAudioStreamRef.current.getTracks().forEach((track) => track.stop())
+      voiceAudioStreamRef.current = null
+    }
+
+    if ("speechSynthesis" in window) {
+      window.speechSynthesis.cancel()
+    }
+
+    closeVoicePlayback()
+    voiceResponseTextRef.current = ""
+    activeVoiceUserTurnIdRef.current = null
+    activeVoiceAssistantTurnIdRef.current = null
+    globalActiveVoiceUserTurnId = null
+    globalActiveVoiceAssistantTurnId = null
+    setIsVoiceCompanionActive(false)
+    setIsVoiceCompanionHearing(false)
+    setIsVoiceSpeaking(false)
+    setVoiceStatus("Ready for voice chat")
+    resetVoiceSegment()
+  }
+
+  const startVoiceCompanion = async () => {
+    if (
+      !isPersistedMode ||
+      isLiveSessionActive ||
+      isVoiceCompanionActive
+    ) {
+      return
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      showToast(
+        "Voice Companion",
+        "Microphone capture is not supported in this desktop runtime.",
+        "error"
+      )
+      return
+    }
+
+    try {
+      setVoiceStatus("Opening microphone")
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      })
+
+      const AudioContextConstructor =
+        window.AudioContext || (window as any).webkitAudioContext
+      if (!AudioContextConstructor) {
+        stream.getTracks().forEach((track) => track.stop())
+        throw new Error("Voice audio processing is not supported here.")
+      }
+
+      stopVoiceCompanion()
+      voiceAudioStoppingRef.current = false
+      resetVoiceSegment()
+      voiceResponseTextRef.current = ""
+      activeVoiceUserTurnIdRef.current = null
+      activeVoiceAssistantTurnIdRef.current = null
+      clearGlobalVoiceTranscript()
+      setMessages([])
+
+      setVoiceStatus("Connecting realtime voice")
+      const startResponse = await window.electronAPI.startVoiceRealtime({
+        instructions: buildRealtimeVoiceInstructions(
+          voiceMemory,
+          phoneNotificationContextRef.current,
+          voiceLiveContext
+        ),
+        voice: "marin",
+      })
+
+      if (!startResponse.success) {
+        throw new Error(startResponse.error)
+      }
+
+      const audioContext = new AudioContextConstructor({
+        sampleRate: VOICE_AUDIO_SAMPLE_RATE,
+      })
+      const sourceNode = audioContext.createMediaStreamSource(stream)
+      const processorNode = audioContext.createScriptProcessor(4096, 1, 1)
+      const sinkNode = audioContext.createGain()
+      sinkNode.gain.value = 0
+
+      processorNode.onaudioprocess = (event) => {
+        if (voiceAudioStoppingRef.current) {
+          return
+        }
+
+        const inputBuffer = event.inputBuffer
+        const frameCount = inputBuffer.length
+        const monoSamples = new Float32Array(frameCount)
+        const channelCount = inputBuffer.numberOfChannels
+        if (channelCount === 0) {
+          return
+        }
+
+        for (let channelIndex = 0; channelIndex < channelCount; channelIndex += 1) {
+          const channelData = inputBuffer.getChannelData(channelIndex)
+          for (let sampleIndex = 0; sampleIndex < frameCount; sampleIndex += 1) {
+            monoSamples[sampleIndex] += channelData[sampleIndex] / channelCount
+          }
+        }
+
+        let energy = 0
+        for (let index = 0; index < monoSamples.length; index += 1) {
+          energy += monoSamples[index] * monoSamples[index]
+        }
+        const rms = Math.sqrt(energy / Math.max(1, monoSamples.length))
+        const resampledSamples = resampleAudio(monoSamples, audioContext.sampleRate)
+        const pcmChunk = float32ToInt16(resampledSamples)
+
+        const isSpeech = rms >= VOICE_SILENCE_THRESHOLD
+        if (isSpeech !== voiceIsSpeechActiveRef.current) {
+          voiceIsSpeechActiveRef.current = isSpeech
+          setIsVoiceCompanionHearing(isSpeech)
+        }
+
+        const pcmBuffer = pcmChunk.buffer.slice(
+          pcmChunk.byteOffset,
+          pcmChunk.byteOffset + pcmChunk.byteLength
+        )
+        void arrayBufferToBase64(pcmBuffer).then((audioBase64) => {
+          if (voiceAudioStoppingRef.current) {
+            return
+          }
+
+          void window.electronAPI
+            .appendVoiceRealtimeAudio({ audioBase64 })
+            .catch((error) => {
+              if (!voiceAudioStoppingRef.current) {
+                console.error("Failed to stream realtime voice audio:", error)
+              }
+            })
+        })
+      }
+
+      sourceNode.connect(processorNode)
+      processorNode.connect(sinkNode)
+      sinkNode.connect(audioContext.destination)
+      await audioContext.resume()
+
+      voiceAudioStreamRef.current = stream
+      voiceAudioContextRef.current = audioContext
+      voiceAudioSourceNodeRef.current = sourceNode
+      voiceAudioProcessorNodeRef.current = processorNode
+      voiceAudioSinkNodeRef.current = sinkNode
+      globalVoiceSessionActive = true
+      globalVoiceCleanup = stopVoiceCompanion
+      emitVoiceActive(true)
+      setIsVoiceCompanionActive(true)
+      setVoiceStatus(`Listening on ${startResponse.data.model}`)
+    } catch (error) {
+      stopVoiceCompanion()
+      showToast(
+        "Voice Companion",
+        error instanceof Error ? error.message : "Failed to start voice chat.",
+        "error"
+      )
+    }
+  }
+
+  useEffect(() => {
+    if (
+      !voiceAutoStartSignal ||
+      lastVoiceAutoStartSignalRef.current === voiceAutoStartSignal
+    ) {
+      return
+    }
+
+    if (
+      !isPersistedMode ||
+      isVoiceCompanionActive ||
+      isLiveSessionActive ||
+      isSending ||
+      isHistoryLoading
+    ) {
+      return
+    }
+
+    lastVoiceAutoStartSignalRef.current = voiceAutoStartSignal
+    void startVoiceCompanion()
+  }, [
+    isHistoryLoading,
+    isLiveSessionActive,
+    isPersistedMode,
+    isSending,
+    isVoiceCompanionActive,
+    voiceAutoStartSignal,
+  ])
+
+  useEffect(() => {
+    if (!isPersistedMode) {
+      return
+    }
+
+    globalVoiceRealtimeUnsubscribe?.()
+
+    const unsubscribe = window.electronAPI.onVoiceRealtimeEvent((event) => {
+      emitSylicaActivity()
+      globalVoiceSessionActive = true
+      emitVoiceActive(true)
+      setIsVoiceCompanionActive(true)
+
+      if (event.type === "ready") {
+        setVoiceStatus("Realtime voice ready")
+        // Trigger a friendly greeting the first time the session connects in
+        // this app lifetime so Sylica doesn't just sit there silently. The
+        // module-level guard makes sure we only greet once per app session,
+        // not every time the user reconnects.
+        if (!globalHasGreetedThisSession) {
+          globalHasGreetedThisSession = true
+          const directive = buildVoiceGreetingDirective(voiceLiveContextRef.current)
+          void window.electronAPI
+            .requestVoiceRealtimeResponse({ directive })
+            .catch(() => {
+              // If the greeting fails for any reason, don't surface it — the
+              // session is still usable, the user just won't hear a hello.
+            })
+        }
+        return
+      }
+
+      if (event.type === "session_updated") {
+        return
+      }
+
+      if (event.type === "speech_started") {
+        finishVoiceAssistantTranscript()
+        clearVoicePlayback()
+        beginVoiceUserTranscript()
+        setIsVoiceCompanionHearing(true)
+        setVoiceLastHeard("Listening...")
+        setVoiceStatus("Listening")
+        return
+      }
+
+      if (event.type === "speech_stopped") {
+        setIsVoiceCompanionHearing(false)
+        setVoiceStatus("Thinking")
+        return
+      }
+
+      if (event.type === "input_transcript_delta") {
+        appendVoiceUserTranscript(event.delta)
+        setVoiceLastHeard((previousTranscript) =>
+          previousTranscript === "Listening..."
+            ? event.delta
+            : `${previousTranscript}${event.delta}`
+        )
+        return
+      }
+
+      if (event.type === "input_transcript") {
+        setVoiceLastHeard(event.transcript)
+        finishVoiceUserTranscript(event.transcript)
+        // Skip triggers we already early-fired from the assistant's own text
+        // so the same task doesn't launch twice in one turn.
+        if (!earlyFiredAgentForResponseRef.current) {
+          voiceAgentCommandHandlerRef.current(event.transcript)
+        }
+        voiceSearchRequestHandlerRef.current(event.transcript)
+        if (!earlyFiredComputerForResponseRef.current) {
+          voiceComputerCommandHandlerRef.current(event.transcript)
+        }
+        setVoiceMemory((previousMemory) => {
+          const nextMemory = updateVoiceMemory(previousMemory, event.transcript)
+          if (nextMemory !== previousMemory) {
+            void window.electronAPI.updateVoiceRealtimeInstructions({
+              instructions: buildRealtimeVoiceInstructions(
+                nextMemory,
+                phoneNotificationContextRef.current,
+                voiceLiveContextRef.current
+              ),
+              voice: "marin",
+            })
+          }
+          return nextMemory
+        })
+        return
+      }
+
+      if (event.type === "text_delta") {
+        voiceResponseTextRef.current += event.text
+        appendVoiceAssistantTranscript(event.text)
+        // Early-fire: if the model has now said "Starting agent mode: ..." or
+        // "Starting computer use: ...", kick off the action immediately so
+        // the working animation shows without waiting for the final transcript.
+        if (
+          !earlyFiredAgentForResponseRef.current ||
+          !earlyFiredComputerForResponseRef.current
+        ) {
+          voiceAssistantEarlyTriggerHandlerRef.current(
+            voiceResponseTextRef.current
+          )
+        }
+        return
+      }
+
+      if (event.type === "audio_delta") {
+        playVoiceAudioDelta(event.audio)
+        return
+      }
+
+      if (event.type === "response_done") {
+        finishVoiceAssistantTranscript()
+        // Reset early-fire flags so the next assistant response can trigger
+        // its own actions without being blocked by the previous turn.
+        earlyFiredAgentForResponseRef.current = false
+        earlyFiredComputerForResponseRef.current = false
+        voiceResponseTextRef.current = ""
+        if (voicePlaybackSourcesRef.current.length === 0) {
+          setIsVoiceSpeaking(false)
+          setVoiceStatus("Listening")
+        }
+        return
+      }
+
+      if (event.type === "error") {
+        console.error("Realtime voice error:", event.error)
+        stopVoiceCompanion()
+        globalVoiceSessionActive = false
+        emitVoiceActive(false)
+        setVoiceStatus("Voice error")
+        setIsVoiceCompanionActive(false)
+        setIsVoiceCompanionHearing(false)
+        setIsVoiceSpeaking(false)
+        showToast("Voice Companion", event.error, "error")
+      }
+    })
+    globalVoiceRealtimeUnsubscribe = unsubscribe
+
+    return () => {
+      if (!globalVoiceSessionActive) {
+        unsubscribe()
+        if (globalVoiceRealtimeUnsubscribe === unsubscribe) {
+          globalVoiceRealtimeUnsubscribe = null
+        }
+      }
+    }
+  }, [
+    appendVoiceAssistantTranscript,
+    appendVoiceUserTranscript,
+    beginVoiceUserTranscript,
+    clearVoicePlayback,
+    finishVoiceAssistantTranscript,
+    finishVoiceUserTranscript,
+    isPersistedMode,
+    playVoiceAudioDelta,
+    showToast,
+  ])
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      globalVoiceCleanup?.()
+    }
+
+    window.addEventListener("beforeunload", handleBeforeUnload)
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload)
+    }
+  }, [])
+
+  const baseSurfaceClassName =
+    mode === "follow_up"
+      ? "w-full min-w-0 space-y-1.5 text-white"
+      : panelMode === "voice" || panelMode === "live"
+        ? "w-full min-w-0 space-y-2.5 text-white"
+        : "sylica-liquid-panel w-full min-w-0 space-y-2 p-2.5 text-white"
+  const isVoiceOrLivePanel = panelMode === "voice" || panelMode === "live"
   const surfaceClassName = className.trim().length
-    ? `sylica-liquid-panel w-full min-w-0 space-y-3 rounded-[24px] p-3 text-white ${className}`
-    : "sylica-liquid-panel w-full min-w-0 space-y-3 rounded-[24px] p-3 text-white"
+    ? `${baseSurfaceClassName} ${className}`
+    : baseSurfaceClassName
 
   const displayedMessages = useMemo(() => {
     if (!isPersistedMode) {
@@ -1593,43 +3415,62 @@ export function AssistantChat({
 
   const computerStatusLabel = (() => {
     if (!isComputerUseSessionActive) {
-      return "Browser task helper"
+      return "Computer task helper"
     }
 
     if (computerUseState.status === "starting") {
-      return "Starting browser task..."
+      return "Starting computer task..."
     }
 
     if (computerUseState.status === "stopping") {
-      return "Stopping browser task..."
+      return "Stopping computer task..."
     }
 
     if (computerUseState.status === "waiting_for_secret") {
       return "Waiting for manual login..."
     }
 
-    return computerUseState.currentAction || "Running browser task..."
+    return computerUseState.currentAction || "Running computer task..."
   })()
 
   const computerPreviewLabel =
     computerUseState.currentUrl.trim() ||
     (computerUseState.needsSecretInput
       ? "Complete the secret step in Chrome, then continue."
-      : "Launch browser automation from the computer icon in the widget strip.")
+      : "Launch PC or browser automation from the computer icon in the widget strip.")
+
+  const voiceStatusLabel = isVoiceCompanionActive
+    ? isVoiceSpeaking
+      ? "Realtime voice speaking"
+      : isSending
+        ? "Realtime voice thinking"
+        : isVoiceCompanionHearing
+          ? "Realtime voice hearing you"
+          : "Realtime voice listening"
+    : "Realtime voice"
+  const voicePreviewLabel =
+    voiceLastHeard.trim() ||
+    (voiceMemory.trim()
+      ? "Uses your screen and remembered context."
+      : "Talk naturally; I will use your screen when useful.")
 
   const threadButtonsDisabled =
-    isSending || isLiveSessionActive || isComputerUseSessionActive
+    isSending ||
+    isLiveSessionActive ||
+    isComputerUseSessionActive ||
+    isVoiceCompanionActive
   const inputPlaceholder =
     isLiveSessionActive && isPersistedMode
       ? "Add a live instruction..."
       : isSelectedComputerThread
-        ? "Start a new browser task from the computer icon."
+        ? "Start a new computer task from the computer icon."
         : placeholder
 
   return (
     <div className={surfaceClassName}>
       {isPersistedMode && (
         <div className="space-y-2">
+          {!voiceFocused && (
           <div className="flex items-center gap-2 overflow-x-auto pb-1 text-[11px] [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             <button
               type="button"
@@ -1637,7 +3478,7 @@ export function AssistantChat({
               disabled={threadButtonsDisabled}
               className={`shrink-0 rounded-full border px-2.5 py-1 transition ${
                 activeThreadId === null
-                  ? "border-[#7df9c7]/30 bg-[rgba(159,247,214,0.14)] text-white"
+                  ? "border-[#a8d8c4]/30 bg-[rgba(168, 216, 196, 0.12)] text-white"
                   : "border-white/10 bg-white/[0.05] text-white/70 hover:text-white"
               } ${threadButtonsDisabled ? "cursor-not-allowed opacity-60" : ""}`}
             >
@@ -1656,14 +3497,14 @@ export function AssistantChat({
                 disabled={threadButtonsDisabled}
                 className={`shrink-0 rounded-full border px-2.5 py-1 transition ${
                   thread.id === activeThreadId
-                    ? "border-[#7df9c7]/30 bg-[rgba(159,247,214,0.14)] text-white"
+                    ? "border-[#a8d8c4]/30 bg-[rgba(168, 216, 196, 0.12)] text-white"
                     : "border-white/10 bg-white/[0.05] text-white/70 hover:text-white"
                 } ${threadButtonsDisabled ? "cursor-not-allowed opacity-60" : ""}`}
                 title={thread.title}
               >
                 <span className="inline-flex items-center gap-1.5">
                   {thread.mode === "live_interview" && (
-                    <span className="rounded-full border border-[#7df9c7]/20 bg-[#17362d] px-1.5 py-0.5 text-[9px] uppercase tracking-[0.12em] text-[#baf7df]">
+                    <span className="rounded-full border border-[#a8d8c4]/20 bg-[#1f2a26] px-1.5 py-0.5 text-[9px] uppercase tracking-[0.12em] text-[#cce8db]">
                       Live
                     </span>
                   )}
@@ -1681,37 +3522,156 @@ export function AssistantChat({
               <div className="shrink-0 text-white/40">Loading...</div>
             )}
           </div>
+          )}
 
-          <div className="sylica-glass-chip flex items-center justify-between gap-2 rounded-[16px] px-3 py-2 text-[10px] text-white/62">
+          <div className="flex items-center justify-between gap-2 border-b border-white/8 px-1 pb-2 text-[10px] text-white/72">
             <div className="min-w-0 flex-1">
-              <div className="truncate">{liveStatusLabel}</div>
-              <div className="truncate text-[9px] text-white/42">
-                {livePreviewLabel}
-              </div>
+              {panelMode === "voice" ? (
+                <>
+                  <div className="flex items-center gap-1.5 truncate text-white">
+                    <Volume2 className="h-3.5 w-3.5 text-[#a8d8c4]" />
+                    <span className="truncate">{voiceStatusLabel}</span>
+                  </div>
+                  <div className="truncate text-[9px] text-white/42">
+                    {voiceStatus} - {voicePreviewLabel}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="truncate text-white">{liveStatusLabel}</div>
+                  <div className="truncate text-[9px] text-white/42">
+                    {livePreviewLabel}
+                  </div>
+                </>
+              )}
             </div>
             <Button
               type="button"
               size="sm"
               onClick={() => {
-                void (isLiveSessionActive ? stopLiveInterview() : startLiveInterview())
+                void (
+                  panelMode === "voice"
+                    ? isVoiceCompanionActive
+                      ? stopVoiceCompanion()
+                      : startVoiceCompanion()
+                    : isLiveSessionActive
+                      ? stopLiveInterview()
+                      : startLiveInterview()
+                )
               }}
-              disabled={isLiveActionPending || isSending || isHistoryLoading}
-              className={`h-6 rounded-full px-2.5 text-[10px] ${
-                isLiveSessionActive
+              disabled={
+                panelMode === "voice"
+                  ? !isVoiceCompanionActive &&
+                    (isSending || isLiveSessionActive || isHistoryLoading)
+                  : isLiveActionPending ||
+                    isSending ||
+                    isHistoryLoading ||
+                    isVoiceCompanionActive
+              }
+              className={`h-7 rounded-full px-3 text-[10px] ${
+                (panelMode === "voice" ? isVoiceCompanionActive : isLiveSessionActive)
                   ? "bg-white/10 text-white hover:bg-white/15"
-                  : "bg-[#7df9c7] text-black hover:bg-[#97ffd3]"
+                  : "bg-[#a8d8c4] text-black hover:bg-[#bce5d2]"
               }`}
             >
-              {isLiveActionPending
-                ? "..."
-                : isLiveSessionActive
-                  ? "Stop Live"
-                  : "Start Live"}
+              {panelMode === "voice" ? (
+                isVoiceCompanionActive ? (
+                  <span className="inline-flex items-center gap-1">
+                    <MicOff className="h-3 w-3" />
+                    Stop
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1">
+                    <Mic className="h-3 w-3" />
+                    Starting
+                  </span>
+                )
+              ) : isLiveActionPending ? (
+                "..."
+              ) : isLiveSessionActive ? (
+                "Stop Live"
+              ) : (
+                "Start Live"
+              )}
             </Button>
           </div>
 
+          {!voiceFocused && panelMode === "voice" && (
+          <div className="sylica-glass-chip flex items-center justify-between gap-2 rounded-[16px] px-3 py-2 text-[10px] text-white/62">
+            <div className="min-w-0 flex-1">
+              {panelMode === "voice" ? (
+                <>
+                  <div className="truncate">{liveStatusLabel}</div>
+                  <div className="truncate text-[9px] text-white/42">
+                    {livePreviewLabel}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="flex items-center gap-1.5 truncate">
+                    <Volume2 className="h-3 w-3 text-[#a8d8c4]/80" />
+                    <span className="truncate">{voiceStatusLabel}</span>
+                  </div>
+                  <div className="truncate text-[9px] text-white/42">
+                    {voiceStatus} - {voicePreviewLabel}
+                  </div>
+                </>
+              )}
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => {
+                void (
+                  panelMode === "voice"
+                    ? isLiveSessionActive
+                      ? stopLiveInterview()
+                      : startLiveInterview()
+                    : isVoiceCompanionActive
+                      ? stopVoiceCompanion()
+                      : startVoiceCompanion()
+                )
+              }}
+              disabled={
+                panelMode === "voice"
+                  ? isLiveActionPending ||
+                    isSending ||
+                    isHistoryLoading ||
+                    isVoiceCompanionActive
+                  : !isVoiceCompanionActive &&
+                    (isSending || isLiveSessionActive || isHistoryLoading)
+              }
+              className={`h-6 rounded-full px-2.5 text-[10px] ${
+                (panelMode === "voice" ? isLiveSessionActive : isVoiceCompanionActive)
+                  ? "bg-white/10 text-white hover:bg-white/15"
+                  : "bg-[#a8d8c4] text-black hover:bg-[#bce5d2]"
+              }`}
+            >
+              {panelMode === "voice" ? (
+                isLiveActionPending ? (
+                  "..."
+                ) : isLiveSessionActive ? (
+                  "Stop Live"
+                ) : (
+                  "Live Interview"
+                )
+              ) : isVoiceCompanionActive ? (
+                <span className="inline-flex items-center gap-1">
+                  <MicOff className="h-3 w-3" />
+                  Stop
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1">
+                  <Mic className="h-3 w-3" />
+                  Voice
+                </span>
+              )}
+            </Button>
+          </div>
+          )}
+
           {(isComputerUseSessionActive || isSelectedComputerThread) && (
-            <div className="flex items-center justify-between gap-2 rounded-[16px] border border-sky-300/18 bg-[rgba(95,162,255,0.1)] px-3 py-2 text-[10px] text-white/72">
+            <div className="flex items-center justify-between gap-2 border-b border-sky-300/12 px-1 pb-2 text-[10px] text-white/72">
               <div className="min-w-0 flex-1">
                 <div className="truncate">{computerStatusLabel}</div>
                 <div className="truncate text-[9px] text-white/42">
@@ -1751,7 +3711,7 @@ export function AssistantChat({
       {displayedMessages.length > 0 && (
         <div
           ref={messagesRef}
-          className={`${maxHeightClassName} space-y-2 overflow-y-auto pr-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden`}
+          className={`${maxHeightClassName} space-y-2 overflow-y-auto ${isVoiceOrLivePanel ? "pr-0" : "pr-1"} [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden`}
         >
           {displayedMessages.map((message, index) => {
             const isLiveSuggestionMessage =
@@ -1776,22 +3736,22 @@ export function AssistantChat({
                     isLiveSuggestionMessage || isComputerUseMessage
                       ? "max-w-[96%]"
                       : "max-w-[92%]"
-                  } space-y-1.5 rounded-[16px] ${
+                  } space-y-1.5 ${
                     isLiveSuggestionMessage
-                      ? "border border-[#7df9c7]/20 bg-[linear-gradient(180deg,rgba(51,105,88,0.42),rgba(15,25,22,0.5))] px-2.5 py-2 text-white backdrop-blur-xl"
+                      ? "rounded-[14px] border border-[#a8d8c4]/16 bg-[#a8d8c4]/10 px-2.5 py-2 text-white backdrop-blur-xl"
                       : isComputerUseMessage
-                        ? "border border-sky-300/20 bg-[linear-gradient(180deg,rgba(62,104,154,0.38),rgba(12,18,29,0.5))] px-2.5 py-2 text-white backdrop-blur-xl"
+                        ? "rounded-[14px] border border-sky-300/16 bg-sky-300/10 px-2.5 py-2 text-white backdrop-blur-xl"
                       : message.role === "user"
-                        ? "border border-[#7df9c7]/22 bg-[linear-gradient(180deg,rgba(84,150,129,0.34),rgba(30,57,49,0.38))] px-3 py-2.5 text-white backdrop-blur-lg"
-                        : message.error
-                          ? "border border-red-500/20 bg-red-500/10 px-3 py-2.5 text-red-100"
-                          : "border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.04))] px-3 py-2.5 text-white/[0.92] backdrop-blur-lg"
+                        ? "rounded-[14px] bg-[var(--sylica-accent-soft)] px-2.5 py-1.5 text-white"
+                      : message.error
+                          ? "rounded-[14px] bg-red-500/10 px-3 py-2 text-red-100"
+                          : "px-1 py-1 text-white/[0.92]"
                   } ${message.pending ? "opacity-75" : ""}`}
                 >
                   {isLiveSuggestionMessage && (
                     <div className="space-y-1">
-                      <div className="flex items-center gap-2 text-[9px] uppercase tracking-[0.14em] text-[#baf7df]">
-                        <span className="rounded-full border border-[#7df9c7]/20 bg-[#17362d] px-1.5 py-0.5">
+                      <div className="flex items-center gap-2 text-[9px] uppercase tracking-[0.14em] text-[#cce8db]">
+                        <span className="rounded-full border border-[#a8d8c4]/20 bg-[#1f2a26] px-1.5 py-0.5">
                           Live Suggestion
                         </span>
                         <span className="text-white/38">
@@ -1840,10 +3800,30 @@ export function AssistantChat({
       <div
         className={
           isCompactFollowUpComposer
-            ? "sylica-glass-chip flex items-end gap-2 rounded-[16px] px-2.5 py-1.5"
-            : "sylica-glass-chip flex items-end gap-2 rounded-[18px] px-3 py-2"
+            ? "sylica-glass-chip flex items-center gap-1.5 rounded-full px-2 py-1"
+            : isVoiceOrLivePanel
+              ? "sylica-glass-chip flex items-center gap-1.5 rounded-full px-2 py-0.5"
+              : "sylica-glass-chip flex items-end gap-1.5 rounded-full px-2.5 py-1.5"
         }
       >
+        {isCompactFollowUpComposer && quickActions.length > 0 && (
+          <div className="flex shrink-0 items-center gap-1">
+            {quickActions.map((action) => (
+              <button
+                key={action.label}
+                type="button"
+                onClick={() => {
+                  void submitMessage(action.message)
+                }}
+                disabled={isSending || isSelectedComputerThread}
+                title={action.title || action.label}
+                className="sylica-dock-tab rounded-full border border-[#a8d8c4]/18 bg-[#a8d8c4]/10 px-2 py-1 text-[10px] font-medium leading-none text-[#cce8db] transition hover:bg-[#a8d8c4]/16 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {action.label}
+              </button>
+            ))}
+          </div>
+        )}
         <textarea
           ref={inputRef}
           value={input}
@@ -1861,7 +3841,9 @@ export function AssistantChat({
           disabled={isSelectedComputerThread}
           className={
             isCompactFollowUpComposer
-              ? "max-h-[84px] min-h-[20px] flex-1 resize-none bg-transparent py-0.5 text-[11px] leading-[1.35] text-white outline-none placeholder:text-white/24"
+              ? "max-h-[58px] min-h-[18px] flex-1 resize-none bg-transparent py-0 text-[10.5px] leading-[1.3] text-white outline-none placeholder:text-white/24"
+              : isVoiceOrLivePanel
+                ? "max-h-[72px] min-h-[19px] flex-1 resize-none bg-transparent py-0 text-[11px] leading-[1.35] text-white outline-none placeholder:text-white/26"
               : "max-h-[136px] min-h-[24px] flex-1 resize-none bg-transparent py-1 text-[12px] leading-[1.45] text-white outline-none placeholder:text-white/28"
           }
         />
@@ -1888,11 +3870,13 @@ export function AssistantChat({
           }
           className={
             isCompactFollowUpComposer
-              ? "sylica-send-button h-8 w-8 rounded-full bg-[#7df9c7] text-black hover:bg-[#97ffd3]"
-              : "sylica-send-button h-9 w-9 rounded-full bg-[#7df9c7] text-black hover:bg-[#97ffd3]"
+              ? "sylica-send-button h-7 w-7 rounded-full bg-[var(--sylica-accent)] text-[#0d1418] hover:brightness-110"
+              : isVoiceOrLivePanel
+                ? "sylica-send-button h-7 w-7 rounded-full bg-[var(--sylica-accent)] text-[#0d1418] hover:brightness-110"
+              : "sylica-send-button h-8 w-8 rounded-full bg-[var(--sylica-accent)] text-[#0d1418] hover:brightness-110"
           }
         >
-          {isSending ? "..." : <SendHorizontal className="h-4 w-4" />}
+          {isSending ? "..." : <SendHorizontal className={isCompactFollowUpComposer || isVoiceOrLivePanel ? "h-3.5 w-3.5" : "h-4 w-4"} />}
         </Button>
       </div>
     </div>

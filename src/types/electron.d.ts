@@ -17,7 +17,8 @@ import type {
   PersistedChatMessage,
   TextFollowUpRequest,
   TextFollowUpStreamEvent,
-  TextFollowUpResponse
+  TextFollowUpResponse,
+  VoiceRealtimeEvent
 } from "../../shared/followUpChat"
 import type { DesktopUpdateState } from "../../shared/desktopUpdates"
 import type {
@@ -29,6 +30,7 @@ import type {
   CreateLocalPhonePairingSessionResponse,
   LocalPhoneRelayState,
 } from "../../shared/localPhoneRelay"
+import type { AgentState } from "../../shared/agent"
 import type {
   ConnectedAppIntegration,
   IntegrationConnectResponse,
@@ -46,6 +48,10 @@ export interface ElectronAPI {
     email: string
     password: string
   }) => Promise<AuthState>
+  startWebLogin: () => Promise<
+    { success: true } | { success: false; error: string }
+  >
+  onAuthStateUpdated: (callback: (state: AuthState) => void) => () => void
   logout: () => Promise<{ success: boolean }>
   getAccountDashboard: () => Promise<UserDashboardData>
   listIntegrations: () => Promise<ConnectedAppIntegration[]>
@@ -90,6 +96,41 @@ export interface ElectronAPI {
       }
     } | { success: false; error: string }
   >
+  getAgentState: () => Promise<
+    { success: true; data: { state: AgentState } } | { success: false; error: string }
+  >
+  selectAgentWorkspace: () => Promise<
+    { success: true; data: { workspacePath: string } } | { success: false; error: string }
+  >
+  startAgentTask: (payload: {
+    prompt: string
+    workspacePath?: string
+  }) => Promise<
+    { success: true; data: { state: AgentState } } | { success: false; error: string }
+  >
+  approveAgentPhase: (payload: {
+    taskId: string
+    phaseId: string
+  }) => Promise<
+    { success: true; data: { state: AgentState } } | { success: false; error: string }
+  >
+  rejectAgentPhase: (payload: {
+    taskId: string
+    phaseId: string
+    reason?: string
+  }) => Promise<
+    { success: true; data: { state: AgentState } } | { success: false; error: string }
+  >
+  stopAgentTask: () => Promise<
+    { success: true; data: { state: AgentState } } | { success: false; error: string }
+  >
+  openAgentArtifact: (payload: {
+    artifactId: string
+  }) => Promise<{ success: true } | { success: false; error: string }>
+  openAgentWorkspace: () => Promise<
+    { success: true } | { success: false; error: string }
+  >
+  onAgentState: (callback: (state: AgentState) => void) => () => void
   openPhoneRelayWindow: () => Promise<
     { success: true } | { success: false; error: string }
   >
@@ -148,6 +189,34 @@ export interface ElectronAPI {
   }) => Promise<
     { success: true; data: LiveInterviewTranscriptData } | { success: false; error: string }
   >
+  transcribeVoiceAudio: (payload: {
+    audioBase64: string
+    mimeType: string
+  }) => Promise<
+    { success: true; data: { transcript: string } } | { success: false; error: string }
+  >
+  startVoiceRealtime: (payload: {
+    instructions: string
+    voice?: string
+  }) => Promise<
+    { success: true; data: { model: string } } | { success: false; error: string }
+  >
+  appendVoiceRealtimeAudio: (payload: {
+    audioBase64: string
+  }) => Promise<{ success: true } | { success: false; error: string }>
+  updateVoiceRealtimeInstructions: (payload: {
+    instructions: string
+    voice?: string
+  }) => Promise<{ success: true } | { success: false; error: string }>
+  stopVoiceRealtime: () => Promise<
+    { success: true } | { success: false; error: string }
+  >
+  requestVoiceRealtimeResponse: (payload?: { directive?: string }) => Promise<
+    { success: true } | { success: false; error: string }
+  >
+  onVoiceRealtimeEvent: (
+    callback: (event: VoiceRealtimeEvent) => void
+  ) => () => void
   getComputerUseState: () => Promise<
     { success: true; data: { state: ComputerUseState } } | { success: false; error: string }
   >
@@ -178,6 +247,20 @@ export interface ElectronAPI {
     width: number
     height: number
   }) => Promise<void>
+  setDynamicIslandMode: (
+    payload: { collapsed: boolean }
+  ) => Promise<{ success: true } | { success: false; error: string }>
+  getGuideCursorState: () => Promise<
+    { success: true; data: { enabled: boolean } } | { success: false; error: string }
+  >
+  setGuideCursorEnabled: (
+    payload: { enabled: boolean }
+  ) => Promise<
+    { success: true; data: { enabled: boolean } } | { success: false; error: string }
+  >
+  setMousePassthrough: (
+    enabled: boolean
+  ) => Promise<{ success: true } | { success: false; error: string }>
   clearStore: () => Promise<{ success: boolean; error?: string }>
   getScreenshots: () => Promise<{
     success: boolean
@@ -199,6 +282,9 @@ export interface ElectronAPI {
   onProblemExtracted: (callback: (data: any) => void) => () => void
   onSolutionSuccess: (callback: (data: any) => void) => () => void
   onSolutionStream: (callback: (data: any) => void) => () => void
+  onProcessingStatus: (
+    callback: (data: { message?: string; progress?: number }) => void
+  ) => () => void
   onUnauthorized: (callback: () => void) => () => void
   onLiveInterviewState: (
     callback: (state: LiveInterviewState) => void
@@ -213,6 +299,9 @@ export interface ElectronAPI {
   openExternal: (
     url: string
   ) => Promise<{ success: boolean; error?: string }>
+  openLocalPath: (
+    targetPath: string
+  ) => Promise<{ success: true } | { success: false; error: string }>
   toggleMainWindow: () => Promise<{ success: boolean; error?: string }>
   quitApp: () => Promise<{ success: boolean; error?: string }>
   triggerScreenshot: () => Promise<{ success: boolean; error?: string }>
@@ -260,6 +349,8 @@ export interface ElectronAPI {
   onApiKeyInvalid: (callback: () => void) => () => void
   onDeleteLastScreenshot: (callback: () => void) => () => void
   deleteLastScreenshot: () => Promise<{ success: boolean; error?: string }>
+  onCloseExpandedPanel: (callback: () => void) => () => void
+  onWindowOpacityChanged: (callback: (opacity: number) => void) => () => void
   removeListener: (eventName: string, callback: (...args: any[]) => void) => void
 }
 

@@ -3,7 +3,8 @@
 import { spawn } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
-import { app, BrowserWindow, ipcMain, shell } from "electron"
+import { app, BrowserWindow, dialog, ipcMain, shell, type OpenDialogOptions } from "electron"
+import type WebSocket from "ws"
 import { IIpcHandlerDeps } from "./main"
 import { configHelper } from "./ConfigHelper"
 import { backendClient } from "./BackendClient"
@@ -21,11 +22,74 @@ import type {
   LiveInterviewState,
   LiveInterviewTranscriptData,
   TextFollowUpStreamEvent,
+  VoiceRealtimeEvent,
 } from "../shared/followUpChat"
 import type { LocalPhoneRelayState } from "../shared/localPhoneRelay"
+import type { AgentState } from "../shared/agent"
 
 const TEXT_FOLLOW_UP_STREAM_EVENT = "text-follow-up-stream"
 const LOCAL_PHONE_RELAY_STATE_EVENT = "local-phone-relay-state"
+const VOICE_REALTIME_EVENT = "voice-realtime-event"
+const AGENT_STATE_EVENT = "agent-state"
+const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime"
+const OPENAI_REALTIME_MODEL = process.env.OPENAI_REALTIME_MODEL?.trim() || "gpt-realtime-2"
+const OPENAI_REALTIME_VOICE = process.env.OPENAI_REALTIME_VOICE?.trim() || "marin"
+const OPENAI_REALTIME_PCM_RATE = 24000
+const VOICE_SCREEN_REFRESH_MIN_MS = 2500
+const WEBSOCKET_READY_OPEN = 1
+
+type RealtimeSocket = WebSocket
+
+interface VoiceRealtimeSession {
+  socket: RealtimeSocket
+  startedAt: number
+  lastScreenAt: number
+  screenRefreshInFlight: boolean
+  instructions: string
+  assistantTranscript: string
+}
+
+function extractRealtimeText(value: unknown): string {
+  if (!value) {
+    return ""
+  }
+
+  if (typeof value === "string") {
+    return value
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(extractRealtimeText).join("")
+  }
+
+  if (typeof value !== "object") {
+    return ""
+  }
+
+  const record = value as Record<string, any>
+  return [
+    record.delta,
+    record.text,
+    record.transcript,
+    record.content,
+    record.item,
+    record.output,
+    record.response,
+  ]
+    .map(extractRealtimeText)
+    .join("")
+}
+
+function getRealtimeWebSocketConstructor(): typeof import("ws") {
+  // Electron's main process runs in CommonJS after build; lazy require keeps Vite happy.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const wsModule = require("ws") as typeof import("ws") & {
+    WebSocket?: typeof import("ws")
+    default?: typeof import("ws")
+  }
+
+  return (wsModule.WebSocket || wsModule.default || wsModule) as typeof import("ws")
+}
 
 export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
   console.log("Initializing IPC handlers")
@@ -37,6 +101,263 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
       }
     }
   })
+
+  deps.agentController?.subscribe((state) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) {
+        window.webContents.send(AGENT_STATE_EVENT, state)
+      }
+    }
+  })
+
+  let voiceRealtimeSession: VoiceRealtimeSession | null = null
+
+  const emitVoiceRealtimeEvent = (payload: VoiceRealtimeEvent): void => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) {
+        window.webContents.send(VOICE_REALTIME_EVENT, payload)
+      }
+    }
+  }
+
+  const closeVoiceRealtimeSession = (): void => {
+    const session = voiceRealtimeSession
+    voiceRealtimeSession = null
+
+    if (!session) {
+      return
+    }
+
+    try {
+      session.socket.close()
+    } catch (_error) {
+      // Ignore close races during app shutdown or renderer reloads.
+    }
+  }
+
+  const refreshVoiceRealtimeScreen = async (
+    session: VoiceRealtimeSession
+  ): Promise<void> => {
+    if (
+      voiceRealtimeSession !== session ||
+      session.screenRefreshInFlight ||
+      Date.now() - session.lastScreenAt < VOICE_SCREEN_REFRESH_MIN_MS ||
+      session.socket.readyState !== WEBSOCKET_READY_OPEN
+    ) {
+      return
+    }
+
+    session.screenRefreshInFlight = true
+    try {
+      const capture = await deps.captureVoiceScreenContext()
+      session.lastScreenAt = Date.now()
+
+      if (voiceRealtimeSession !== session || session.socket.readyState !== WEBSOCKET_READY_OPEN) {
+        return
+      }
+
+      session.socket.send(
+        JSON.stringify({
+          type: "conversation.item.create",
+          item: {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text:
+                  "Current screen context. Use this only when it is relevant. Do not mention screenshots or tools.",
+              },
+              {
+                type: "input_image",
+                image_url: `data:image/png;base64,${capture.data}`,
+              },
+            ],
+          },
+        })
+      )
+    } catch (error) {
+      console.warn("Voice realtime screen context capture failed:", error)
+    } finally {
+      session.screenRefreshInFlight = false
+    }
+  }
+
+  const sendVoiceRealtimeSessionUpdate = (
+    session: VoiceRealtimeSession,
+    instructions: string,
+    voice: string
+  ): void => {
+    session.instructions = instructions
+    session.socket.send(
+      JSON.stringify({
+        type: "session.update",
+        session: {
+          type: "realtime",
+          model: OPENAI_REALTIME_MODEL,
+          instructions,
+          output_modalities: ["audio"],
+          audio: {
+            input: {
+              format: {
+                type: "audio/pcm",
+                rate: OPENAI_REALTIME_PCM_RATE,
+              },
+              noise_reduction: {
+                type: "near_field",
+              },
+              transcription: {
+                model: "gpt-4o-mini-transcribe",
+                language: "en",
+              },
+              turn_detection: {
+                type: "server_vad",
+                threshold: 0.45,
+                prefix_padding_ms: 260,
+                silence_duration_ms: 420,
+                create_response: true,
+                interrupt_response: true,
+              },
+            },
+            output: {
+              format: {
+                type: "audio/pcm",
+                rate: OPENAI_REALTIME_PCM_RATE,
+              },
+              voice,
+            },
+          },
+        },
+      })
+    )
+  }
+
+  const handleVoiceRealtimeMessage = (
+    session: VoiceRealtimeSession,
+    rawMessage: string
+  ): void => {
+    if (voiceRealtimeSession !== session) {
+      return
+    }
+
+    let payload: Record<string, any>
+    try {
+      payload = JSON.parse(rawMessage) as Record<string, any>
+    } catch (error) {
+      console.error("Failed to parse voice realtime message:", error)
+      return
+    }
+
+    const messageType = String(payload.type || "")
+    if (messageType === "session.created") {
+      emitVoiceRealtimeEvent({ type: "ready" })
+      void refreshVoiceRealtimeScreen(session)
+      return
+    }
+
+    if (messageType === "session.updated") {
+      emitVoiceRealtimeEvent({ type: "session_updated" })
+      return
+    }
+
+    if (messageType === "input_audio_buffer.speech_started") {
+      emitVoiceRealtimeEvent({ type: "speech_started" })
+      void refreshVoiceRealtimeScreen(session)
+      return
+    }
+
+    if (messageType === "input_audio_buffer.speech_stopped") {
+      emitVoiceRealtimeEvent({ type: "speech_stopped" })
+      return
+    }
+
+    if (messageType === "conversation.item.input_audio_transcription.delta") {
+      const delta = String(payload.delta || "")
+      if (delta) {
+        emitVoiceRealtimeEvent({ type: "input_transcript_delta", delta })
+      }
+      return
+    }
+
+    if (messageType === "conversation.item.input_audio_transcription.completed") {
+      const transcript = String(payload.transcript || "").trim()
+      if (transcript) {
+        emitVoiceRealtimeEvent({ type: "input_transcript", transcript })
+      }
+      return
+    }
+
+    if (
+      messageType === "response.output_audio.delta" ||
+      messageType === "response.audio.delta"
+    ) {
+      const audio = String(payload.delta || "").trim()
+      if (audio) {
+        emitVoiceRealtimeEvent({ type: "audio_delta", audio })
+      }
+      return
+    }
+
+    if (
+      messageType === "response.output_audio_transcript.delta" ||
+      messageType === "response.audio_transcript.delta" ||
+      messageType === "response.audio.transcript.delta" ||
+      messageType === "response.content_part.delta" ||
+      messageType === "response.output_item.delta" ||
+      messageType === "response.output_text.delta" ||
+      messageType === "response.text.delta"
+    ) {
+      const text = extractRealtimeText(payload.delta || payload)
+      if (text) {
+        session.assistantTranscript += text
+        emitVoiceRealtimeEvent({ type: "text_delta", text })
+      }
+      return
+    }
+
+    if (
+      messageType === "response.output_audio_transcript.done" ||
+      messageType === "response.audio_transcript.done" ||
+      messageType === "response.audio.transcript.done" ||
+      messageType === "response.output_text.done" ||
+      messageType === "response.text.done"
+    ) {
+      const completedText = extractRealtimeText(payload.transcript || payload.text || payload)
+      if (completedText && !session.assistantTranscript.endsWith(completedText)) {
+        const nextText = session.assistantTranscript
+          ? completedText.replace(session.assistantTranscript, "")
+          : completedText
+        if (nextText) {
+          session.assistantTranscript += nextText
+          emitVoiceRealtimeEvent({ type: "text_delta", text: nextText })
+        }
+      }
+      return
+    }
+
+    if (messageType === "response.done" || messageType === "response.completed") {
+      const completedText = extractRealtimeText(payload.response || payload.output || payload)
+      if (completedText && !session.assistantTranscript.endsWith(completedText)) {
+        const nextText = session.assistantTranscript
+          ? completedText.replace(session.assistantTranscript, "")
+          : completedText
+        if (nextText) {
+          session.assistantTranscript += nextText
+          emitVoiceRealtimeEvent({ type: "text_delta", text: nextText })
+        }
+      }
+      emitVoiceRealtimeEvent({ type: "response_done" })
+      session.assistantTranscript = ""
+      return
+    }
+
+    if (messageType === "error") {
+      const errorMessage = String(
+        payload.error?.message || payload.message || "Realtime voice failed."
+      ).trim()
+      emitVoiceRealtimeEvent({ type: "error", error: errorMessage })
+    }
+  }
 
   const openExternalUrl = async (
     rawUrl: string
@@ -174,8 +495,10 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
       ? "follow_up"
       : rawMode === "live_interview"
         ? "live_interview"
-        : rawMode === "computer_use"
-          ? "computer_use"
+      : rawMode === "computer_use"
+        ? "computer_use"
+        : rawMode === "agent"
+          ? "agent"
           : "general"
 
   const hasPendingProcessingInputs = (): boolean =>
@@ -280,6 +603,21 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     return {
       authenticated: true,
       session,
+    }
+  })
+
+  ipcMain.handle("auth:start-web-login", async () => {
+    try {
+      await shell.openExternal(backendClient.getWebLoginUrl())
+      return { success: true as const }
+    } catch (error) {
+      return {
+        success: false as const,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to open the Sylica login page.",
+      }
     }
   })
 
@@ -696,6 +1034,294 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     }
   })
 
+  ipcMain.handle("voice:transcribe-audio", async (_event, payload) => {
+    const helper = deps.processingHelper
+    if (!helper) {
+      return {
+        success: false as const,
+        error: "Voice transcription is not available right now.",
+      }
+    }
+
+    const audioBase64 = String(payload?.audioBase64 || "").trim()
+    const mimeType = String(payload?.mimeType || "audio/pcm").trim()
+    if (!audioBase64) {
+      return {
+        success: false as const,
+        error: "Audio data is required.",
+      }
+    }
+
+    try {
+      const transcript = await helper.transcribeLiveInterviewAudioChunk(
+        audioBase64,
+        mimeType
+      )
+      return {
+        success: true as const,
+        data: { transcript },
+      }
+    } catch (error) {
+      return {
+        success: false as const,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to transcribe voice audio.",
+      }
+    }
+  })
+
+  ipcMain.handle("voice-realtime:start", async (_event, payload) => {
+    const apiKey = configHelper.getConfiguredApiKey("openai")
+    if (!apiKey) {
+      return {
+        success: false as const,
+        error: "OpenAI API key not configured for realtime voice.",
+      }
+    }
+
+    const instructions = String(payload?.instructions || "").trim()
+    const voice = String(payload?.voice || OPENAI_REALTIME_VOICE).trim() || OPENAI_REALTIME_VOICE
+    if (!instructions) {
+      return {
+        success: false as const,
+        error: "Voice instructions are required.",
+      }
+    }
+
+    closeVoiceRealtimeSession()
+
+    const RealtimeWebSocket = getRealtimeWebSocketConstructor()
+    const socketUrl = `${OPENAI_REALTIME_URL}?model=${encodeURIComponent(
+      OPENAI_REALTIME_MODEL
+    )}`
+    const socket = new RealtimeWebSocket(socketUrl, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
+    }) as RealtimeSocket
+    const session: VoiceRealtimeSession = {
+      socket,
+      startedAt: Date.now(),
+      lastScreenAt: 0,
+      screenRefreshInFlight: false,
+      instructions,
+      assistantTranscript: "",
+    }
+    voiceRealtimeSession = session
+
+    return new Promise<
+      { success: true; data: { model: string } } | { success: false; error: string }
+    >((resolve) => {
+      let settled = false
+      let lastServerError = ""
+      const timeout = setTimeout(() => {
+        if (settled) {
+          return
+        }
+
+        settled = true
+        closeVoiceRealtimeSession()
+        resolve({
+          success: false as const,
+          error: "Timed out starting realtime voice.",
+        })
+      }, 9000)
+
+      const settle = (
+        result:
+          | { success: true; data: { model: string } }
+          | { success: false; error: string }
+      ) => {
+        if (settled) {
+          return
+        }
+
+        settled = true
+        clearTimeout(timeout)
+        resolve(result)
+      }
+
+      socket.on("open", () => {
+        try {
+          sendVoiceRealtimeSessionUpdate(session, instructions, voice)
+          settle({
+            success: true as const,
+            data: { model: OPENAI_REALTIME_MODEL },
+          })
+        } catch (error) {
+          closeVoiceRealtimeSession()
+          settle({
+            success: false as const,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to configure realtime voice.",
+          })
+        }
+      })
+
+      socket.on("message", (data) => {
+        const rawData = typeof data === "string" ? data : data.toString("utf8")
+        try {
+          const parsed = JSON.parse(rawData) as Record<string, any>
+          if (String(parsed.type || "") === "error") {
+            lastServerError = String(
+              parsed.error?.message || parsed.message || "Realtime voice failed."
+            ).trim()
+          }
+        } catch (_error) {
+          // Parsed again in the main handler; ignore pre-parse failures here.
+        }
+
+        handleVoiceRealtimeMessage(session, rawData)
+      })
+
+      socket.on("close", (code, reason) => {
+        const closeMessage =
+          lastServerError ||
+          `Realtime voice connection closed (${code}${
+            reason?.length ? `: ${reason.toString("utf8")}` : ""
+          }).`
+
+        if (!settled) {
+          settle({
+            success: false as const,
+            error: closeMessage,
+          })
+          return
+        }
+
+        if (voiceRealtimeSession === session) {
+          voiceRealtimeSession = null
+          emitVoiceRealtimeEvent({ type: "error", error: closeMessage })
+        }
+      })
+
+      socket.on("error", (error) => {
+        const errorMessage =
+          lastServerError ||
+          (error instanceof Error && error.message.trim()
+            ? error.message
+            : "Could not connect realtime voice.")
+
+        if (!settled) {
+          settle({
+            success: false as const,
+            error: errorMessage,
+          })
+          return
+        }
+
+        if (voiceRealtimeSession === session) {
+          emitVoiceRealtimeEvent({ type: "error", error: errorMessage })
+        }
+      })
+    })
+  })
+
+  ipcMain.handle("voice-realtime:append-audio", async (_event, payload) => {
+    const audioBase64 = String(payload?.audioBase64 || "").trim()
+    const session = voiceRealtimeSession
+    if (!session || session.socket.readyState !== WEBSOCKET_READY_OPEN) {
+      return {
+        success: false as const,
+        error: "Realtime voice is not connected.",
+      }
+    }
+
+    if (!audioBase64) {
+      return {
+        success: false as const,
+        error: "Audio data is required.",
+      }
+    }
+
+    session.socket.send(
+      JSON.stringify({
+        type: "input_audio_buffer.append",
+        audio: audioBase64,
+      })
+    )
+
+    return { success: true as const }
+  })
+
+  ipcMain.handle("voice-realtime:update-instructions", async (_event, payload) => {
+    const instructions = String(payload?.instructions || "").trim()
+    const voice = String(payload?.voice || OPENAI_REALTIME_VOICE).trim() || OPENAI_REALTIME_VOICE
+    const session = voiceRealtimeSession
+    if (!session || session.socket.readyState !== WEBSOCKET_READY_OPEN) {
+      return {
+        success: false as const,
+        error: "Realtime voice is not connected.",
+      }
+    }
+
+    if (!instructions) {
+      return {
+        success: false as const,
+        error: "Voice instructions are required.",
+      }
+    }
+
+    sendVoiceRealtimeSessionUpdate(session, instructions, voice)
+    return { success: true as const }
+  })
+
+  ipcMain.handle("voice-realtime:request-response", async (_event, payload) => {
+    const session = voiceRealtimeSession
+    if (!session || session.socket.readyState !== WEBSOCKET_READY_OPEN) {
+      return {
+        success: false as const,
+        error: "Realtime voice is not connected.",
+      }
+    }
+
+    const directive = String(payload?.directive || "").trim()
+    try {
+      if (directive) {
+        // Push a synthetic user turn so the assistant has something to respond
+        // to (used for greetings and other proactive prompts).
+        session.socket.send(
+          JSON.stringify({
+            type: "conversation.item.create",
+            item: {
+              type: "message",
+              role: "user",
+              content: [
+                {
+                  type: "input_text",
+                  text: directive,
+                },
+              ],
+            },
+          })
+        )
+      }
+      session.socket.send(
+        JSON.stringify({
+          type: "response.create",
+        })
+      )
+      return { success: true as const }
+    } catch (error) {
+      return {
+        success: false as const,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to request realtime voice response.",
+      }
+    }
+  })
+
+  ipcMain.handle("voice-realtime:stop", async () => {
+    closeVoiceRealtimeSession()
+    return { success: true as const }
+  })
+
   ipcMain.handle("computer-use:get-state", async () => {
     const controller = deps.browserAgentController
     if (!controller) {
@@ -726,7 +1352,7 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     if (!task) {
       return {
         success: false as const,
-        error: "Enter a browser task first.",
+        error: "Enter a computer task first.",
       }
     }
 
@@ -781,6 +1407,153 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
       success: true as const,
       data: result.data as ComputerUseResumeData,
     }
+  })
+
+  ipcMain.handle("agent:get-state", async () => {
+    const controller = deps.agentController
+    if (!controller) {
+      return {
+        success: false as const,
+        error: "Agent Mode is not available right now.",
+      }
+    }
+
+    return {
+      success: true as const,
+      data: {
+        state: controller.getState() as AgentState,
+      },
+    }
+  })
+
+  ipcMain.handle("agent:select-workspace", async () => {
+    try {
+      const mainWindow = deps.getMainWindow()
+      const options: OpenDialogOptions = {
+        title: "Choose Sylica Agent workspace",
+        properties: ["openDirectory", "createDirectory"],
+      }
+      const result = mainWindow
+        ? await dialog.showOpenDialog(mainWindow, options)
+        : await dialog.showOpenDialog(options)
+
+      if (result.canceled || !result.filePaths[0]) {
+        return {
+          success: false as const,
+          error: "No workspace selected.",
+        }
+      }
+
+      return {
+        success: true as const,
+        data: {
+          workspacePath: result.filePaths[0],
+        },
+      }
+    } catch (error) {
+      return {
+        success: false as const,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to choose an Agent workspace.",
+      }
+    }
+  })
+
+  ipcMain.handle("agent:start-task", async (_event, payload) => {
+    const controller = deps.agentController
+    if (!controller) {
+      return {
+        success: false as const,
+        error: "Agent Mode is not available right now.",
+      }
+    }
+
+    const result = await controller.startTask({
+      prompt: String(payload?.prompt || ""),
+      workspacePath: String(payload?.workspacePath || "") || undefined,
+    })
+
+    if ("error" in result) {
+      if (result.authRequired) {
+        notifyUnauthorized()
+      }
+
+      return {
+        success: false as const,
+        error: result.error,
+      }
+    }
+
+    return result
+  })
+
+  ipcMain.handle("agent:approve-phase", async (_event, payload) => {
+    const controller = deps.agentController
+    if (!controller) {
+      return {
+        success: false as const,
+        error: "Agent Mode is not available right now.",
+      }
+    }
+
+    return controller.approvePhase({
+      taskId: String(payload?.taskId || ""),
+      phaseId: String(payload?.phaseId || ""),
+    })
+  })
+
+  ipcMain.handle("agent:reject-phase", async (_event, payload) => {
+    const controller = deps.agentController
+    if (!controller) {
+      return {
+        success: false as const,
+        error: "Agent Mode is not available right now.",
+      }
+    }
+
+    return controller.rejectPhase({
+      taskId: String(payload?.taskId || ""),
+      phaseId: String(payload?.phaseId || ""),
+      reason: String(payload?.reason || ""),
+    })
+  })
+
+  ipcMain.handle("agent:stop", async () => {
+    const controller = deps.agentController
+    if (!controller) {
+      return {
+        success: false as const,
+        error: "Agent Mode is not available right now.",
+      }
+    }
+
+    return controller.stop()
+  })
+
+  ipcMain.handle("agent:open-artifact", async (_event, payload) => {
+    const controller = deps.agentController
+    if (!controller) {
+      return {
+        success: false as const,
+        error: "Agent Mode is not available right now.",
+      }
+    }
+
+    return controller.openArtifact(String(payload?.artifactId || ""))
+  })
+
+  ipcMain.handle("agent:open-workspace", async () => {
+    const controller = deps.agentController
+    if (!controller) {
+      return {
+        success: false as const,
+        error: "Agent Mode is not available right now.",
+      }
+    }
+
+    return controller.openWorkspace()
   })
 
   ipcMain.handle("chat:get-messages", async (_event, payload) => {
@@ -1017,8 +1790,25 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
   })
 
   ipcMain.handle("update-config", (_event, updates) => {
+    const previous = configHelper.getPublicConfig();
     configHelper.updateConfig(updates);
-    return configHelper.getPublicConfig();
+    const next = configHelper.getPublicConfig();
+
+    // If the user flipped the "visible to screen recordings" toggle, apply it
+    // to the live window immediately so demos can switch state on the fly.
+    if (
+      updates &&
+      Object.prototype.hasOwnProperty.call(updates, "screenRecordingVisible") &&
+      previous.screenRecordingVisible !== next.screenRecordingVisible
+    ) {
+      try {
+        deps.applyScreenRecordingVisibility();
+      } catch (error) {
+        console.warn("Failed to apply screen recording visibility:", error);
+      }
+    }
+
+    return next;
   })
 
   ipcMain.handle("validate-api-key", async (_event, apiKey, provider) => {
@@ -1131,6 +1921,84 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
       deps.setWindowDimensions(width, height)
     }
   )
+
+  ipcMain.handle("app:set-dynamic-island-mode", (_event, payload) => {
+    try {
+      deps.setDynamicIslandMode(Boolean(payload?.collapsed))
+      return { success: true as const }
+    } catch (error) {
+      console.error("Error updating dynamic island mode:", error)
+      return {
+        success: false as const,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to update dynamic island mode.",
+      }
+    }
+  })
+
+  ipcMain.handle("app:get-guide-cursor-state", () => {
+    try {
+      return {
+        success: true as const,
+        data: {
+          enabled: deps.getGuideCursorEnabled(),
+        },
+      }
+    } catch (error) {
+      console.error("Error reading guide cursor state:", error)
+      return {
+        success: false as const,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to read guide cursor state.",
+      }
+    }
+  })
+
+  ipcMain.handle("app:set-guide-cursor-enabled", (_event, payload) => {
+    try {
+      const enabled = deps.setGuideCursorEnabled(Boolean(payload?.enabled))
+      return {
+        success: true as const,
+        data: {
+          enabled,
+        },
+      }
+    } catch (error) {
+      console.error("Error updating guide cursor state:", error)
+      return {
+        success: false as const,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to update guide cursor state.",
+      }
+    }
+  })
+
+  ipcMain.handle("app:set-mouse-passthrough", (_event, enabled) => {
+    try {
+      const window = deps.getMainWindow()
+      if (!window || window.isDestroyed()) {
+        return { success: false as const, error: "Main window is not available." }
+      }
+
+      window.setIgnoreMouseEvents(Boolean(enabled), { forward: true })
+      return { success: true as const }
+    } catch (error) {
+      console.error("Error updating mouse passthrough:", error)
+      return {
+        success: false as const,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to update mouse passthrough.",
+      }
+    }
+  })
 
   // Screenshot management handlers
   ipcMain.handle("get-screenshots", async () => {
@@ -1247,6 +2115,35 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
 
   ipcMain.handle("open-external-url", async (_event, url: string) => {
     return openExternalUrl(url)
+  })
+
+  ipcMain.handle("open-local-path", async (_event, rawPath: string) => {
+    try {
+      const targetPath = String(rawPath || "").trim()
+      if (!targetPath) {
+        return { success: false as const, error: "Missing file path." }
+      }
+
+      const resolvedPath = path.resolve(targetPath)
+      if (!fs.existsSync(resolvedPath)) {
+        return { success: false as const, error: "That file no longer exists." }
+      }
+
+      const openError = await shell.openPath(resolvedPath)
+      if (openError) {
+        return { success: false as const, error: openError }
+      }
+
+      return { success: true as const }
+    } catch (error) {
+      return {
+        success: false as const,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to open the local file.",
+      }
+    }
   })
   
   // Open external URL handler
