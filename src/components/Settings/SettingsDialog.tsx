@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { Power } from "lucide-react"
+import { Eye, EyeOff, Power } from "lucide-react"
 import { Button } from "../ui/button"
 import { useToast } from "../../contexts/toast"
 import { updateWindowToElement } from "../../utils/contentSize"
@@ -14,6 +14,8 @@ import {
   MODEL_OPTIONS,
   PROVIDER_CARD_DESCRIPTIONS,
   PROVIDER_CARD_TITLES,
+  PROVIDER_KEY_LABELS,
+  PROVIDER_KEY_PLACEHOLDERS,
   PROVIDER_ORDER,
 } from "../../../shared/aiConfig"
 
@@ -67,7 +69,13 @@ export function SettingsDialog({
     DEFAULT_MODELS[DEFAULT_PROVIDER].debuggingModel
   )
   const [language, setLanguage] = useState("python")
+  const [apiKey, setApiKey] = useState("")
+  const [configuredApiProviders, setConfiguredApiProviders] = useState<
+    ApiProvider[]
+  >([])
   const [isLoading, setIsLoading] = useState(false)
+  const [isScreenRecordingVisible, setIsScreenRecordingVisible] = useState(false)
+  const [isTogglingVisibility, setIsTogglingVisibility] = useState(false)
   const { showToast } = useToast()
 
   useEffect(() => {
@@ -89,6 +97,9 @@ export function SettingsDialog({
           config.debuggingModel || DEFAULT_MODELS[provider].debuggingModel
         )
         setLanguage(config.language || "python")
+        setApiKey("")
+        setConfiguredApiProviders(config.configuredApiProviders || [])
+        setIsScreenRecordingVisible(Boolean(config.screenRecordingVisible))
       })
       .catch((error: unknown) => {
         console.error("Failed to load config:", error)
@@ -125,6 +136,7 @@ export function SettingsDialog({
     solutionModel,
     debuggingModel,
     language,
+    apiKey,
   ])
 
   useEffect(() => {
@@ -155,6 +167,7 @@ export function SettingsDialog({
     setExtractionModel(providerDefaults.extractionModel)
     setSolutionModel(providerDefaults.solutionModel)
     setDebuggingModel(providerDefaults.debuggingModel)
+    setApiKey("")
   }
 
   const handleSave = async () => {
@@ -162,6 +175,7 @@ export function SettingsDialog({
 
     try {
       const result = await window.electronAPI.updateConfig({
+        apiKey: apiKey.trim() || undefined,
         apiProvider,
         extractionModel,
         solutionModel,
@@ -170,6 +184,8 @@ export function SettingsDialog({
       })
 
       if (result) {
+        setApiKey("")
+        setConfiguredApiProviders(result.configuredApiProviders || [])
         showToast("Success", "Settings saved successfully", "success")
         onOpenChange?.(false)
 
@@ -208,6 +224,31 @@ export function SettingsDialog({
     } catch (error) {
       console.error("Failed to quit app:", error)
       showToast("Error", "Failed to quit app", "error")
+    }
+  }
+
+  const handleToggleScreenRecordingVisibility = async () => {
+    if (isTogglingVisibility) return
+    const next = !isScreenRecordingVisible
+    setIsTogglingVisibility(true)
+    try {
+      const updated = await window.electronAPI.updateConfig({
+        screenRecordingVisible: next,
+      })
+      const applied = Boolean(updated?.screenRecordingVisible ?? next)
+      setIsScreenRecordingVisible(applied)
+      showToast(
+        applied ? "Demo Mode" : "Stealth Mode",
+        applied
+          ? "Sylica is now visible in screen recordings."
+          : "Sylica is hidden from screen recordings.",
+        applied ? "neutral" : "success"
+      )
+    } catch (error) {
+      console.error("Failed to toggle screen recording visibility:", error)
+      showToast("Visibility", "Couldn't update visibility. Please try again.", "error")
+    } finally {
+      setIsTogglingVisibility(false)
     }
   }
 
@@ -279,6 +320,37 @@ export function SettingsDialog({
                     </option>
                   ))}
                 </select>
+              </div>
+
+              <div className="mt-4 space-y-2">
+                <label className="block text-[12px] font-medium text-white">
+                  Screen Recording Visibility
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void handleToggleScreenRecordingVisibility()}
+                  disabled={isTogglingVisibility}
+                  className={`flex w-full items-center justify-between rounded-xl border px-3 py-2.5 text-sm transition-colors ${
+                    isScreenRecordingVisible
+                      ? "border-amber-400/30 bg-amber-500/10 text-amber-100"
+                      : "border-white/10 bg-black/50 text-white/70 hover:bg-white/5"
+                  } ${isTogglingVisibility ? "opacity-60" : ""}`}
+                >
+                  <span className="flex items-center gap-2">
+                    {isScreenRecordingVisible ? (
+                      <Eye className="h-4 w-4" />
+                    ) : (
+                      <EyeOff className="h-4 w-4" />
+                    )}
+                    {isScreenRecordingVisible ? "Demo Mode (visible)" : "Stealth Mode (hidden)"}
+                  </span>
+                  <span className="text-[10px] text-white/40">
+                    {isScreenRecordingVisible ? "ON" : "OFF"}
+                  </span>
+                </button>
+                <p className="text-[10px] leading-4 text-white/40">
+                  Toggle whether Sylica appears in screen recordings. Stealth mode hides the widget from screen capture.
+                </p>
               </div>
 
               <Button
@@ -365,6 +437,47 @@ export function SettingsDialog({
                   </div>
                 ))}
               </div>
+            </div>
+
+            <div className="space-y-2 rounded-2xl border border-white/10 bg-black/25 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <label className="text-[13px] font-medium text-white">
+                    {PROVIDER_KEY_LABELS[apiProvider]}
+                  </label>
+                  <p className="mt-1 text-[11px] leading-4 text-white/55">
+                    Stored locally. Environment variables still override saved
+                    keys.
+                  </p>
+                </div>
+                {configuredApiProviders.includes(apiProvider) ? (
+                  <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-2 py-1 text-[10px] text-emerald-100">
+                    Configured
+                  </span>
+                ) : (
+                  <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[10px] text-white/55">
+                    Missing
+                  </span>
+                )}
+              </div>
+
+              <input
+                type="password"
+                value={apiKey}
+                onChange={(event) => setApiKey(event.target.value)}
+                placeholder={
+                  configuredApiProviders.includes(apiProvider)
+                    ? "Paste a new key to replace the saved key"
+                    : PROVIDER_KEY_PLACEHOLDERS[apiProvider]
+                }
+                className="w-full rounded-xl border border-white/10 bg-black/50 px-3 py-2 text-sm text-white outline-none transition-colors placeholder:text-white/28 focus:border-white/25"
+              />
+
+              <p className="text-[10.5px] leading-4 text-white/45">
+                Realtime voice, live transcription, and computer use require an
+                OpenAI key. Select OpenAI once, save the key, then switch back
+                to another main provider if you want.
+              </p>
             </div>
 
             <div className="space-y-4">
