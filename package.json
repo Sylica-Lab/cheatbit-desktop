@@ -1,6 +1,6 @@
 {
   "name": "sylica-ai-desktop",
-  "version": "1.0.46",
+  "version": "1.0.47",
   "main": "./dist-electron/electron/main.js",
   "scripts": {
     "clean": "npx rimraf dist dist-electron",
