@@ -80,7 +80,7 @@ export function updateWindowToElement(
   const { width, height } = visibleSize || measureElementContentSize(target)
 
   window.electronAPI?.updateContentDimensions({
-    width: width + 8 + (extras.width ?? 0),
-    height: height + 8 + (extras.height ?? 0)
+    width: width + 18 + (extras.width ?? 0),
+    height: height + 22 + (extras.height ?? 0)
   })
 }

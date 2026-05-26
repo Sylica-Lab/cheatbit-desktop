@@ -211,6 +211,13 @@ export class ShortcutsHelper {
       this.deps.toggleMainWindow()
     })
 
+    globalShortcut.register("Control+Space", () => {
+      console.log("Ctrl + Space pressed. Handling guide cursor shortcut.")
+      void this.deps.handleGuideShortcutPress().catch((error) => {
+        console.error("Error handling guide cursor shortcut:", error)
+      })
+    })
+
     globalShortcut.register("CommandOrControl+Q", () => {
       console.log("Command/Ctrl + Q pressed. Quitting application.")
       app.quit()

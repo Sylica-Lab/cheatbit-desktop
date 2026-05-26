@@ -208,13 +208,12 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
               },
               transcription: {
                 model: "gpt-4o-mini-transcribe",
-                language: "en",
               },
               turn_detection: {
                 type: "server_vad",
-                threshold: 0.45,
-                prefix_padding_ms: 260,
-                silence_duration_ms: 420,
+                threshold: 0.28,
+                prefix_padding_ms: 500,
+                silence_duration_ms: 650,
                 create_response: true,
                 interrupt_response: true,
               },
