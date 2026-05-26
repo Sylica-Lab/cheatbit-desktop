@@ -460,14 +460,9 @@ function App() {
   useEffect(() => {
     const unsubscribeSettings = window.electronAPI.onShowSettings(() => {
       console.log("Show settings dialog requested");
-      setIsSettingsOpen((previous) => {
-        const nextOpen = !previous
-        if (nextOpen) {
-          setIsAccountDashboardOpen(false)
-          setIsPhoneRelayOpen(false)
-        }
-        return nextOpen
-      })
+      setIsAccountDashboardOpen(false)
+      setIsPhoneRelayOpen(false)
+      setIsSettingsOpen(true)
     });
     
     return () => {

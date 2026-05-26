@@ -475,8 +475,9 @@ export function SettingsDialog({
 
               <p className="text-[10.5px] leading-4 text-white/45">
                 Realtime voice, live transcription, and computer use require an
-                OpenAI key. Select OpenAI once, save the key, then switch back
-                to another main provider if you want.
+                OpenAI key. If Settings opened from Voice, choose the OpenAI
+                card above, save the key once, then switch back to another main
+                provider if you want.
               </p>
             </div>
 

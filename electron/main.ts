@@ -1585,7 +1585,7 @@ async function initializeApp() {
     
     // Ensure a configuration file exists
     if (!configHelper.hasApiKey()) {
-      console.log("No built-in API key found. Add one in electron/builtInApiKeys.ts.")
+      console.log("No API key configured yet. Add one in Settings or set OPENAI_API_KEY.")
     }
     
     initializeHelpers()
