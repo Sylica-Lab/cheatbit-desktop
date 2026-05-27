@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState, type FormEvent } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Button } from "../ui/button"
-import { Input } from "../ui/input"
 import { updateWindowToElement } from "../../utils/contentSize"
 import type { AuthState } from "../../../shared/backendAuth"
 import { CheatbitMark } from "../Brand/CheatbitMark"
@@ -10,18 +9,15 @@ interface AuthScreenProps {
   onAuthenticated: (state: AuthState) => void
 }
 
-type AuthMode = "login" | "register"
-
 export function AuthScreen({
   initialError,
   onAuthenticated,
 }: AuthScreenProps) {
-  const [mode, setMode] = useState<AuthMode>("login")
-  const [name, setName] = useState("")
-  const [email, setEmail] = useState("")
-  const [password, setPassword] = useState("")
   const [error, setError] = useState(initialError || "")
-  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [status, setStatus] = useState("Opening Sylica in your browser...")
+  const [isOpening, setIsOpening] = useState(false)
+  const [isChecking, setIsChecking] = useState(false)
+  const didAutoOpenRef = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -33,7 +29,7 @@ export function AuthScreen({
 
     const updateDimensions = () => {
       if (!containerRef.current) return
-      updateWindowToElement(containerRef.current, { width: 28, height: 28 })
+      updateWindowToElement(containerRef.current, { width: 24, height: 24 })
     }
 
     updateDimensions()
@@ -44,28 +40,68 @@ export function AuthScreen({
     return () => resizeObserver.disconnect()
   }, [])
 
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    setIsSubmitting(true)
+  const openWebsiteLogin = useCallback(async () => {
+    setIsOpening(true)
+    setError("")
+    setStatus("Opening Sylica in your browser...")
+
+    try {
+      const result = await window.electronAPI.startWebLogin()
+      if (!result.success) {
+        setError(result.error || "Could not open Sylica in your browser.")
+        setStatus("Open the website manually if the browser did not appear.")
+        return
+      }
+
+      setStatus("Finish login or signup in the browser. Sylica will return here automatically.")
+    } catch (openError) {
+      setError(
+        openError instanceof Error
+          ? openError.message
+          : "Could not open Sylica in your browser."
+      )
+      setStatus("Open the website manually if the browser did not appear.")
+    } finally {
+      setIsOpening(false)
+    }
+  }, [])
+
+  const refreshAuthState = useCallback(async () => {
+    setIsChecking(true)
     setError("")
 
     try {
-      const authState =
-        mode === "login"
-          ? await window.electronAPI.login({ email, password })
-          : await window.electronAPI.register({ name, email, password })
+      const nextAuthState = await window.electronAPI.getAuthState()
+      if (nextAuthState.authenticated) {
+        onAuthenticated(nextAuthState)
+        return
+      }
 
-      onAuthenticated(authState)
-    } catch (submitError) {
-      const message =
-        submitError instanceof Error
-          ? submitError.message
-          : "Authentication failed."
-      setError(message)
+      setStatus("Still waiting for website login to finish.")
+      if (nextAuthState.error) {
+        setError(nextAuthState.error)
+      }
+    } catch (refreshError) {
+      setError(
+        refreshError instanceof Error
+          ? refreshError.message
+          : "Could not check login status."
+      )
     } finally {
-      setIsSubmitting(false)
+      setIsChecking(false)
     }
-  }
+  }, [onAuthenticated])
+
+  useEffect(() => {
+    if (didAutoOpenRef.current) return
+    didAutoOpenRef.current = true
+
+    const timeout = window.setTimeout(() => {
+      void openWebsiteLogin()
+    }, 350)
+
+    return () => window.clearTimeout(timeout)
+  }, [openWebsiteLogin])
 
   return (
     <div
@@ -73,159 +109,57 @@ export function AuthScreen({
       data-size-root="true"
       className="inline-flex items-center justify-center bg-transparent p-4"
     >
-      <div className="overflow-hidden rounded-[28px] border border-white/10 bg-black/85 shadow-2xl shadow-black/40">
-        <div className="grid max-w-4xl gap-0 md:grid-cols-[1.05fr_0.95fr]">
-          <section className="relative overflow-hidden border-b border-white/10 bg-[radial-gradient(circle_at_top_left,_rgba(125,249,199,0.18),_transparent_34%),linear-gradient(180deg,_rgba(255,255,255,0.04),_rgba(255,255,255,0.01))] px-6 py-6 md:border-b-0 md:border-r">
-            <div className="absolute inset-0 bg-[linear-gradient(135deg,transparent_0%,rgba(255,255,255,0.03)_48%,transparent_100%)]" />
-            <div className="relative space-y-6">
-              <div className="space-y-3">
-                <span className="inline-flex rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] uppercase tracking-[0.24em] text-[#7df9c7]">
+      <div className="w-[430px] overflow-hidden rounded-[28px] border border-white/10 bg-black/[0.88] shadow-2xl shadow-black/40 backdrop-blur-xl">
+        <section className="relative overflow-hidden bg-[radial-gradient(circle_at_top_left,_rgba(125,249,199,0.18),_transparent_36%),linear-gradient(180deg,_rgba(255,255,255,0.055),_rgba(255,255,255,0.015))] px-6 py-6">
+          <div className="absolute inset-0 bg-[linear-gradient(135deg,transparent_0%,rgba(255,255,255,0.04)_48%,transparent_100%)]" />
+          <div className="relative space-y-5">
+            <div className="flex items-start gap-3">
+              <CheatbitMark className="h-12 w-12 rounded-[20px]" />
+              <div>
+                <span className="inline-flex rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[10px] uppercase tracking-[0.22em] text-[#7df9c7]">
                   Account Required
                 </span>
-                <div className="flex items-start gap-3">
-                  <CheatbitMark className="h-12 w-12 rounded-[20px]" />
-                  <div>
-                    <h1 className="text-3xl font-semibold tracking-[-0.04em] text-white">
-                      Sylica AI
-                    </h1>
-                    <p className="mt-2 max-w-md text-sm leading-6 text-white/65">
-                      Sign in to use Sylica AI. Your screenshots, solves, follow-up
-                      chat, subscription, and usage history stay tied to your account.
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="grid gap-3">
-                <div className="rounded-2xl border border-white/10 bg-black/35 p-4">
-                  <div className="text-xs uppercase tracking-[0.18em] text-white/45">
-                    Your Activity
-                  </div>
-                  <div className="mt-2 text-sm text-white/85">
-                    Screenshots, solves, debug runs, and follow-up chat are saved
-                    against your account.
-                  </div>
-                </div>
-                <div className="rounded-2xl border border-white/10 bg-black/35 p-4">
-                  <div className="text-xs uppercase tracking-[0.18em] text-white/45">
-                    Billing
-                  </div>
-                  <div className="mt-2 text-sm text-white/85">
-                    View your subscription, unlimited access, renewal status, and
-                    recent usage from your dashboard.
-                  </div>
-                </div>
-                <div className="rounded-2xl border border-white/10 bg-black/35 p-4">
-                  <div className="text-xs uppercase tracking-[0.18em] text-white/45">
-                    Account Limits
-                  </div>
-                  <div className="mt-2 text-sm text-white/85">
-                    Your account is checked before processing starts so access,
-                    limits, and usage stay synced to you.
-                  </div>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <section className="w-full max-w-[420px] px-6 py-6">
-            <div className="mb-5 flex gap-2 rounded-full border border-white/10 bg-white/5 p-1">
-              <button
-                type="button"
-                className={`flex-1 rounded-full px-3 py-2 text-sm transition-colors ${
-                  mode === "login"
-                    ? "bg-white text-black"
-                    : "text-white/70 hover:text-white"
-                }`}
-                onClick={() => setMode("login")}
-              >
-                Login
-              </button>
-              <button
-                type="button"
-                className={`flex-1 rounded-full px-3 py-2 text-sm transition-colors ${
-                  mode === "register"
-                    ? "bg-white text-black"
-                    : "text-white/70 hover:text-white"
-                }`}
-                onClick={() => setMode("register")}
-              >
-                Register
-              </button>
-            </div>
-
-            <form className="space-y-4" onSubmit={handleSubmit}>
-              <div className="space-y-1">
-                <h2 className="text-xl font-semibold tracking-[-0.03em] text-white">
-                  {mode === "login" ? "Sign in to continue" : "Create an account"}
-                </h2>
-                <p className="text-sm text-white/55">
-                  {mode === "login"
-                    ? "Use your Sylica AI account to continue with your saved activity and subscription."
-                    : "Create your Sylica AI account to track usage, billing, and access in one place."}
+                <h1 className="mt-3 text-2xl font-semibold tracking-[-0.04em] text-white">
+                  Continue with Sylica
+                </h1>
+                <p className="mt-2 text-sm leading-6 text-white/62">
+                  Login and signup happen on sylicaai.com. After the browser
+                  confirms your account, the desktop app will unlock automatically.
                 </p>
               </div>
+            </div>
 
-              {mode === "register" && (
-                <div className="space-y-2">
-                  <label className="text-xs uppercase tracking-[0.18em] text-white/45">
-                    Full Name
-                  </label>
-                  <Input
-                    value={name}
-                    onChange={(event) => setName(event.target.value)}
-                    placeholder="Ada Lovelace"
-                    className="h-11 rounded-2xl border-white/10 bg-white/5 text-white placeholder:text-white/25"
-                  />
-                </div>
-              )}
+            <div className="rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white/75">
+              {status}
+            </div>
 
-              <div className="space-y-2">
-                <label className="text-xs uppercase tracking-[0.18em] text-white/45">
-                  Email
-                </label>
-                <Input
-                  type="email"
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                  placeholder="you@example.com"
-                  className="h-11 rounded-2xl border-white/10 bg-white/5 text-white placeholder:text-white/25"
-                />
+            {error ? (
+              <div className="rounded-2xl border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+                {error}
               </div>
+            ) : null}
 
-              <div className="space-y-2">
-                <label className="text-xs uppercase tracking-[0.18em] text-white/45">
-                  Password
-                </label>
-                <Input
-                  type="password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  placeholder="Minimum 8 characters"
-                  className="h-11 rounded-2xl border-white/10 bg-white/5 text-white placeholder:text-white/25"
-                />
-              </div>
-
-              {error ? (
-                <div className="rounded-2xl border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-                  {error}
-                </div>
-              ) : null}
-
+            <div className="grid gap-2">
               <Button
-                type="submit"
-                disabled={isSubmitting}
+                type="button"
+                disabled={isOpening}
+                onClick={() => void openWebsiteLogin()}
                 className="h-11 w-full rounded-2xl bg-white text-black hover:bg-white/90"
               >
-                {isSubmitting
-                  ? "Please wait..."
-                  : mode === "login"
-                  ? "Login"
-                  : "Register"}
+                {isOpening ? "Opening..." : "Login or sign up on website"}
               </Button>
-            </form>
-          </section>
-        </div>
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={isChecking}
+                onClick={() => void refreshAuthState()}
+                className="h-10 w-full rounded-2xl border border-white/10 bg-white/5 text-white/75 hover:bg-white/10 hover:text-white"
+              >
+                {isChecking ? "Checking..." : "I finished login"}
+              </Button>
+            </div>
+          </div>
+        </section>
       </div>
     </div>
   )
