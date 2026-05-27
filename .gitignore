@@ -15,6 +15,23 @@ backend/.dev.vars.*
 backend/data/
 backend-runtime.log
 backend-runtime.err.log
+.logs/
+.sylica-ai/
+.wrangler/
+*.log
+*.err
+*.out.log
+package-win.*
+publish-win.*
+run-prod.*
+worker-deploy.*
+nodever.txt
+npmver.txt
+artifact-build-manifest.json
+main-*.js.map
+index-*.js
+*.pptx
+~$*
 **/.DS_Store
 **/.vscode
 **/.idea
@@ -30,4 +47,11 @@ mobile/jdk*-portable.zip
 mobile/jdk*-portable.tar.gz
 mobile/jdk*.zip
 mobile/tmp-jdk*.zip
+mobile/.dart_tool/
+mobile/.flutter-plugins-dependencies
+mobile/.cxx/
+mobile/build/
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
 

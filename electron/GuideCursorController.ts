@@ -269,7 +269,7 @@ export class GuideCursorController {
         try {
           const isLongPress = await this.isCtrlSpaceStillPressed()
           if (isLongPress) {
-            // Long press ? explain hovered text
+            // Long press → explain hovered text
             await this.explainHoveredText()
             resolve()
             return
@@ -278,7 +278,7 @@ export class GuideCursorController {
           // If key-state probing fails, fall through to voice toggle.
         }
 
-        // Short press ? toggle voice on/off
+        // Short press → toggle voice on/off
         if (this.isGuideVoiceActive) {
           this.stopGuideVoice()
           this.updateState({
