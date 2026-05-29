@@ -3,11 +3,31 @@ import path from "node:path"
 import dotenv from "dotenv"
 import type { ApiProvider } from "../shared/aiConfig"
 
-function readEnvFileKey(name: string): string {
-  const candidatePaths = [
-    path.join(process.cwd(), ".env"),
-    path.join(process.resourcesPath || "", ".env"),
+function getMainScriptEnvPaths(): string[] {
+  const entryPoint = process.argv.find((arg, index) => {
+    if (index === 0 || arg.startsWith("--")) {
+      return false
+    }
+
+    return /\.(c?js|mjs|ts)$/i.test(arg)
+  })
+  const scriptDir = entryPoint
+    ? path.dirname(path.resolve(entryPoint))
+    : __dirname
+
+  return [
+    path.join(scriptDir, ".env"),
+    path.resolve(scriptDir, "../.env"),
+    path.resolve(scriptDir, "../../.env"),
   ]
+}
+
+function readEnvFileKey(name: string): string {
+  const candidatePaths = Array.from(new Set([
+    path.join(process.cwd(), ".env"),
+    ...getMainScriptEnvPaths(),
+    path.join(process.resourcesPath || "", ".env"),
+  ]))
 
   for (const envPath of candidatePaths) {
     if (!envPath || !fs.existsSync(envPath)) {

@@ -2995,22 +2995,6 @@ export function AssistantChat({
     }
 
     try {
-      const config = await window.electronAPI.getConfig()
-      const hasOpenAiKey = config.configuredApiProviders?.includes("openai")
-      if (!hasOpenAiKey) {
-        showToast(
-          "OpenAI Key Required",
-          "Paste your OpenAI key in Settings to use realtime voice on this Mac.",
-          "error"
-        )
-        void window.electronAPI.openSettingsPortal()
-        return
-      }
-    } catch (error) {
-      console.warn("Failed to check OpenAI key before voice startup:", error)
-    }
-
-    try {
       setVoiceStatus("Opening microphone")
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -3133,10 +3117,9 @@ export function AssistantChat({
       if (/OpenAI API key/i.test(message)) {
         showToast(
           "OpenAI Key Required",
-          "Paste your OpenAI key in Settings, then start voice again.",
+          "OpenAI key was not found in .env or Settings. Add it, then start voice again.",
           "error"
         )
-        void window.electronAPI.openSettingsPortal()
       } else {
         showToast("Voice Companion", message, "error")
       }

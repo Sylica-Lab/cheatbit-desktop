@@ -237,6 +237,11 @@ export function SettingsDialog({
       })
       const applied = Boolean(updated?.screenRecordingVisible ?? next)
       setIsScreenRecordingVisible(applied)
+      window.dispatchEvent(
+        new CustomEvent("sylica-screen-recording-visibility-changed", {
+          detail: applied,
+        })
+      )
       showToast(
         applied ? "Demo Mode" : "Stealth Mode",
         applied

@@ -1978,7 +1978,9 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
         return { success: false as const, error: "Main window is not available." }
       }
 
-      window.setIgnoreMouseEvents(Boolean(enabled), { forward: true })
+      const shouldEnablePassthrough =
+        Boolean(enabled) && !configHelper.isScreenRecordingVisible()
+      window.setIgnoreMouseEvents(shouldEnablePassthrough, { forward: true })
       return { success: true as const }
     } catch (error) {
       console.error("Error updating mouse passthrough:", error)
@@ -2190,13 +2192,14 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     try {
       // Check for API key before processing
       if (!configHelper.hasApiKey()) {
+        const selectedProvider = configHelper.loadConfig().apiProvider
         const mainWindow = deps.getMainWindow();
         if (mainWindow) {
           mainWindow.webContents.send(deps.PROCESSING_EVENTS.API_KEY_INVALID);
         }
         return {
           success: false,
-          error: "No built-in API key configured for the selected provider.",
+          error: `No ${selectedProvider} API key was found in .env or Settings.`,
         };
       }
 

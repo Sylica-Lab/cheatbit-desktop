@@ -451,6 +451,14 @@ function applyScreenRecordingVisibilityToWindow(
     }
   }
 
+  if (visible) {
+    try {
+      windowRef.setIgnoreMouseEvents(false)
+    } catch (error) {
+      console.warn("Failed to restore mouse events for demo mode:", error)
+    }
+  }
+
   console.log(
     `[stealth] screenRecordingVisible=${visible} contentProtection=${!visible} alwaysOnTopLevel=${getAlwaysOnTopLevel()}`
   )
@@ -1559,12 +1567,16 @@ function setDynamicIslandMode(collapsed: boolean): void {
 
 // Environment setup
 function loadEnvVariables() {
+  const scriptDir = path.dirname(path.resolve(process.argv[1] || __dirname))
   const candidatePaths = isDev
     ? [path.join(process.cwd(), ".env")]
-    : [
+    : Array.from(new Set([
         path.join(process.resourcesPath, ".env"),
         path.join(process.cwd(), ".env"),
-      ]
+        path.join(scriptDir, ".env"),
+        path.resolve(scriptDir, "../.env"),
+        path.resolve(scriptDir, "../../.env"),
+      ]))
 
   for (const envPath of candidatePaths) {
     if (!fs.existsSync(envPath)) {

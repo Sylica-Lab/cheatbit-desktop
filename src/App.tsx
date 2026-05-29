@@ -114,6 +114,8 @@ const CLICK_THROUGH_HITBOX_SELECTOR = [
   "select",
   "[role='button']",
   "[data-sylica-hitbox='true']",
+  ".sylica-widget-dock",
+  ".sylica-widget-layout",
   ".sylica-liquid-dock",
   ".sylica-liquid-shell",
   ".sylica-idle-island-strip",
@@ -165,6 +167,7 @@ function App() {
     null
   )
   const [widgetScale, setWidgetScale] = useState(DEFAULT_WIDGET_SCALE)
+  const [isScreenRecordingVisible, setIsScreenRecordingVisible] = useState(false)
   const [isIdleIsland, setIsIdleIsland] = useState(false)
   const [isRealtimeVoiceActive, setIsRealtimeVoiceActive] = useState(false)
   const [isLiveSessionActive, setIsLiveSessionActive] = useState(false)
@@ -357,6 +360,11 @@ function App() {
       return
     }
 
+    if (isScreenRecordingVisible) {
+      void window.electronAPI.setMousePassthrough(false)
+      return
+    }
+
     let passthroughEnabled = false
 
     const setPassthrough = (enabled: boolean) => {
@@ -398,7 +406,12 @@ function App() {
       window.removeEventListener("pointerleave", handlePointerLeave, true)
       void window.electronAPI.setMousePassthrough(false)
     }
-  }, [authState.authenticated, isIdleIslandVisible, isInitialized])
+  }, [
+    authState.authenticated,
+    isIdleIslandVisible,
+    isInitialized,
+    isScreenRecordingVisible,
+  ])
 
   useEffect(() => {
     if (!isInitialized) {
@@ -453,6 +466,27 @@ function App() {
     )
     return () => {
       unsubscribeOpacity()
+    }
+  }, [])
+
+  useEffect(() => {
+    const handleVisibilityChanged = (event: Event) => {
+      const visible = Boolean((event as CustomEvent<boolean>).detail)
+      setIsScreenRecordingVisible(visible)
+      if (visible) {
+        void window.electronAPI.setMousePassthrough(false)
+      }
+    }
+
+    window.addEventListener(
+      "sylica-screen-recording-visibility-changed",
+      handleVisibilityChanged
+    )
+    return () => {
+      window.removeEventListener(
+        "sylica-screen-recording-visibility-changed",
+        handleVisibilityChanged
+      )
     }
   }, [])
 
@@ -739,6 +773,7 @@ function App() {
           updateLanguage("python")
         }
         setWidgetScale(normalizeWidgetScale(config?.widgetScale))
+        setIsScreenRecordingVisible(Boolean(config?.screenRecordingVisible))
         applyWindowOpacityTier(
           typeof config?.opacity === "number" ? config.opacity : 1
         )
