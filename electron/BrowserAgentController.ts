@@ -11,6 +11,7 @@ import type { Browser, Page } from "puppeteer-core"
 import { backendClient } from "./BackendClient"
 import { configHelper } from "./ConfigHelper"
 import { buildExaSearchContext, isExaConfigured } from "./ExaSearchHelper"
+import { buildLocalFileSearchContext } from "./FileSearchHelper"
 import type {
   BrowserAgentAction,
   ChatThreadSummary,
@@ -408,6 +409,7 @@ function isSystemComputerAction(action: BrowserAgentAction): boolean {
   return (
     action.type === "system_open" ||
     action.type === "system_list_dir" ||
+    action.type === "system_search_files" ||
     action.type === "system_read_file" ||
     action.type === "system_write_file" ||
     action.type === "system_delete" ||
@@ -468,6 +470,8 @@ function describeComputerAction(action: BrowserAgentAction): string {
       return `open ${action.target}`
     case "system_list_dir":
       return `list folder ${action.path}${action.recursive ? " (recursive)" : ""}`
+    case "system_search_files":
+      return `search local files: ${action.query}`
     case "system_read_file":
       return `read file ${action.path}`
     case "system_write_file":
@@ -1689,6 +1693,23 @@ export class BrowserAgentController {
       {
         type: "function",
         function: {
+          name: "system_search_files",
+          description:
+            "Search local Desktop/Documents/Downloads or hinted folders for files/folders by name/path, and limited text content when the user asks for contained text. Use before opening folders manually for file-finding tasks.",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              query: { type: "string" },
+              maxResults: { type: "number" },
+            },
+            required: ["query"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
           name: "system_read_file",
           description: "Read a local file. Default encoding utf8; use base64 for binary files.",
           parameters: {
@@ -2032,6 +2053,7 @@ You have one toolbox of actions, ordered from cheapest to most expensive:
 1. Filesystem & shell (cheapest, fastest, most reliable â€” always prefer):
    â€¢ system_open(target)            â€” open app/file/folder/URL/settings URI/exe by name
    â€¢ system_list_dir(path, recursive?, pattern?)
+   â€¢ system_search_files(query, maxResults?) â€” fast local file/folder search before opening folders manually
    â€¢ system_read_file(path, encoding?)
    â€¢ system_write_file(path, content, encoding?, append?)
    â€¢ system_delete(path, recursive?)
@@ -2065,6 +2087,7 @@ The task text may come from realtime voice transcription. Preserve the user's in
 - For app-opening tasks, call system_open with the spoken app name first. system_open can launch executables, URLs, protocol URIs, Start Menu shortcuts, and installed app aliases.
 - If a bare app name fails, use system_run_powershell to search common install locations, Start Menu shortcuts, and Windows app aliases before falling back to UI automation.
 - Do not open Chrome or search the web for local app/file/OS tasks unless the user explicitly asks for a website, web search, or online content.
+- For local file-finding tasks, use system_search_files before walking folders manually.
 - For media playback tasks, open the requested local media app if named, then use keyboard_press("media_play_pause"), "media_next", or "media_previous" when needed.
 </handoff_accuracy>
 
@@ -2160,6 +2183,19 @@ The 'result' string in finish() is the user's final reply, shown verbatim. Write
           path: dirPath,
           recursive: Boolean(raw.recursive),
           pattern: sanitizeText(raw.pattern) || undefined,
+        }
+      }
+      case "system_search_files": {
+        const query = sanitizeText(raw.query)
+        if (!query) throw new Error("system_search_files requires a query.")
+        const maxResults = Number(raw.maxResults)
+        return {
+          type: "system_search_files",
+          query,
+          maxResults:
+            Number.isFinite(maxResults) && maxResults > 0
+              ? Math.min(25, Math.round(maxResults))
+              : undefined,
         }
       }
       case "system_read_file": {
@@ -2979,6 +3015,21 @@ throw "Could not launch app '$target' from executable name, registry app paths, 
         return {
           summary: `Listed ${dirPath} (${lines.length} entries):\n${truncateForMessage(note, 6000)}`,
           extractedNote: `Directory ${dirPath}:\n${note}`,
+        }
+      }
+
+      case "system_search_files": {
+        const context = await buildLocalFileSearchContext(action.query, {
+          force: true,
+          maxResults: action.maxResults || 12,
+          maxCharacters: 9000,
+        })
+
+        return {
+          summary: context.trim()
+            ? truncateForMessage(context, 9000)
+            : `No matching local files found for: ${action.query}`,
+          extractedNote: context || undefined,
         }
       }
 
@@ -3817,7 +3868,7 @@ Rules:
 - Use targetId values from the list instead of inventing selectors.
 - For download tasks, click/download the correct button yourself. Do not finish by telling the user to click it.
 - If the task asks to install after downloading, continue by listing Downloads and running the matching installer yourself when safe.
-- You may use system_list_dir, system_open, or system_run_powershell after browser download steps when the task needs local PC follow-through.
+- You may use system_search_files, system_list_dir, system_open, or system_run_powershell after browser download steps when the task needs local PC follow-through.
 - Prefer DOM targets and URLs when DOM confidence is high.
 - Use the screenshot only as fallback context when the page kind is not standard or the DOM is weak.
 - Pay attention to selected text, headings, and the focused element.
@@ -3832,10 +3883,11 @@ Return exactly:
   "thought": "short reasoning",
   "statusMessage": "very short status for the UI",
   "action": {
-    "type": "open_url|new_tab|switch_tab|close_tab|click|type|press_key|scroll|select_option|upload_file|download_file|wait_for|extract|system_open|system_list_dir|system_read_file|system_run_powershell|finish|request_secret_input",
+    "type": "open_url|new_tab|switch_tab|close_tab|click|type|press_key|scroll|select_option|upload_file|download_file|wait_for|extract|system_open|system_list_dir|system_search_files|system_read_file|system_run_powershell|finish|request_secret_input",
     "url": "required when type is open_url",
     "targetId": "required for click/type/download_file when needed",
     "path": "required for system_list_dir/system_read_file",
+    "query": "required for system_search_files",
     "command": "required for system_run_powershell"
   }
 }`
@@ -4036,6 +4088,7 @@ Return exactly:
       }
       case "system_open":
       case "system_list_dir":
+      case "system_search_files":
       case "system_read_file":
       case "system_run_powershell":
       case "system_run_cmd":

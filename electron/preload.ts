@@ -189,6 +189,12 @@ const electronAPI = {
       status: string
       error?: string
     }>,
+  requestScreenCaptureAccess: (payload?: { openSettingsOnFailure?: boolean }) =>
+    ipcRenderer.invoke("permissions:request-screen-capture", payload || {}) as Promise<{
+      granted: boolean
+      status: string
+      error?: string
+    }>,
   listChatThreads: (payload?: { mode?: AssistantChatMode }) =>
     ipcRenderer.invoke("chat:list-threads", payload) as Promise<
       { success: true; data: { threads: ChatThreadSummary[] } } | { success: false; error: string }
@@ -243,7 +249,12 @@ const electronAPI = {
     ipcRenderer.invoke("voice:transcribe-audio", payload) as Promise<
       { success: true; data: { transcript: string } } | { success: false; error: string }
     >,
-  startVoiceRealtime: (payload: { instructions: string; voice?: string }) =>
+  startVoiceRealtime: (payload: {
+    instructions: string
+    voice?: string
+    owner?: "widget" | "cursor"
+    provider?: "openai" | "deepgram"
+  }) =>
     ipcRenderer.invoke("voice-realtime:start", payload) as Promise<
       { success: true; data: { model: string } } | { success: false; error: string }
     >,

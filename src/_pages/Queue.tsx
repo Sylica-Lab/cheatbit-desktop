@@ -20,13 +20,23 @@ import type { DesktopUpdateState } from "../../shared/desktopUpdates"
 import { EMPTY_AGENT_STATE, type AgentState } from "../../shared/agent"
 
 const WAKE_WORD_SAMPLE_RATE = 24000
-const WAKE_WORD_SILENCE_THRESHOLD = 0.016
-const WAKE_WORD_MIN_SPEECH_MS = 260
+const WAKE_WORD_SILENCE_THRESHOLD = 0.024
+const WAKE_WORD_MIN_SPEECH_MS = 480
 const WAKE_WORD_END_SILENCE_MS = 650
 const WAKE_WORD_MAX_SEGMENT_MS = 4200
 
 function hasSylicaWakeWord(transcript: string): boolean {
-  return /\b(hey|hi|okay|ok)[\s,.-]*(sylica|silica|celica|sylika)\b/i.test(transcript)
+  const normalized = transcript.replace(/\s+/g, " ").trim()
+  if (!normalized) {
+    return false
+  }
+
+  const wakePattern = /(?:^|[.!?]\s*)(hey|hi|okay|ok)[\s,.-]+(sylica|silica|celica|sylika)\b/i
+  if (!wakePattern.test(normalized)) {
+    return false
+  }
+
+  return normalized.split(/\s+/).length <= 14
 }
 
 function float32ToInt16(samples: Float32Array): Int16Array {
@@ -390,9 +400,14 @@ const Queue: React.FC<QueueProps> = ({
       const detail = (event as CustomEvent<boolean>).detail
       setIsVoiceSessionLive(Boolean(detail))
     }
+    const handleVoiceManualStop = () => {
+      wakeWordCooldownRef.current = Date.now()
+    }
     window.addEventListener("sylica-voice-active", handleVoiceActive)
+    window.addEventListener("sylica-voice-manual-stop", handleVoiceManualStop)
     return () => {
       window.removeEventListener("sylica-voice-active", handleVoiceActive)
+      window.removeEventListener("sylica-voice-manual-stop", handleVoiceManualStop)
     }
   }, [])
 
@@ -625,7 +640,20 @@ const Queue: React.FC<QueueProps> = ({
     if (isMinimized) {
       setIsMinimized(false)
     }
+
+    if (liveInterviewState.status !== "idle") {
+      showToast(
+        "Voice",
+        "Stop Live Interview before starting realtime voice.",
+        "neutral"
+      )
+      return
+    }
+
     setActiveMode("voice")
+    if (!isVoiceSessionLive) {
+      setVoiceAutoStartSignal(`${Date.now()}`)
+    }
   }
 
   const handleStartComputerTask = async (task: string) => {

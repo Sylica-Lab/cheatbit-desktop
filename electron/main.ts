@@ -282,6 +282,13 @@ export interface IIpcHandlerDeps {
     status: string
     error?: string
   }>
+  requestScreenCaptureAccess: (options?: {
+    openSettingsOnFailure?: boolean
+  }) => Promise<{
+    granted: boolean
+    status: string
+    error?: string
+  }>
   getScreenshotQueue: () => string[]
   getExtraScreenshotQueue: () => string[]
   deleteScreenshot: (
@@ -584,6 +591,107 @@ function buildMicrophoneAccessError(status: string): string {
   return `Microphone access is unavailable right now (${status}).`
 }
 
+function buildScreenCaptureAccessError(status: string): string {
+  if (process.platform === "darwin") {
+    return "Screen Recording access is required so Sylica can see your screen. Turn it on in System Settings > Privacy & Security > Screen Recording, then restart Sylica."
+  }
+
+  if (process.platform === "win32") {
+    return "Screen capture is blocked by Windows privacy or security settings."
+  }
+
+  return `Screen capture is unavailable right now (${status}).`
+}
+
+function getScreenCaptureAccessStatus(): string {
+  if (process.platform !== "darwin") {
+    return "granted"
+  }
+
+  try {
+    return systemPreferences.getMediaAccessStatus("screen" as any)
+  } catch (_error) {
+    return "unknown"
+  }
+}
+
+function openScreenCapturePrivacySettings(): void {
+  if (process.platform !== "darwin") {
+    return
+  }
+
+  void shell.openExternal(
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+  )
+}
+
+async function requestScreenCaptureAccess(
+  options: { openSettingsOnFailure?: boolean } = {}
+): Promise<{
+  granted: boolean
+  status: string
+  error?: string
+}> {
+  const openSettingsOnFailure = options.openSettingsOnFailure !== false
+
+  if (process.platform !== "darwin") {
+    return {
+      granted: true,
+      status: "granted",
+    }
+  }
+
+  const initialStatus = getScreenCaptureAccessStatus()
+  if (initialStatus === "granted") {
+    return {
+      granted: true,
+      status: initialStatus,
+    }
+  }
+
+  try {
+    // There is no askForMediaAccess("screen") API. Asking desktopCapturer for
+    // a screen source is the Electron-supported way to trigger macOS TCC.
+    const sources = await desktopCapturer.getSources({
+      types: ["screen"],
+      thumbnailSize: { width: 320, height: 180 },
+    })
+    const hasUsableSource = sources.some((source) => !source.thumbnail.isEmpty())
+    const nextStatus = getScreenCaptureAccessStatus()
+
+    if (hasUsableSource || nextStatus === "granted") {
+      return {
+        granted: true,
+        status: nextStatus === "unknown" ? "granted" : nextStatus,
+      }
+    }
+
+    if (openSettingsOnFailure) {
+      openScreenCapturePrivacySettings()
+    }
+
+    return {
+      granted: false,
+      status: nextStatus,
+      error: buildScreenCaptureAccessError(nextStatus),
+    }
+  } catch (error) {
+    const nextStatus = getScreenCaptureAccessStatus()
+    if (openSettingsOnFailure) {
+      openScreenCapturePrivacySettings()
+    }
+
+    return {
+      granted: false,
+      status: nextStatus,
+      error:
+        error instanceof Error && error.message.trim()
+          ? `${buildScreenCaptureAccessError(nextStatus)} (${error.message})`
+          : buildScreenCaptureAccessError(nextStatus),
+    }
+  }
+}
+
 async function requestMicrophoneAccess(): Promise<{
   granted: boolean
   status: string
@@ -636,6 +744,13 @@ async function captureVoiceScreenContext(): Promise<{
   data: string
   preview: string
 }> {
+  const access = await requestScreenCaptureAccess({ openSettingsOnFailure: false })
+  if (!access.granted) {
+    throw new Error(
+      access.error || buildScreenCaptureAccessError(access.status)
+    )
+  }
+
   const cursorPoint = screen.getCursorScreenPoint()
   const targetDisplay = screen.getDisplayNearestPoint(cursorPoint)
   const scaleFactor = targetDisplay.scaleFactor || 1
@@ -652,7 +767,13 @@ async function captureVoiceScreenContext(): Promise<{
     sources[0]
 
   if (!source || source.thumbnail.isEmpty()) {
-    throw new Error("No screen source was available for realtime voice context.")
+    const retryAccess = await requestScreenCaptureAccess({
+      openSettingsOnFailure: true,
+    })
+    throw new Error(
+      retryAccess.error ||
+        "No usable screen source was available for realtime voice context."
+    )
   }
 
   const pngBuffer = source.thumbnail.toPNG()
@@ -1616,6 +1737,7 @@ async function initializeApp() {
       },
       captureVoiceScreenContext,
       requestMicrophoneAccess,
+      requestScreenCaptureAccess,
       getScreenshotQueue,
       getExtraScreenshotQueue,
       deleteScreenshot,

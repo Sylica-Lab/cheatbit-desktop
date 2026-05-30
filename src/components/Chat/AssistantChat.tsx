@@ -30,13 +30,27 @@ export const GENERAL_CHAT_QUERY_KEY = ["general_chat"] as const
 const LIVE_AUDIO_SAMPLE_RATE = 24000
 const LIVE_AUDIO_FLUSH_INTERVAL_MS = 1600
 const VOICE_AUDIO_SAMPLE_RATE = 24000
-const VOICE_SILENCE_THRESHOLD = 0.01
+const VOICE_CLEAR_SPEECH_THRESHOLD = 0.028
+const VOICE_REQUIRED_CLEAR_SPEECH_MS = 480
+const VOICE_PREROLL_MS = 260
+const VOICE_TRAILING_SILENCE_MS = 420
+const VOICE_SERVER_END_SILENCE_MS = 920
 const VOICE_SILENCE_MS = 850
-const VOICE_MIN_SPEECH_MS = 300
+const VOICE_MIN_SPEECH_MS = 520
 const VOICE_MAX_SEGMENT_MS = 12_000
+const VOICE_THINKING_TIMEOUT_MS = 8500
+const VOICE_NOISE_FLOOR_INITIAL = 0.014
+const VOICE_NOISE_FLOOR_MIN = 0.004
+const VOICE_NOISE_FLOOR_MAX = 0.06
+const VOICE_SPEECH_NOISE_RATIO = 1.7
+const VOICE_SPEECH_ABOVE_NOISE = 0.012
+const VOICE_MIN_INTENT_WORDS = 3
 const VOICE_MEMORY_STORAGE_KEY = "sylica.voiceCompanionMemory.v1"
 const VOICE_TRANSCRIPT_STORAGE_KEY = "sylica.voiceTranscript.v1"
 const VOICE_TRANSCRIPT_EVENT = "sylica-voice-transcript-updated"
+const VOICE_PROVIDER_STORAGE_KEY = "sylica.voiceRealtimeProvider.v1"
+
+type VoiceRealtimeProvider = "openai" | "deepgram"
 
 interface AssistantChatProps {
   queryKey: readonly string[]
@@ -66,6 +80,7 @@ let globalVoiceCleanup: (() => void) | null = null
 let globalVoiceTranscriptMessages: FollowUpChatMessage[] = []
 let globalActiveVoiceUserTurnId: string | null = null
 let globalActiveVoiceAssistantTurnId: string | null = null
+let globalVoiceManualStopAt = 0
 const VOICE_TRANSCRIPT_MESSAGE_LIMIT = 40
 
 function emitSylicaActivity() {
@@ -92,6 +107,11 @@ function emitVoiceActive(active: boolean) {
   }
 }
 
+function markVoiceManualStop() {
+  globalVoiceManualStopAt = Date.now()
+  window.dispatchEvent(new CustomEvent("sylica-voice-manual-stop"))
+}
+
 // Lets components mounted after voice was started seed their UI from the
 // current global state instead of waiting for the next change event.
 export function isRealtimeVoiceCurrentlyActive(): boolean {
@@ -100,9 +120,6 @@ export function isRealtimeVoiceCurrentlyActive(): boolean {
 
 let globalVoiceHearing = false
 let globalVoiceSpeaking = false
-// One-shot guard so the assistant only greets the user once per app launch
-// (re-connecting voice mid-session shouldn't re-trigger a "hi again").
-let globalHasGreetedThisSession = false
 
 export function isRealtimeVoiceCurrentlyHearing(): boolean {
   return globalVoiceHearing
@@ -153,6 +170,24 @@ function publishGlobalVoiceTranscript() {
     window.dispatchEvent(new CustomEvent(VOICE_TRANSCRIPT_EVENT))
   } catch (_error) {
     // Session storage can be unavailable in hardened webviews.
+  }
+}
+
+function loadVoiceRealtimeProvider(): VoiceRealtimeProvider {
+  try {
+    return window.localStorage.getItem(VOICE_PROVIDER_STORAGE_KEY) === "deepgram"
+      ? "deepgram"
+      : "openai"
+  } catch (_error) {
+    return "openai"
+  }
+}
+
+function persistVoiceRealtimeProvider(provider: VoiceRealtimeProvider) {
+  try {
+    window.localStorage.setItem(VOICE_PROVIDER_STORAGE_KEY, provider)
+  } catch (_error) {
+    // Ignore storage failures in hardened webviews.
   }
 }
 
@@ -426,10 +461,13 @@ ${userMessage}
 
 Rules:
 - Answer first. Put the useful answer in the first sentence, then add one short reason or caveat if needed.
+- Only respond to clear, intentional voice instructions from the user. Ignore background noise, side conversations, TV/music, room chatter, and unclear partial speech.
+- If the audio sounds unclear or not addressed to you, stay silent or ask the user to repeat only when they clearly seem to be talking to you.
 - Do not assume missing facts. If the exact value is unavailable, say that briefly.
 - If a rough answer is still useful, give a labeled estimate like "roughly", "about", or "low confidence".
 - For numbers, dates, prices, rankings, locations, and names, preserve what the user or screen says exactly. Do not silently change digits.
 - If the user asks for current, market, news, price, weather, or time-sensitive data and no web/search result is present, say you need live search instead of guessing.
+- If the user asks to find local files and no file-search result is present, say you need local file search instead of guessing a path.
 - If the user asks about phone notifications, use the synced phone notification context above. Read the latest notification directly when available. If none are synced, say so and mention pairing or Notification Access briefly.
 - Prefer 1 to 3 short sentences unless the user asks for detail.
 - If the screen is relevant, use it directly without saying "screenshot" or "hidden tool".
@@ -447,41 +485,6 @@ interface VoiceLiveContext {
   computerStatus: string
   computerCurrentAction: string
   computerCurrentUrl: string
-}
-
-// Spoken directive used as a synthetic user turn so the realtime model emits
-// a greeting on session start. Kept short so the assistant generates the actual
-// hello in its own voice/personality rather than parroting these instructions.
-function buildVoiceGreetingDirective(ctx: VoiceLiveContext): string {
-  const stamp = new Date()
-  const hour = stamp.getHours()
-  const timeOfDay =
-    hour < 5
-      ? "late night"
-      : hour < 12
-        ? "morning"
-        : hour < 17
-          ? "afternoon"
-          : hour < 21
-            ? "evening"
-            : "night"
-
-  const livePieces: string[] = []
-  if (ctx.agentRunning) {
-    livePieces.push(
-      `an agent task is in progress${ctx.agentPrompt ? ` (${ctx.agentPrompt})` : ""}`
-    )
-  }
-  if (ctx.computerRunning) {
-    livePieces.push(
-      `computer use is running${ctx.computerCurrentAction ? ` (${ctx.computerCurrentAction})` : ""}`
-    )
-  }
-  const liveSummary = livePieces.length
-    ? ` Note: ${livePieces.join(" and ")}.`
-    : ""
-
-  return `[system] Sylica just woke up at the start of the user's ${timeOfDay} session — you didn't actually hear them speak, you're just opening the conversation. Give a short, warm, slightly playful hello in one or two sentences, like a friend checking in. Use the user's name only if you remember it from prior context. Don't list your features, don't explain what you are, and don't say "how can I help" — just open the door.${liveSummary}`
 }
 
 function buildLiveContextBlock(ctx: VoiceLiveContext): string {
@@ -523,6 +526,8 @@ Personality:
 
 Core answer policy (this is non-negotiable, no matter how casual the vibe):
 - Answer directly in the first sentence. No throat-clearing preamble unless uncertainty actually matters.
+- Only respond to clear, intentional voice instructions from the user. Ignore background noise, side conversations, TV/music, room chatter, and unclear partial speech.
+- If the audio sounds unclear or not addressed to you, stay silent or ask the user to repeat only when they clearly seem to be talking to you.
 - If the answer depends on missing or live data, say what's missing instead of making it up.
 - If a rough answer helps, label the estimate ("roughly", "about", "range", "low confidence").
 - Never invent exact numbers, prices, dates, rankings, citations, or names. Better to admit a gap with style than to bluff.
@@ -538,11 +543,14 @@ Live workspace state (this is what's happening RIGHT NOW — read it before deci
 ${liveContextBlock}
 
 Routing (these aren't your job to execute, just hand them off cleanly):
-- If they ask you to create, build, clone, generate, design, code, or make a website, app, presentation, deck, project, or editable artifact, AND Agent Mode above is "idle", acknowledge with their exact target preserved and say "Starting agent mode: ..." — the desktop app routes the rest.
-- If they ask you to control the computer, operate Windows, open existing apps, click, type, delete, move, download, install, search, or manage files, AND Computer Use above is "idle", acknowledge with their exact target and say "Starting computer use: ..." — Computer Use is only for operating the PC UI, not for creating artifacts.
+- If they ask you to create, build, clone, generate, design, code, or make a website, app, presentation, deck, project, or editable artifact, first check whether they gave enough specifics.
+- For vague creation requests like "make a website", "make a presentation", "build me an app", or "create a pitch deck", ask one short follow-up with the missing specifics instead of saying "Starting agent mode".
+- Only when the creation request includes a clear subject/brand/audience plus concrete content, style, pages/slides, or format, AND Agent Mode above is "idle", acknowledge with their exact target preserved and say "Starting agent mode: ..." — the desktop app routes the rest.
+- If they ask to search the web, say you're searching now. Don't invent results — the chat will run Exa search and show real sources.
+- If they ask to find/search local files by name or text, say you're searching local files now. Don't start computer use for passive file search.
+- If they ask you to control the computer, operate Windows, open existing apps, click, type, delete, move, download, install, open/edit/delete/move/copy files, or manage files, AND Computer Use above is "idle", acknowledge with their exact target and say "Starting computer use: ..." — Computer Use is only for operating the PC UI, not for creating artifacts.
 - If a task is ALREADY RUNNING above and the user is talking about it, treat their input as a follow-up. Do NOT say "Starting agent mode:" or "Starting computer use:" — that would spawn a duplicate. Instead respond conversationally about the running task: tell them what's happening based on the live state above, what phase or action it's on, or pass on their refinement as a comment ("got it, I'll let it know to use a darker theme").
 - If a task is already running and the user clearly wants to start a SECOND, different task, say something like "agent's already busy with X — want me to queue this one or stop the current one?" and wait for their answer instead of spawning over the top.
-- If they want a web search, just say you're searching now. Don't invent results — the chat will run Exa search and show real sources.
 - If they ask about phone notifications, use the synced ones below. If none are synced, tell them no notifications have reached Sylica yet and to flip on Notification Access in the Android app.
 - If they ask "what's happening" / "what are you doing" / "where are we at" / "status", read the Live workspace state block above and tell them in one or two sentences. Don't pretend nothing's running if something is.
 
@@ -575,6 +583,94 @@ function normalizeCommandCandidate(transcript: string) {
     .replace(/^[,.\s]*(?:hey\s+)?(?:sylica|silica|assistant|computer|pc)[,.\s]+/i, "")
     .replace(/^[,.\s]*(?:here|okay|ok|please|can you please|could you please|would you please|can you|could you|would you|will you|i need you to|i want you to|let's|lets)[,.\s]+/i, "")
     .trim()
+}
+
+function normalizeRealtimeVoiceTranscript(transcript: string) {
+  return transcript
+    .replace(/\s+/g, " ")
+    .replace(
+      /^[,.\s]*(?:hey|8|eight|ate)\s+(?:sylica|silica|celica|sylvia|syllic?ah)[,.\s]*/i,
+      ""
+    )
+    .replace(
+      /^[,.\s]*(?:8|eight|ate|hey)[,.\s]+(?=(?:what|where|why|how|can|could|would|will|please|you|look|search|find|open|make|build|create|start|stop|show|tell|do|does|is|are)\b)/i,
+      ""
+    )
+    .trim()
+}
+
+function getVoiceTranscriptWords(transcript: string) {
+  return transcript.toLowerCase().match(/[a-z0-9]+(?:'[a-z0-9]+)?/g) || []
+}
+
+function isVoiceStopTranscript(transcript: string) {
+  const normalized = normalizeCommandCandidate(
+    normalizeRealtimeVoiceTranscript(transcript)
+  ).toLowerCase()
+
+  return /^(?:stop|stop listening|stop voice|stop voice chat|stop talking|turn off voice|turn off voice chat|mute yourself|go silent|be quiet)$/i.test(
+    normalized
+  )
+}
+
+function isAllowedShortVoiceIntent(transcript: string) {
+  const normalized = normalizeCommandCandidate(
+    normalizeRealtimeVoiceTranscript(transcript)
+  ).toLowerCase()
+
+  return /^(?:listen first|look again|try again|go on|continue|resume|yes please|no thanks|search web|search files|file search|web search|stop listening|stop voice)$/i.test(
+    normalized
+  )
+}
+
+function isClearRealtimeVoiceIntent(transcript: string) {
+  const normalized = normalizeRealtimeVoiceTranscript(transcript)
+  const command = normalizeCommandCandidate(normalized)
+  const lowerCommand = command.toLowerCase()
+  if (!lowerCommand) {
+    return false
+  }
+
+  const words = getVoiceTranscriptWords(lowerCommand)
+  if (words.length === 0) {
+    return false
+  }
+
+  const latinLetters = lowerCommand.match(/[a-z]/gi)?.length || 0
+  const nonEnglishScript =
+    lowerCommand.match(/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]/g)
+      ?.length || 0
+  if (nonEnglishScript > 0 && latinLetters < 4) {
+    return false
+  }
+
+  const fragment = words.join(" ")
+  if (
+    /^(?:hey|hi|hello|yo|ok|okay|yeah|yep|yes|no|nope|nah|hmm|um|uh|ah|oh|er|nothing|nevermind|never mind|mi|sim|in|the|in the|you see|you see in|you see in the|eight|ate|8)$/i.test(
+      fragment
+    )
+  ) {
+    return false
+  }
+
+  if (isVoiceStopTranscript(lowerCommand) || isAllowedShortVoiceIntent(lowerCommand)) {
+    return true
+  }
+
+  if (words.length < VOICE_MIN_INTENT_WORDS) {
+    return false
+  }
+
+  return (
+    isLikelyVoiceWebSearchRequest(lowerCommand) ||
+    isLikelyVoiceFileSearchRequest(lowerCommand) ||
+    isLikelyAgentCreationTask(lowerCommand) ||
+    detectVoiceComputerCommand(lowerCommand) !== null ||
+    /^(?:what|who|when|where|why|how|which|can|could|would|will|do|does|did|is|are|tell|show|explain|describe|summarize|read|look)\b/i.test(
+      lowerCommand
+    ) ||
+    words.length >= 4
+  )
 }
 
 function isLikelyAgentCreationTask(text: string) {
@@ -617,6 +713,58 @@ function isLikelyAgentCreationTask(text: string) {
   return hasCreationVerb && hasArtifactNoun
 }
 
+function getAgentTaskSpecificityScore(text: string): number {
+  const command = normalizeCommandCandidate(text)
+  const lower = command.toLowerCase()
+  let score = 0
+
+  if (/\b(?:clone|clon|klon)\s+(?:this|the|a)?\s*(?:website|site|page|design|ui)\b/i.test(lower)) {
+    score += 3
+  }
+  if (/\b(?:for|about|on|regarding|based on|around|using|from)\s+.{4,}/i.test(lower)) {
+    score += 1
+  }
+  if (/\b(?:audience|investors?|customers?|students?|teachers?|clients?|users?|founders?|team|class|school|business|startup|restaurant|portfolio|company|brand|product)\b/i.test(lower)) {
+    score += 1
+  }
+  if (/\b(?:modern|minimal|clean|dark|light|professional|playful|luxury|bold|corporate|fun|simple|elegant|style|theme|tone|color|colour)\b/i.test(lower)) {
+    score += 1
+  }
+  if (/\b(?:include|with|sections?|pages?|slides?|outline|agenda|problem|solution|traction|pricing|features?|testimonials?|contact|menu|about us|gallery|timeline|data|chart|charts?)\b/i.test(lower)) {
+    score += 1
+  }
+  if (/\b\d+\s*(?:slides?|pages?|sections?)\b/i.test(lower)) {
+    score += 1
+  }
+  if (/\b(?:pptx?|powerpoint|pdf|html|react|next\.?js|tailwind|template|editable|deck)\b/i.test(lower)) {
+    score += 1
+  }
+  if (/[“"'`][^“"'`]{4,}[”"'`]/.test(command)) {
+    score += 1
+  }
+  if (command.length >= 120) {
+    score += 2
+  } else if (command.length >= 75) {
+    score += 1
+  }
+
+  return score
+}
+
+function needsAgentTaskClarification(text: string) {
+  if (!isLikelyAgentCreationTask(text)) {
+    return false
+  }
+
+  const command = normalizeCommandCandidate(text)
+  const lower = command.toLowerCase()
+  if (/\b(?:start agent mode|agent mode|go ahead|use your judgment|use your judgement|no questions|just start|do it now)\b/i.test(lower)) {
+    return false
+  }
+
+  return getAgentTaskSpecificityScore(command) < 2
+}
+
 function normalizeAgentPrompt(transcript: string) {
   return normalizeCommandCandidate(transcript).replace(/\b(?:klon|clon)\b/gi, "clone")
 }
@@ -655,6 +803,10 @@ function detectVoiceComputerCommand(transcript: string): VoiceComputerCommand | 
   }
 
   if (isLikelyAgentCreationTask(normalized)) {
+    return null
+  }
+
+  if (isLikelyVoiceFileSearchRequest(normalized)) {
     return null
   }
 
@@ -715,7 +867,10 @@ function detectVoiceComputerCommand(transcript: string): VoiceComputerCommand | 
 
 function detectVoiceAgentCommand(transcript: string): VoiceAgentCommand | null {
   const normalized = transcript.replace(/\s+/g, " ").trim()
-  if (!isLikelyAgentCreationTask(normalized)) {
+  if (
+    !isLikelyAgentCreationTask(normalized) ||
+    needsAgentTaskClarification(normalized)
+  ) {
     return null
   }
 
@@ -762,6 +917,38 @@ function isLikelyVoiceWebSearchRequest(transcript: string): boolean {
   return /\b(search|look up|lookup|google|web search|internet search|research)\b/i.test(
     normalized
   )
+}
+
+function isLikelyVoiceFileSearchRequest(transcript: string): boolean {
+  const normalized = transcript.replace(/\s+/g, " ").trim()
+  if (normalized.length < 5) {
+    return false
+  }
+
+  if (
+    /\b(open|delete|remove|rename|move|copy|edit|change|upload|send|attach)\b/i.test(
+      normalized
+    )
+  ) {
+    return false
+  }
+
+  if (
+    /\b(web|internet|online|google|browser|website|url|latest|current|news|price|weather|stock|market)\b/i.test(
+      normalized
+    ) &&
+    !/\b(file|files|folder|folders|document|documents|downloads|desktop|local|computer|pc|mac)\b/i.test(
+      normalized
+    )
+  ) {
+    return false
+  }
+
+  return [
+    /\b(find|search|look for|locate)\b.*\b(file|files|folder|folders|document|documents|downloads|desktop|computer|pc|mac|local)\b/i,
+    /\b(where is|where are|show me|list)\b.*\b(file|files|folder|folders|document|documents|downloads)\b/i,
+    /\b(file|files|folder|folders|document|documents)\b.*\b(find|search|look for|locate|containing|mentions?)\b/i,
+  ].some((pattern) => pattern.test(normalized))
 }
 
 function getThreadLabel(thread: ChatThreadSummary) {
@@ -891,6 +1078,8 @@ export function AssistantChat({
   const [voiceStatus, setVoiceStatus] = useState("Ready for voice chat")
   const [voiceLastHeard, setVoiceLastHeard] = useState("")
   const [voiceMemory, setVoiceMemory] = useState(() => loadVoiceMemory())
+  const [voiceRealtimeProvider, setVoiceRealtimeProvider] =
+    useState<VoiceRealtimeProvider>(() => loadVoiceRealtimeProvider())
   const [phoneNotificationContext, setPhoneNotificationContext] = useState(
     () => buildPhoneNotificationContext(null)
   )
@@ -918,10 +1107,20 @@ export function AssistantChat({
   const voiceIsSpeechActiveRef = useRef(false)
   const voiceAudioStoppingRef = useRef(false)
   const voiceFlushQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const voiceOutboundSpeechActiveRef = useRef(false)
+  const voiceOutboundCandidateSpeechMsRef = useRef(0)
+  const voiceOutboundSilenceMsRef = useRef(0)
+  const voiceOutboundSegmentMsRef = useRef(0)
+  const voiceOutboundPeakRmsRef = useRef(0)
+  const voiceOutboundPreRollRef = useRef<Int16Array[]>([])
+  const voiceOutboundSendQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const voiceNoiseFloorRef = useRef(VOICE_NOISE_FLOOR_INITIAL)
+  const voiceThinkingTimeoutRef = useRef<number | null>(null)
   const voicePlaybackContextRef = useRef<AudioContext | null>(null)
   const voicePlaybackTimeRef = useRef(0)
   const voicePlaybackSourcesRef = useRef<AudioBufferSourceNode[]>([])
   const voiceResponseTextRef = useRef("")
+  const voiceUserTranscriptDraftRef = useRef("")
   const phoneNotificationContextRef = useRef(phoneNotificationContext)
   const activeVoiceUserTurnIdRef = useRef<string | null>(globalActiveVoiceUserTurnId)
   const activeVoiceAssistantTurnIdRef = useRef<string | null>(
@@ -936,11 +1135,15 @@ export function AssistantChat({
     command: string
     timestamp: number
   } | null>(null)
-  const voiceAgentCommandHandlerRef = useRef<(transcript: string) => void>(
-    () => {}
+  const voiceAgentCommandHandlerRef = useRef<
+    (transcript: string) => Promise<boolean> | boolean
+  >(
+    () => false
   )
-  const voiceComputerCommandHandlerRef = useRef<(transcript: string) => void>(
-    () => {}
+  const voiceComputerCommandHandlerRef = useRef<
+    (transcript: string) => Promise<boolean> | boolean
+  >(
+    () => false
   )
   // Tracks whether we've already fired an early-trigger for the model's
   // current response, so we don't double-fire on later text_delta chunks
@@ -954,8 +1157,10 @@ export function AssistantChat({
     query: string
     timestamp: number
   } | null>(null)
-  const voiceSearchRequestHandlerRef = useRef<(transcript: string) => void>(
-    () => {}
+  const voiceSearchRequestHandlerRef = useRef<
+    (transcript: string) => Promise<boolean> | boolean
+  >(
+    () => false
   )
   const lastComputerTaskRequestIdRef = useRef<string | null>(null)
   const activeTextFollowUpRequestIdRef = useRef<string | null>(null)
@@ -1621,6 +1826,29 @@ export function AssistantChat({
   }, [activeThreadId, isPersistedMode])
 
   useEffect(() => {
+    if (!isPersistedMode) {
+      return
+    }
+
+    const syncVoiceTranscript = () => {
+      if (!globalVoiceSessionActive && globalVoiceTranscriptMessages.length === 0) {
+        return
+      }
+
+      setMessages(globalVoiceTranscriptMessages)
+      activeVoiceUserTurnIdRef.current = globalActiveVoiceUserTurnId
+      activeVoiceAssistantTurnIdRef.current = globalActiveVoiceAssistantTurnId
+    }
+
+    window.addEventListener(VOICE_TRANSCRIPT_EVENT, syncVoiceTranscript)
+    syncVoiceTranscript()
+
+    return () => {
+      window.removeEventListener(VOICE_TRANSCRIPT_EVENT, syncVoiceTranscript)
+    }
+  }, [isPersistedMode])
+
+  useEffect(() => {
     if (!inputRef.current) {
       return
     }
@@ -1783,7 +2011,9 @@ export function AssistantChat({
 
     if (options.voice) {
       updateGlobalVoiceTranscript(appendMessage)
+      return
     }
+
     updateChatMessages(appendMessage)
   }
 
@@ -2081,7 +2311,7 @@ export function AssistantChat({
   const handleVoiceAgentCommand = async (transcript: string) => {
     const command = detectVoiceAgentCommand(transcript)
     if (!command || !isPersistedMode) {
-      return
+      return false
     }
 
     const commandKey = `agent:${command.prompt.toLowerCase()}`
@@ -2090,7 +2320,7 @@ export function AssistantChat({
       previousCommand?.command === commandKey &&
       Date.now() - previousCommand.timestamp < 8000
     ) {
-      return
+      return true
     }
 
     lastVoiceAgentCommandRef.current = {
@@ -2100,16 +2330,17 @@ export function AssistantChat({
 
     showToast("Voice Agent", `Starting Agent Mode: ${command.prompt}`, "neutral")
     await startAgentModeTask(command.prompt, { fromVoice: true })
+    return true
   }
 
   voiceAgentCommandHandlerRef.current = (transcript: string) => {
-    void handleVoiceAgentCommand(transcript)
+    return handleVoiceAgentCommand(transcript)
   }
 
   const handleVoiceComputerCommand = async (transcript: string) => {
     const command = detectVoiceComputerCommand(transcript)
     if (!command || !isPersistedMode) {
-      return
+      return false
     }
 
     const commandKey =
@@ -2121,7 +2352,7 @@ export function AssistantChat({
       previousCommand?.command === commandKey &&
       Date.now() - previousCommand.timestamp < 6000
     ) {
-      return
+      return true
     }
     lastVoiceComputerCommandRef.current = {
       command: commandKey,
@@ -2130,12 +2361,12 @@ export function AssistantChat({
 
     if (command.type === "stop") {
       await stopComputerUseTask()
-      return
+      return true
     }
 
     if (command.type === "resume") {
       await resumeComputerUseTask()
-      return
+      return true
     }
 
     if (isComputerUseSessionActive) {
@@ -2144,15 +2375,16 @@ export function AssistantChat({
         "A computer task is already running. Say stop computer task first if you want to replace it.",
         "neutral"
       )
-      return
+      return true
     }
 
     showToast("Voice Computer Use", `Starting: ${command.task}`, "neutral")
     await startComputerUseTask(command.task, { fromVoice: true })
+    return true
   }
 
   voiceComputerCommandHandlerRef.current = (transcript: string) => {
-    void handleVoiceComputerCommand(transcript)
+    return handleVoiceComputerCommand(transcript)
   }
 
   // Fire the agent / computer-use action the moment the model itself says
@@ -2168,6 +2400,9 @@ export function AssistantChat({
       )
       if (target) {
         earlyFiredAgentForResponseRef.current = true
+        if (needsAgentTaskClarification(target)) {
+          return
+        }
         // Guard: if an agent task is already running, do NOT spawn a duplicate.
         // Treat the model's "Starting agent mode:" as a misfire (live context
         // should have prevented this) and surface a friendly note instead.
@@ -2278,6 +2513,65 @@ export function AssistantChat({
     speakNextChunk()
   }
 
+  const speakVoiceReplyThroughRealtime = async (
+    reply: string,
+    sourceMessage: string
+  ) => {
+    if (!isVoiceCompanionActive && !globalVoiceSessionActive) {
+      return false
+    }
+
+    const trimmedReply = reply.trim()
+    if (!trimmedReply) {
+      return false
+    }
+
+    if ("speechSynthesis" in window) {
+      window.speechSynthesis.cancel()
+    }
+    clearVoicePlayback()
+    setIsVoiceSpeaking(true)
+    setVoiceStatus("Reading results")
+
+    const directive = `[system] A local file or web search just completed for the user's voice request. Speak the answer below using your normal realtime Sylica voice. Keep it concise and natural. Do not mention markdown, hidden tools, or that another system generated the answer. Preserve important source URLs and exact local file paths when useful.
+
+User request:
+${sourceMessage}
+
+Answer to speak:
+${trimmedReply.slice(0, 5000)}`
+
+    const response = await window.electronAPI.requestVoiceRealtimeResponse({
+      directive,
+    })
+
+    if (!response.success) {
+      setIsVoiceSpeaking(false)
+      return false
+    }
+
+    return true
+  }
+
+  const speakVoiceResponse = async (reply: string, sourceMessage: string) => {
+    const shouldUseRealtimeVoice =
+      isLikelyVoiceWebSearchRequest(sourceMessage) ||
+      isLikelyVoiceFileSearchRequest(sourceMessage)
+
+    if (shouldUseRealtimeVoice) {
+      try {
+        if (await speakVoiceReplyThroughRealtime(reply, sourceMessage)) {
+          return true
+        }
+      } catch (error) {
+        console.warn("Failed to speak search result through realtime voice:", error)
+      }
+    }
+
+    speakVoiceReply(reply)
+    return false
+  }
+
   const submitMessage = async (
     rawMessage?: string,
     options: { voice?: boolean } = {}
@@ -2296,7 +2590,11 @@ export function AssistantChat({
       : trimmedInput
 
     const activePersistedThread = threads.find((thread) => thread.id === activeThreadId)
-    if (isPersistedMode && isLikelyAgentCreationTask(trimmedInput)) {
+    if (
+      isPersistedMode &&
+      isLikelyAgentCreationTask(trimmedInput) &&
+      !needsAgentTaskClarification(trimmedInput)
+    ) {
       setInput("")
       if (isVoiceMessage) {
         setVoiceStatus("Starting Agent Mode")
@@ -2435,6 +2733,7 @@ export function AssistantChat({
       const response = await window.electronAPI.submitTextFollowUp({
         requestId,
         message: modelMessage,
+        rawMessage: trimmedInput,
         currentContext,
         chatHistory,
         mode,
@@ -2460,11 +2759,16 @@ export function AssistantChat({
         await refreshThreads(threadId)
         await loadMessagesForThread(threadId)
         if (isVoiceMessage) {
-          speakVoiceReply(response.data.reply)
+          const usedRealtimeSpeech = await speakVoiceResponse(
+            response.data.reply,
+            trimmedInput
+          )
           setVoiceMemory((previousMemory) =>
             updateVoiceMemory(previousMemory, trimmedInput)
           )
-          setVoiceStatus("Listening")
+          if (!usedRealtimeSpeech) {
+            setVoiceStatus("Listening")
+          }
         }
         return
       }
@@ -2481,11 +2785,16 @@ export function AssistantChat({
 
       persistMessages(resolvedMessages)
       if (isVoiceMessage) {
-        speakVoiceReply(response.data.reply)
+        const usedRealtimeSpeech = await speakVoiceResponse(
+          response.data.reply,
+          trimmedInput
+        )
         setVoiceMemory((previousMemory) =>
           updateVoiceMemory(previousMemory, trimmedInput)
         )
-        setVoiceStatus("Listening")
+        if (!usedRealtimeSpeech) {
+          setVoiceStatus("Listening")
+        }
       }
     } catch (error) {
       activeTextFollowUpRequestIdRef.current = null
@@ -2516,14 +2825,17 @@ export function AssistantChat({
 
   const handleVoiceSearchRequest = async (transcript: string) => {
     const normalized = transcript.replace(/\s+/g, " ").trim()
-    if (!isPersistedMode || !isLikelyVoiceWebSearchRequest(normalized)) {
-      return
+    const shouldSearchWeb = isLikelyVoiceWebSearchRequest(normalized)
+    const shouldSearchFiles = isLikelyVoiceFileSearchRequest(normalized)
+    if (!isPersistedMode || (!shouldSearchWeb && !shouldSearchFiles)) {
+      return false
     }
 
-    const queryKey = normalized.toLowerCase()
+    const searchKind = shouldSearchFiles ? "files" : "web"
+    const queryKey = `${searchKind}:${normalized.toLowerCase()}`
     const previous = lastVoiceSearchRequestRef.current
     if (previous?.query === queryKey && Date.now() - previous.timestamp < 8000) {
-      return
+      return true
     }
 
     lastVoiceSearchRequestRef.current = {
@@ -2531,12 +2843,17 @@ export function AssistantChat({
       timestamp: Date.now(),
     }
 
-    showToast("Web Search", "Searching with Exa...", "neutral")
+    showToast(
+      shouldSearchFiles ? "File Search" : "Web Search",
+      shouldSearchFiles ? "Searching local files..." : "Searching with Exa...",
+      "neutral"
+    )
     await submitMessage(normalized, { voice: true })
+    return true
   }
 
   voiceSearchRequestHandlerRef.current = (transcript: string) => {
-    void handleVoiceSearchRequest(transcript)
+    return handleVoiceSearchRequest(transcript)
   }
 
   function resetVoiceSegment() {
@@ -2545,7 +2862,187 @@ export function AssistantChat({
     voiceSpeechSampleCountRef.current = 0
     voiceSilenceSampleCountRef.current = 0
     voiceIsSpeechActiveRef.current = false
+    voiceOutboundSpeechActiveRef.current = false
+    voiceOutboundCandidateSpeechMsRef.current = 0
+    voiceOutboundSilenceMsRef.current = 0
+    voiceOutboundSegmentMsRef.current = 0
+    voiceOutboundPeakRmsRef.current = 0
+    voiceOutboundPreRollRef.current = []
+    voiceNoiseFloorRef.current = VOICE_NOISE_FLOOR_INITIAL
     setIsVoiceCompanionHearing(false)
+  }
+
+  function clampVoiceNoiseFloor(value: number) {
+    return Math.min(
+      VOICE_NOISE_FLOOR_MAX,
+      Math.max(VOICE_NOISE_FLOOR_MIN, value)
+    )
+  }
+
+  function updateRealtimeVoiceNoiseFloor(rms: number, riseWeight = 0.18) {
+    const currentFloor = voiceNoiseFloorRef.current
+    const weight = rms > currentFloor ? riseWeight : 0.08
+    voiceNoiseFloorRef.current = clampVoiceNoiseFloor(
+      currentFloor + (rms - currentFloor) * weight
+    )
+  }
+
+  function getRealtimeVoiceSpeechThreshold() {
+    const noiseFloor = voiceNoiseFloorRef.current
+    return Math.max(
+      VOICE_CLEAR_SPEECH_THRESHOLD,
+      noiseFloor * VOICE_SPEECH_NOISE_RATIO,
+      noiseFloor + VOICE_SPEECH_ABOVE_NOISE
+    )
+  }
+
+  function createRealtimeSilencePcm(durationMs: number) {
+    return new Int16Array(
+      Math.max(1, Math.round((VOICE_AUDIO_SAMPLE_RATE * durationMs) / 1000))
+    )
+  }
+
+  function enqueueRealtimeVoiceAudio(chunks: Int16Array[]) {
+    if (chunks.length === 0 || voiceAudioStoppingRef.current) {
+      return
+    }
+
+    const chunksToSend = [...chunks]
+    voiceOutboundSendQueueRef.current = voiceOutboundSendQueueRef.current
+      .catch(() => {
+        // Keep later audio flowing even if one chunk send fails.
+      })
+      .then(async () => {
+        for (const chunk of chunksToSend) {
+          if (voiceAudioStoppingRef.current) {
+            return
+          }
+
+          const pcmBuffer = chunk.buffer.slice(
+            chunk.byteOffset,
+            chunk.byteOffset + chunk.byteLength
+          )
+          const audioBase64 = await arrayBufferToBase64(pcmBuffer)
+          if (voiceAudioStoppingRef.current) {
+            return
+          }
+
+          await window.electronAPI.appendVoiceRealtimeAudio({ audioBase64 })
+        }
+      })
+      .catch((error) => {
+        if (!voiceAudioStoppingRef.current) {
+          console.error("Failed to stream gated realtime voice audio:", error)
+        }
+      })
+  }
+
+  function trimRealtimeVoicePreRoll() {
+    const maxSamples = Math.max(
+      1,
+      Math.round((VOICE_AUDIO_SAMPLE_RATE * VOICE_PREROLL_MS) / 1000)
+    )
+    let totalSamples = voiceOutboundPreRollRef.current.reduce(
+      (sum, chunk) => sum + chunk.length,
+      0
+    )
+
+    while (
+      voiceOutboundPreRollRef.current.length > 1 &&
+      totalSamples > maxSamples
+    ) {
+      const removed = voiceOutboundPreRollRef.current.shift()
+      totalSamples -= removed?.length || 0
+    }
+  }
+
+  function finishRealtimeVoiceGateTurn() {
+    enqueueRealtimeVoiceAudio([createRealtimeSilencePcm(VOICE_SERVER_END_SILENCE_MS)])
+    voiceOutboundSpeechActiveRef.current = false
+    voiceOutboundCandidateSpeechMsRef.current = 0
+    voiceOutboundSilenceMsRef.current = 0
+    voiceOutboundSegmentMsRef.current = 0
+    voiceOutboundPeakRmsRef.current = 0
+    voiceOutboundPreRollRef.current = []
+    setIsVoiceCompanionHearing(false)
+    if (!voiceAudioStoppingRef.current) {
+      setVoiceStatus("Thinking")
+    }
+  }
+
+  function processRealtimeVoiceGate(pcmChunk: Int16Array, rms: number) {
+    const chunkMs = (pcmChunk.length / VOICE_AUDIO_SAMPLE_RATE) * 1000
+    if (!voiceOutboundSpeechActiveRef.current) {
+      updateRealtimeVoiceNoiseFloor(rms)
+    }
+
+    const speechThreshold = getRealtimeVoiceSpeechThreshold()
+    let isClearSpeech = rms >= speechThreshold
+
+    if (voiceOutboundSpeechActiveRef.current && isClearSpeech) {
+      const peakRms = voiceOutboundPeakRmsRef.current
+      const droppedBackToRoomNoise =
+        peakRms >= VOICE_CLEAR_SPEECH_THRESHOLD &&
+        rms < peakRms * 0.72 &&
+        peakRms - rms >= VOICE_SPEECH_ABOVE_NOISE
+
+      if (droppedBackToRoomNoise) {
+        isClearSpeech = false
+      }
+    }
+
+    if (isClearSpeech) {
+      voiceOutboundCandidateSpeechMsRef.current += chunkMs
+      voiceOutboundSilenceMsRef.current = 0
+      voiceOutboundPeakRmsRef.current = Math.max(
+        voiceOutboundPeakRmsRef.current,
+        rms
+      )
+    } else if (voiceOutboundSpeechActiveRef.current) {
+      voiceOutboundSilenceMsRef.current += chunkMs
+      updateRealtimeVoiceNoiseFloor(rms, 0.06)
+    } else {
+      voiceOutboundCandidateSpeechMsRef.current = 0
+      voiceOutboundPeakRmsRef.current = 0
+    }
+
+    if (!voiceOutboundSpeechActiveRef.current) {
+      voiceOutboundPreRollRef.current.push(pcmChunk)
+      trimRealtimeVoicePreRoll()
+
+      if (
+        !isClearSpeech ||
+        voiceOutboundCandidateSpeechMsRef.current < VOICE_REQUIRED_CLEAR_SPEECH_MS
+      ) {
+        return
+      }
+
+      voiceOutboundSpeechActiveRef.current = true
+      voiceOutboundSegmentMsRef.current = voiceOutboundCandidateSpeechMsRef.current
+      enqueueRealtimeVoiceAudio(voiceOutboundPreRollRef.current)
+      voiceOutboundPreRollRef.current = []
+      setIsVoiceCompanionHearing(true)
+      return true
+    }
+
+    voiceOutboundSegmentMsRef.current += chunkMs
+
+    if (isClearSpeech) {
+      enqueueRealtimeVoiceAudio([pcmChunk])
+      if (voiceOutboundSegmentMsRef.current >= VOICE_MAX_SEGMENT_MS) {
+        finishRealtimeVoiceGateTurn()
+        return false
+      }
+      return true
+    }
+
+    if (voiceOutboundSilenceMsRef.current <= VOICE_TRAILING_SILENCE_MS) {
+      enqueueRealtimeVoiceAudio([pcmChunk])
+      return true
+    }
+
+    finishRealtimeVoiceGateTurn()
+    return false
   }
 
   function enqueueVoiceSegment() {
@@ -2646,11 +3143,21 @@ export function AssistantChat({
     }
 
     emitSylicaActivity()
+    let activeTurnId = activeVoiceAssistantTurnIdRef.current
+    if (!activeTurnId) {
+      activeTurnId = `voice-assistant-${Date.now()}`
+      activeVoiceAssistantTurnIdRef.current = activeTurnId
+      globalActiveVoiceAssistantTurnId = activeTurnId
+    }
+
+    const turnId = activeTurnId
     const applyDelta = (previousMessages: FollowUpChatMessage[]) => {
-      const existingTurnId = activeVoiceAssistantTurnIdRef.current
-      if (existingTurnId) {
+      const existingMessage = previousMessages.find(
+        (message) => message.id === turnId
+      )
+      if (existingMessage) {
         return previousMessages.map((message) =>
-          message.id === existingTurnId
+          message.id === turnId
             ? {
                 ...message,
                 content: `${message.content}${delta}`,
@@ -2660,13 +3167,10 @@ export function AssistantChat({
         )
       }
 
-      const nextTurnId = `voice-assistant-${Date.now()}`
-      activeVoiceAssistantTurnIdRef.current = nextTurnId
-      globalActiveVoiceAssistantTurnId = nextTurnId
       return [
         ...previousMessages,
         {
-          id: nextTurnId,
+          id: turnId,
           role: "assistant",
           content: delta,
           createdAt: Date.now(),
@@ -2676,8 +3180,7 @@ export function AssistantChat({
     }
 
     updateGlobalVoiceTranscript(applyDelta)
-    updateChatMessages(applyDelta)
-  }, [updateChatMessages])
+  }, [])
 
   const finishVoiceAssistantTranscript = useCallback(() => {
     const activeTurnId = activeVoiceAssistantTurnIdRef.current
@@ -2699,8 +3202,7 @@ export function AssistantChat({
       )
 
     updateGlobalVoiceTranscript(finishTurn)
-    updateChatMessages(finishTurn)
-  }, [updateChatMessages])
+  }, [])
 
   const beginVoiceUserTranscript = useCallback(() => {
     if (activeVoiceUserTurnIdRef.current) {
@@ -2724,8 +3226,7 @@ export function AssistantChat({
       ].slice(-VOICE_TRANSCRIPT_MESSAGE_LIMIT)
 
     updateGlobalVoiceTranscript(beginTurn)
-    updateChatMessages(beginTurn)
-  }, [updateChatMessages])
+  }, [])
 
   const appendVoiceUserTranscript = useCallback(
     (delta: string) => {
@@ -2774,9 +3275,8 @@ export function AssistantChat({
       }
 
       updateGlobalVoiceTranscript(appendDelta)
-      updateChatMessages(appendDelta)
     },
-    [updateChatMessages]
+    []
   )
 
   const finishVoiceUserTranscript = useCallback(
@@ -2824,10 +3324,70 @@ export function AssistantChat({
       }
 
       updateGlobalVoiceTranscript(finishTurn)
-      updateChatMessages(finishTurn)
     },
-    [updateChatMessages]
+    []
   )
+
+  const discardVoiceUserTranscript = useCallback(() => {
+    const activeTurnId = activeVoiceUserTurnIdRef.current
+    activeVoiceUserTurnIdRef.current = null
+    globalActiveVoiceUserTurnId = null
+    voiceUserTranscriptDraftRef.current = ""
+
+    if (!activeTurnId) {
+      return
+    }
+
+    updateGlobalVoiceTranscript((previousMessages) =>
+      previousMessages.filter((message) => message.id !== activeTurnId)
+    )
+  }, [])
+
+  const finishVoiceUserTranscriptFromDraft = useCallback(
+    (fallbackText = "No clear voice instruction heard") => {
+      const transcript =
+        voiceUserTranscriptDraftRef.current.trim() || fallbackText
+      finishVoiceUserTranscript(transcript)
+    },
+    [finishVoiceUserTranscript]
+  )
+
+  const clearVoiceThinkingTimeout = useCallback(() => {
+    if (voiceThinkingTimeoutRef.current !== null) {
+      window.clearTimeout(voiceThinkingTimeoutRef.current)
+      voiceThinkingTimeoutRef.current = null
+    }
+  }, [])
+
+  const scheduleVoiceThinkingTimeout = useCallback(() => {
+    clearVoiceThinkingTimeout()
+    voiceThinkingTimeoutRef.current = window.setTimeout(() => {
+      voiceThinkingTimeoutRef.current = null
+
+      if (
+        voiceAudioStoppingRef.current ||
+        !globalVoiceSessionActive ||
+        voicePlaybackSourcesRef.current.length > 0
+      ) {
+        return
+      }
+
+      finishVoiceAssistantTranscript()
+      finishVoiceUserTranscriptFromDraft()
+      setIsVoiceCompanionHearing(false)
+      setIsVoiceSpeaking(false)
+      setVoiceStatus("Listening")
+      setVoiceLastHeard((previousTranscript) =>
+        previousTranscript === "Listening..."
+          ? "No clear voice instruction heard"
+          : previousTranscript
+      )
+    }, VOICE_THINKING_TIMEOUT_MS)
+  }, [
+    clearVoiceThinkingTimeout,
+    finishVoiceAssistantTranscript,
+    finishVoiceUserTranscriptFromDraft,
+  ])
 
   const playVoiceAudioDelta = useCallback(
     (audioBase64: string) => {
@@ -2899,7 +3459,11 @@ export function AssistantChat({
     [base64ToBytes]
   )
 
-  const stopVoiceCompanion = () => {
+  const stopVoiceCompanion = (options: { manual?: boolean } = {}) => {
+    if (options.manual) {
+      markVoiceManualStop()
+    }
+
     if (globalVoiceCleanup && globalVoiceCleanup !== stopVoiceCompanion) {
       globalVoiceCleanup()
       globalVoiceCleanup = null
@@ -2914,6 +3478,7 @@ export function AssistantChat({
     voiceAudioStoppingRef.current = true
     globalVoiceSessionActive = false
     globalVoiceCleanup = null
+    clearVoiceThinkingTimeout()
     emitVoiceActive(false)
     void window.electronAPI.stopVoiceRealtime().catch(() => {
       // Ignore stop races when the app is closing.
@@ -2965,6 +3530,7 @@ export function AssistantChat({
 
     closeVoicePlayback()
     voiceResponseTextRef.current = ""
+    voiceUserTranscriptDraftRef.current = ""
     activeVoiceUserTurnIdRef.current = null
     activeVoiceAssistantTurnIdRef.current = null
     globalActiveVoiceUserTurnId = null
@@ -2995,6 +3561,21 @@ export function AssistantChat({
     }
 
     try {
+      globalVoiceManualStopAt = 0
+      setVoiceStatus("Checking screen access")
+      const screenPermission =
+        await window.electronAPI.requestScreenCaptureAccess({
+          openSettingsOnFailure: true,
+        })
+      if (!screenPermission.granted) {
+        const message =
+          screenPermission.error ||
+          "Screen Recording access is required so Sylica can see your screen."
+        setVoiceStatus("Screen access required")
+        showToast("Screen Access Needed", message, "error")
+        return
+      }
+
       setVoiceStatus("Opening microphone")
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -3014,7 +3595,10 @@ export function AssistantChat({
       stopVoiceCompanion()
       voiceAudioStoppingRef.current = false
       resetVoiceSegment()
+      clearVoiceThinkingTimeout()
       voiceResponseTextRef.current = ""
+      voiceUserTranscriptDraftRef.current = ""
+      voiceOutboundSendQueueRef.current = Promise.resolve()
       activeVoiceUserTurnIdRef.current = null
       activeVoiceAssistantTurnIdRef.current = null
       clearGlobalVoiceTranscript()
@@ -3028,6 +3612,8 @@ export function AssistantChat({
           voiceLiveContext
         ),
         voice: "marin",
+        owner: "widget",
+        provider: voiceRealtimeProvider,
       })
 
       if (!startResponse.success) {
@@ -3070,29 +3656,21 @@ export function AssistantChat({
         const resampledSamples = resampleAudio(monoSamples, audioContext.sampleRate)
         const pcmChunk = float32ToInt16(resampledSamples)
 
-        const isSpeech = rms >= VOICE_SILENCE_THRESHOLD
+        if (voiceRealtimeProvider === "deepgram") {
+          enqueueRealtimeVoiceAudio([pcmChunk])
+          const isSpeech = rms >= getRealtimeVoiceSpeechThreshold()
+          if (isSpeech !== voiceIsSpeechActiveRef.current) {
+            voiceIsSpeechActiveRef.current = isSpeech
+            setIsVoiceCompanionHearing(isSpeech)
+          }
+          return
+        }
+
+        const isSpeech = Boolean(processRealtimeVoiceGate(pcmChunk, rms))
         if (isSpeech !== voiceIsSpeechActiveRef.current) {
           voiceIsSpeechActiveRef.current = isSpeech
           setIsVoiceCompanionHearing(isSpeech)
         }
-
-        const pcmBuffer = pcmChunk.buffer.slice(
-          pcmChunk.byteOffset,
-          pcmChunk.byteOffset + pcmChunk.byteLength
-        )
-        void arrayBufferToBase64(pcmBuffer).then((audioBase64) => {
-          if (voiceAudioStoppingRef.current) {
-            return
-          }
-
-          void window.electronAPI
-            .appendVoiceRealtimeAudio({ audioBase64 })
-            .catch((error) => {
-              if (!voiceAudioStoppingRef.current) {
-                console.error("Failed to stream realtime voice audio:", error)
-              }
-            })
-        })
       }
 
       sourceNode.connect(processorNode)
@@ -3120,6 +3698,12 @@ export function AssistantChat({
           "OpenAI key was not found in .env or Settings. Add it, then start voice again.",
           "error"
         )
+      } else if (/Deepgram API key/i.test(message)) {
+        showToast(
+          "Deepgram Key Required",
+          "Deepgram key was not found in .env. Add it, then start voice again.",
+          "error"
+        )
       } else {
         showToast("Voice Companion", message, "error")
       }
@@ -3130,6 +3714,14 @@ export function AssistantChat({
     if (
       !voiceAutoStartSignal ||
       lastVoiceAutoStartSignalRef.current === voiceAutoStartSignal
+    ) {
+      return
+    }
+
+    const signalTimestamp = Number(voiceAutoStartSignal)
+    if (
+      globalVoiceManualStopAt > 0 &&
+      (!Number.isFinite(signalTimestamp) || signalTimestamp <= globalVoiceManualStopAt)
     ) {
       return
     }
@@ -3163,6 +3755,10 @@ export function AssistantChat({
     globalVoiceRealtimeUnsubscribe?.()
 
     const unsubscribe = window.electronAPI.onVoiceRealtimeEvent((event) => {
+      if (event.owner === "cursor") {
+        return
+      }
+
       emitSylicaActivity()
       globalVoiceSessionActive = true
       emitVoiceActive(true)
@@ -3170,20 +3766,6 @@ export function AssistantChat({
 
       if (event.type === "ready") {
         setVoiceStatus("Realtime voice ready")
-        // Trigger a friendly greeting the first time the session connects in
-        // this app lifetime so Sylica doesn't just sit there silently. The
-        // module-level guard makes sure we only greet once per app session,
-        // not every time the user reconnects.
-        if (!globalHasGreetedThisSession) {
-          globalHasGreetedThisSession = true
-          const directive = buildVoiceGreetingDirective(voiceLiveContextRef.current)
-          void window.electronAPI
-            .requestVoiceRealtimeResponse({ directive })
-            .catch(() => {
-              // If the greeting fails for any reason, don't surface it — the
-              // session is still usable, the user just won't hear a hello.
-            })
-        }
         return
       }
 
@@ -3192,6 +3774,8 @@ export function AssistantChat({
       }
 
       if (event.type === "speech_started") {
+        clearVoiceThinkingTimeout()
+        voiceUserTranscriptDraftRef.current = ""
         finishVoiceAssistantTranscript()
         clearVoicePlayback()
         beginVoiceUserTranscript()
@@ -3204,10 +3788,12 @@ export function AssistantChat({
       if (event.type === "speech_stopped") {
         setIsVoiceCompanionHearing(false)
         setVoiceStatus("Thinking")
+        scheduleVoiceThinkingTimeout()
         return
       }
 
       if (event.type === "input_transcript_delta") {
+        voiceUserTranscriptDraftRef.current += event.delta
         appendVoiceUserTranscript(event.delta)
         setVoiceLastHeard((previousTranscript) =>
           previousTranscript === "Listening..."
@@ -3218,19 +3804,28 @@ export function AssistantChat({
       }
 
       if (event.type === "input_transcript") {
-        setVoiceLastHeard(event.transcript)
-        finishVoiceUserTranscript(event.transcript)
-        // Skip triggers we already early-fired from the assistant's own text
-        // so the same task doesn't launch twice in one turn.
-        if (!earlyFiredAgentForResponseRef.current) {
-          voiceAgentCommandHandlerRef.current(event.transcript)
+        clearVoiceThinkingTimeout()
+        const transcript = normalizeRealtimeVoiceTranscript(event.transcript)
+        voiceUserTranscriptDraftRef.current = transcript
+        if (isVoiceStopTranscript(transcript)) {
+          setVoiceLastHeard(transcript)
+          finishVoiceUserTranscript(transcript)
+          stopVoiceCompanion({ manual: true })
+          return
         }
-        voiceSearchRequestHandlerRef.current(event.transcript)
-        if (!earlyFiredComputerForResponseRef.current) {
-          voiceComputerCommandHandlerRef.current(event.transcript)
+
+        if (!isClearRealtimeVoiceIntent(transcript)) {
+          discardVoiceUserTranscript()
+          setIsVoiceCompanionHearing(false)
+          setVoiceLastHeard("")
+          setVoiceStatus("Listening")
+          return
         }
+
+        setVoiceLastHeard(transcript)
+        finishVoiceUserTranscript(transcript)
         setVoiceMemory((previousMemory) => {
-          const nextMemory = updateVoiceMemory(previousMemory, event.transcript)
+          const nextMemory = updateVoiceMemory(previousMemory, transcript)
           if (nextMemory !== previousMemory) {
             void window.electronAPI.updateVoiceRealtimeInstructions({
               instructions: buildRealtimeVoiceInstructions(
@@ -3243,10 +3838,64 @@ export function AssistantChat({
           }
           return nextMemory
         })
+        void (async () => {
+          let handled = false
+
+          // Skip triggers we already early-fired from the assistant's own text
+          // so the same task doesn't launch twice in one turn.
+          if (!earlyFiredAgentForResponseRef.current) {
+            handled =
+              (await voiceAgentCommandHandlerRef.current(transcript)) || handled
+          }
+
+          handled =
+            (await voiceSearchRequestHandlerRef.current(transcript)) || handled
+
+          if (!earlyFiredComputerForResponseRef.current) {
+            handled =
+              (await voiceComputerCommandHandlerRef.current(transcript)) ||
+              handled
+          }
+
+          if (handled || voiceAudioStoppingRef.current || !globalVoiceSessionActive) {
+            if (
+              handled &&
+              !voiceAudioStoppingRef.current &&
+              voicePlaybackSourcesRef.current.length === 0
+            ) {
+              setVoiceStatus("Listening")
+            }
+            return
+          }
+
+          const response = await window.electronAPI.requestVoiceRealtimeResponse()
+          if (!response.success) {
+            throw new Error(response.error)
+          }
+        })().catch((error) => {
+          if (voiceAudioStoppingRef.current) {
+            return
+          }
+
+          const message =
+            error instanceof Error
+              ? error.message
+              : "Failed to create realtime voice response."
+          console.error("Realtime voice response failed:", error)
+          setVoiceStatus("Voice error")
+          showToast("Voice Companion", message, "error")
+        })
         return
       }
 
       if (event.type === "text_delta") {
+        clearVoiceThinkingTimeout()
+        if (
+          activeVoiceUserTurnIdRef.current &&
+          voiceUserTranscriptDraftRef.current.trim()
+        ) {
+          finishVoiceUserTranscriptFromDraft()
+        }
         voiceResponseTextRef.current += event.text
         appendVoiceAssistantTranscript(event.text)
         // Early-fire: if the model has now said "Starting agent mode: ..." or
@@ -3264,11 +3913,22 @@ export function AssistantChat({
       }
 
       if (event.type === "audio_delta") {
+        clearVoiceThinkingTimeout()
+        if (
+          activeVoiceUserTurnIdRef.current &&
+          voiceUserTranscriptDraftRef.current.trim()
+        ) {
+          finishVoiceUserTranscriptFromDraft()
+        }
         playVoiceAudioDelta(event.audio)
         return
       }
 
       if (event.type === "response_done") {
+        clearVoiceThinkingTimeout()
+        if (activeVoiceUserTurnIdRef.current) {
+          finishVoiceUserTranscriptFromDraft()
+        }
         finishVoiceAssistantTranscript()
         // Reset early-fire flags so the next assistant response can trigger
         // its own actions without being blocked by the previous turn.
@@ -3283,6 +3943,7 @@ export function AssistantChat({
       }
 
       if (event.type === "error") {
+        clearVoiceThinkingTimeout()
         console.error("Realtime voice error:", event.error)
         stopVoiceCompanion()
         globalVoiceSessionActive = false
@@ -3309,10 +3970,14 @@ export function AssistantChat({
     appendVoiceUserTranscript,
     beginVoiceUserTranscript,
     clearVoicePlayback,
+    clearVoiceThinkingTimeout,
+    discardVoiceUserTranscript,
     finishVoiceAssistantTranscript,
     finishVoiceUserTranscript,
+    finishVoiceUserTranscriptFromDraft,
     isPersistedMode,
     playVoiceAudioDelta,
+    scheduleVoiceThinkingTimeout,
     showToast,
   ])
 
@@ -3459,6 +4124,13 @@ export function AssistantChat({
     (voiceMemory.trim()
       ? "Uses your screen and remembered context."
       : "Talk naturally; I will use your screen when useful.")
+  const voiceProviderOptions: Array<{
+    value: VoiceRealtimeProvider
+    label: string
+  }> = [
+    { value: "openai", label: "OpenAI" },
+    { value: "deepgram", label: "DG" },
+  ]
 
   const threadButtonsDisabled =
     isSending ||
@@ -3551,6 +4223,32 @@ export function AssistantChat({
                 </>
               )}
             </div>
+            {panelMode === "voice" && (
+              <div className="flex shrink-0 items-center rounded-full border border-white/10 bg-white/[0.04] p-0.5 text-[9px]">
+                {voiceProviderOptions.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    disabled={isVoiceCompanionActive || isSending}
+                    onClick={() => {
+                      setVoiceRealtimeProvider(option.value)
+                      persistVoiceRealtimeProvider(option.value)
+                    }}
+                    className={`h-6 rounded-full px-2 transition ${
+                      voiceRealtimeProvider === option.value
+                        ? "bg-[#a8d8c4] text-black"
+                        : "text-white/58 hover:text-white"
+                    } ${
+                      isVoiceCompanionActive || isSending
+                        ? "cursor-not-allowed opacity-55"
+                        : ""
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            )}
             <Button
               type="button"
               size="sm"
@@ -3558,7 +4256,7 @@ export function AssistantChat({
                 void (
                   panelMode === "voice"
                     ? isVoiceCompanionActive
-                      ? stopVoiceCompanion()
+                      ? stopVoiceCompanion({ manual: true })
                       : startVoiceCompanion()
                     : isLiveSessionActive
                       ? stopLiveInterview()
@@ -3589,7 +4287,7 @@ export function AssistantChat({
                 ) : (
                   <span className="inline-flex items-center gap-1">
                     <Mic className="h-3 w-3" />
-                    Starting
+                    Start
                   </span>
                 )
               ) : isLiveActionPending ? (
@@ -3633,8 +4331,8 @@ export function AssistantChat({
                     ? isLiveSessionActive
                       ? stopLiveInterview()
                       : startLiveInterview()
-                    : isVoiceCompanionActive
-                      ? stopVoiceCompanion()
+                  : isVoiceCompanionActive
+                      ? stopVoiceCompanion({ manual: true })
                       : startVoiceCompanion()
                 )
               }}

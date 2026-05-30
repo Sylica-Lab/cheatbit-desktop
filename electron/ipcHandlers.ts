@@ -26,6 +26,7 @@ import type {
 } from "../shared/followUpChat"
 import type { LocalPhoneRelayState } from "../shared/localPhoneRelay"
 import type { AgentState } from "../shared/agent"
+import { getBuiltInDeepgramApiKey } from "./builtInApiKeys"
 
 const TEXT_FOLLOW_UP_STREAM_EVENT = "text-follow-up-stream"
 const LOCAL_PHONE_RELAY_STATE_EVENT = "local-phone-relay-state"
@@ -35,18 +36,27 @@ const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime"
 const OPENAI_REALTIME_MODEL = process.env.OPENAI_REALTIME_MODEL?.trim() || "gpt-realtime-2"
 const OPENAI_REALTIME_VOICE = process.env.OPENAI_REALTIME_VOICE?.trim() || "marin"
 const OPENAI_REALTIME_PCM_RATE = 24000
+const DEEPGRAM_AGENT_URL = "wss://agent.deepgram.com/v1/agent/converse"
+const DEEPGRAM_AGENT_LISTEN_MODEL = "flux-general-en"
+const DEEPGRAM_AGENT_SPEAK_MODEL = "aura-2-asteria-en"
+const DEEPGRAM_AGENT_PCM_RATE = 24000
 const VOICE_SCREEN_REFRESH_MIN_MS = 2500
 const WEBSOCKET_READY_OPEN = 1
+
+type VoiceRealtimeProvider = "openai" | "deepgram"
 
 type RealtimeSocket = WebSocket
 
 interface VoiceRealtimeSession {
   socket: RealtimeSocket
+  provider: VoiceRealtimeProvider
+  owner: "widget" | "cursor"
   startedAt: number
   lastScreenAt: number
   screenRefreshInFlight: boolean
   instructions: string
   assistantTranscript: string
+  keepAliveInterval?: NodeJS.Timeout
 }
 
 function extractRealtimeText(value: unknown): string {
@@ -78,6 +88,65 @@ function extractRealtimeText(value: unknown): string {
   ]
     .map(extractRealtimeText)
     .join("")
+}
+
+function getMissingRealtimeTextSuffix(
+  currentText: string,
+  completedText: string
+): string {
+  const current = currentText.trim()
+  const completed = completedText.trim()
+  if (!completed) {
+    return ""
+  }
+
+  if (!current) {
+    return completed
+  }
+
+  if (
+    current === completed ||
+    current.endsWith(completed) ||
+    current.includes(completed)
+  ) {
+    return ""
+  }
+
+  if (completed.startsWith(current)) {
+    return completed.slice(current.length).trimStart()
+  }
+
+  return ""
+}
+
+function rawRealtimeMessageToBuffer(data: unknown): Buffer {
+  if (Buffer.isBuffer(data)) {
+    return data
+  }
+
+  if (Array.isArray(data)) {
+    return Buffer.concat(data.map((chunk) => rawRealtimeMessageToBuffer(chunk)))
+  }
+
+  if (data instanceof ArrayBuffer) {
+    return Buffer.from(data)
+  }
+
+  if (ArrayBuffer.isView(data)) {
+    return Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+  }
+
+  return Buffer.from(String(data || ""), "utf8")
+}
+
+function extractVoiceDirectiveAnswer(directive: string): string {
+  const marker = "Answer to speak:"
+  const markerIndex = directive.indexOf(marker)
+  if (markerIndex === -1) {
+    return directive.trim()
+  }
+
+  return directive.slice(markerIndex + marker.length).trim()
 }
 
 function getRealtimeWebSocketConstructor(): typeof import("ws") {
@@ -112,10 +181,17 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
 
   let voiceRealtimeSession: VoiceRealtimeSession | null = null
 
-  const emitVoiceRealtimeEvent = (payload: VoiceRealtimeEvent): void => {
+  const emitVoiceRealtimeEvent = (
+    session: VoiceRealtimeSession | null,
+    payload: VoiceRealtimeEvent
+  ): void => {
+    const eventPayload = session
+      ? { ...payload, owner: session.owner }
+      : payload
+
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed()) {
-        window.webContents.send(VOICE_REALTIME_EVENT, payload)
+        window.webContents.send(VOICE_REALTIME_EVENT, eventPayload)
       }
     }
   }
@@ -126,6 +202,10 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
 
     if (!session) {
       return
+    }
+
+    if (session.keepAliveInterval) {
+      clearInterval(session.keepAliveInterval)
     }
 
     try {
@@ -140,6 +220,7 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
   ): Promise<void> => {
     if (
       voiceRealtimeSession !== session ||
+      session.provider !== "openai" ||
       session.screenRefreshInFlight ||
       Date.now() - session.lastScreenAt < VOICE_SCREEN_REFRESH_MIN_MS ||
       session.socket.readyState !== WEBSOCKET_READY_OPEN
@@ -189,6 +270,16 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     voice: string
   ): void => {
     session.instructions = instructions
+    if (session.provider === "deepgram") {
+      session.socket.send(
+        JSON.stringify({
+          type: "UpdatePrompt",
+          prompt: instructions,
+        })
+      )
+      return
+    }
+
     session.socket.send(
       JSON.stringify({
         type: "session.update",
@@ -211,10 +302,10 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
               },
               turn_detection: {
                 type: "server_vad",
-                threshold: 0.28,
-                prefix_padding_ms: 500,
-                silence_duration_ms: 650,
-                create_response: true,
+                threshold: 0.58,
+                prefix_padding_ms: 280,
+                silence_duration_ms: 680,
+                create_response: false,
                 interrupt_response: true,
               },
             },
@@ -227,6 +318,60 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
             },
           },
         },
+      })
+    )
+  }
+
+  const sendDeepgramVoiceAgentSettings = (
+    session: VoiceRealtimeSession,
+    instructions: string
+  ): void => {
+    session.instructions = instructions
+    session.socket.send(
+      JSON.stringify({
+        type: "Settings",
+        audio: {
+          input: {
+            encoding: "linear16",
+            sample_rate: DEEPGRAM_AGENT_PCM_RATE,
+          },
+          output: {
+            encoding: "linear16",
+            sample_rate: DEEPGRAM_AGENT_PCM_RATE,
+            container: "none",
+          },
+        },
+        agent: {
+          listen: {
+            provider: {
+              type: "deepgram",
+              model: DEEPGRAM_AGENT_LISTEN_MODEL,
+              version: "v2",
+              keyterms: ["Sylica", "Silica"],
+              eot_threshold: 0.82,
+              eager_eot_threshold: 0.55,
+            },
+          },
+          think: {
+            provider: {
+              type: "open_ai",
+              model: "gpt-4o-mini",
+              temperature: 0.35,
+            },
+            prompt: instructions,
+          },
+          speak: {
+            provider: {
+              type: "deepgram",
+              model: DEEPGRAM_AGENT_SPEAK_MODEL,
+            },
+          },
+        },
+        experimental: false,
+        flags: {
+          history: true,
+        },
+        mip_opt_out: false,
       })
     )
   }
@@ -248,32 +393,115 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     }
 
     const messageType = String(payload.type || "")
+    if (session.provider === "deepgram") {
+      if (messageType === "Welcome") {
+        return
+      }
+
+      if (messageType === "SettingsApplied") {
+        emitVoiceRealtimeEvent(session, { type: "ready" })
+        return
+      }
+
+      if (
+        messageType === "PromptUpdated" ||
+        messageType === "SpeakUpdated" ||
+        messageType === "ThinkUpdated"
+      ) {
+        emitVoiceRealtimeEvent(session, { type: "session_updated" })
+        return
+      }
+
+      if (messageType === "UserStartedSpeaking") {
+        emitVoiceRealtimeEvent(session, { type: "speech_started" })
+        return
+      }
+
+      if (messageType === "AgentThinking") {
+        emitVoiceRealtimeEvent(session, { type: "speech_stopped" })
+        return
+      }
+
+      if (messageType === "ConversationText") {
+        const role = String(payload.role || "")
+        const content = String(payload.content || "").trim()
+        if (!content) {
+          return
+        }
+
+        if (role === "user") {
+          emitVoiceRealtimeEvent(session, {
+            type: "input_transcript",
+            transcript: content,
+          })
+          return
+        }
+
+        if (role === "assistant") {
+          const nextText = getMissingRealtimeTextSuffix(
+            session.assistantTranscript,
+            content
+          )
+          if (nextText) {
+            session.assistantTranscript += nextText
+            emitVoiceRealtimeEvent(session, { type: "text_delta", text: nextText })
+          }
+          return
+        }
+      }
+
+      if (messageType === "AgentAudioDone") {
+        emitVoiceRealtimeEvent(session, { type: "response_done" })
+        session.assistantTranscript = ""
+        return
+      }
+
+      if (messageType === "Warning") {
+        console.warn(
+          "Deepgram voice warning:",
+          payload.code || "",
+          payload.description || payload.message || ""
+        )
+        return
+      }
+
+      if (messageType === "Error") {
+        const errorMessage = String(
+          payload.description || payload.message || "Deepgram voice failed."
+        ).trim()
+        emitVoiceRealtimeEvent(session, { type: "error", error: errorMessage })
+        return
+      }
+
+      return
+    }
+
     if (messageType === "session.created") {
-      emitVoiceRealtimeEvent({ type: "ready" })
+      emitVoiceRealtimeEvent(session, { type: "ready" })
       void refreshVoiceRealtimeScreen(session)
       return
     }
 
     if (messageType === "session.updated") {
-      emitVoiceRealtimeEvent({ type: "session_updated" })
+      emitVoiceRealtimeEvent(session, { type: "session_updated" })
       return
     }
 
     if (messageType === "input_audio_buffer.speech_started") {
-      emitVoiceRealtimeEvent({ type: "speech_started" })
+      emitVoiceRealtimeEvent(session, { type: "speech_started" })
       void refreshVoiceRealtimeScreen(session)
       return
     }
 
     if (messageType === "input_audio_buffer.speech_stopped") {
-      emitVoiceRealtimeEvent({ type: "speech_stopped" })
+      emitVoiceRealtimeEvent(session, { type: "speech_stopped" })
       return
     }
 
     if (messageType === "conversation.item.input_audio_transcription.delta") {
       const delta = String(payload.delta || "")
       if (delta) {
-        emitVoiceRealtimeEvent({ type: "input_transcript_delta", delta })
+        emitVoiceRealtimeEvent(session, { type: "input_transcript_delta", delta })
       }
       return
     }
@@ -281,7 +509,7 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     if (messageType === "conversation.item.input_audio_transcription.completed") {
       const transcript = String(payload.transcript || "").trim()
       if (transcript) {
-        emitVoiceRealtimeEvent({ type: "input_transcript", transcript })
+        emitVoiceRealtimeEvent(session, { type: "input_transcript", transcript })
       }
       return
     }
@@ -292,7 +520,7 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     ) {
       const audio = String(payload.delta || "").trim()
       if (audio) {
-        emitVoiceRealtimeEvent({ type: "audio_delta", audio })
+        emitVoiceRealtimeEvent(session, { type: "audio_delta", audio })
       }
       return
     }
@@ -307,9 +535,9 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
       messageType === "response.text.delta"
     ) {
       const text = extractRealtimeText(payload.delta || payload)
-      if (text) {
+      if (text && !session.assistantTranscript.endsWith(text)) {
         session.assistantTranscript += text
-        emitVoiceRealtimeEvent({ type: "text_delta", text })
+        emitVoiceRealtimeEvent(session, { type: "text_delta", text })
       }
       return
     }
@@ -321,31 +549,20 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
       messageType === "response.output_text.done" ||
       messageType === "response.text.done"
     ) {
-      const completedText = extractRealtimeText(payload.transcript || payload.text || payload)
-      if (completedText && !session.assistantTranscript.endsWith(completedText)) {
-        const nextText = session.assistantTranscript
-          ? completedText.replace(session.assistantTranscript, "")
-          : completedText
-        if (nextText) {
-          session.assistantTranscript += nextText
-          emitVoiceRealtimeEvent({ type: "text_delta", text: nextText })
-        }
+      const completedText = extractRealtimeText(payload.transcript || payload.text || "")
+      const nextText = getMissingRealtimeTextSuffix(
+        session.assistantTranscript,
+        completedText
+      )
+      if (nextText) {
+        session.assistantTranscript += nextText
+        emitVoiceRealtimeEvent(session, { type: "text_delta", text: nextText })
       }
       return
     }
 
     if (messageType === "response.done" || messageType === "response.completed") {
-      const completedText = extractRealtimeText(payload.response || payload.output || payload)
-      if (completedText && !session.assistantTranscript.endsWith(completedText)) {
-        const nextText = session.assistantTranscript
-          ? completedText.replace(session.assistantTranscript, "")
-          : completedText
-        if (nextText) {
-          session.assistantTranscript += nextText
-          emitVoiceRealtimeEvent({ type: "text_delta", text: nextText })
-        }
-      }
-      emitVoiceRealtimeEvent({ type: "response_done" })
+      emitVoiceRealtimeEvent(session, { type: "response_done" })
       session.assistantTranscript = ""
       return
     }
@@ -354,7 +571,7 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
       const errorMessage = String(
         payload.error?.message || payload.message || "Realtime voice failed."
       ).trim()
-      emitVoiceRealtimeEvent({ type: "error", error: errorMessage })
+      emitVoiceRealtimeEvent(session, { type: "error", error: errorMessage })
     }
   }
 
@@ -830,6 +1047,12 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     return deps.requestMicrophoneAccess()
   })
 
+  ipcMain.handle("permissions:request-screen-capture", async (_event, payload) => {
+    return deps.requestScreenCaptureAccess({
+      openSettingsOnFailure: payload?.openSettingsOnFailure !== false,
+    })
+  })
+
   ipcMain.handle("chat:list-threads", async (_event, payload) => {
     const mode = resolveChatMode(payload?.mode)
 
@@ -1072,15 +1295,24 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
   })
 
   ipcMain.handle("voice-realtime:start", async (_event, payload) => {
-    const apiKey = configHelper.getConfiguredApiKey("openai")
+    const provider: VoiceRealtimeProvider =
+      payload?.provider === "deepgram" ? "deepgram" : "openai"
+    const apiKey =
+      provider === "deepgram"
+        ? getBuiltInDeepgramApiKey()
+        : configHelper.getConfiguredApiKey("openai")
     if (!apiKey) {
       return {
         success: false as const,
-        error: "OpenAI API key not configured for realtime voice.",
+        error:
+          provider === "deepgram"
+            ? "Deepgram API key not configured for realtime voice."
+            : "OpenAI API key not configured for realtime voice.",
       }
     }
 
     const instructions = String(payload?.instructions || "").trim()
+    const owner = payload?.owner === "cursor" ? "cursor" : "widget"
     const voice = String(payload?.voice || OPENAI_REALTIME_VOICE).trim() || OPENAI_REALTIME_VOICE
     if (!instructions) {
       return {
@@ -1092,16 +1324,22 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     closeVoiceRealtimeSession()
 
     const RealtimeWebSocket = getRealtimeWebSocketConstructor()
-    const socketUrl = `${OPENAI_REALTIME_URL}?model=${encodeURIComponent(
-      OPENAI_REALTIME_MODEL
-    )}`
+    const socketUrl =
+      provider === "deepgram"
+        ? DEEPGRAM_AGENT_URL
+        : `${OPENAI_REALTIME_URL}?model=${encodeURIComponent(
+            OPENAI_REALTIME_MODEL
+          )}`
     const socket = new RealtimeWebSocket(socketUrl, {
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization:
+          provider === "deepgram" ? `Token ${apiKey}` : `Bearer ${apiKey}`,
       },
     }) as RealtimeSocket
     const session: VoiceRealtimeSession = {
       socket,
+      provider,
+      owner,
       startedAt: Date.now(),
       lastScreenAt: 0,
       screenRefreshInFlight: false,
@@ -1144,11 +1382,25 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
 
       socket.on("open", () => {
         try {
-          sendVoiceRealtimeSessionUpdate(session, instructions, voice)
-          settle({
-            success: true as const,
-            data: { model: OPENAI_REALTIME_MODEL },
-          })
+          if (provider === "deepgram") {
+            sendDeepgramVoiceAgentSettings(session, instructions)
+            session.keepAliveInterval = setInterval(() => {
+              if (
+                voiceRealtimeSession !== session ||
+                session.socket.readyState !== WEBSOCKET_READY_OPEN
+              ) {
+                return
+              }
+
+              session.socket.send(JSON.stringify({ type: "KeepAlive" }))
+            }, 5000)
+          } else {
+            sendVoiceRealtimeSessionUpdate(session, instructions, voice)
+            settle({
+              success: true as const,
+              data: { model: OPENAI_REALTIME_MODEL },
+            })
+          }
         } catch (error) {
           closeVoiceRealtimeSession()
           settle({
@@ -1161,17 +1413,48 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
         }
       })
 
-      socket.on("message", (data) => {
-        const rawData = typeof data === "string" ? data : data.toString("utf8")
+      socket.on("message", (data, isBinary) => {
+        if (provider === "deepgram" && isBinary) {
+          const audio = rawRealtimeMessageToBuffer(data).toString("base64")
+          if (audio) {
+            emitVoiceRealtimeEvent(session, { type: "audio_delta", audio })
+          }
+          return
+        }
+
+        const rawData =
+          typeof data === "string"
+            ? data
+            : rawRealtimeMessageToBuffer(data).toString("utf8")
         try {
           const parsed = JSON.parse(rawData) as Record<string, any>
           if (String(parsed.type || "") === "error") {
             lastServerError = String(
               parsed.error?.message || parsed.message || "Realtime voice failed."
             ).trim()
+          } else if (String(parsed.type || "") === "Error") {
+            lastServerError = String(
+              parsed.description || parsed.message || "Deepgram voice failed."
+            ).trim()
           }
         } catch (_error) {
           // Parsed again in the main handler; ignore pre-parse failures here.
+        }
+
+        if (provider === "deepgram" && !settled) {
+          try {
+            const parsed = JSON.parse(rawData) as Record<string, any>
+            if (String(parsed.type || "") === "SettingsApplied") {
+              settle({
+                success: true as const,
+                data: {
+                  model: `Deepgram ${DEEPGRAM_AGENT_LISTEN_MODEL}`,
+                },
+              })
+            }
+          } catch (_error) {
+            // Main handler logs parse errors when relevant.
+          }
         }
 
         handleVoiceRealtimeMessage(session, rawData)
@@ -1194,7 +1477,7 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
 
         if (voiceRealtimeSession === session) {
           voiceRealtimeSession = null
-          emitVoiceRealtimeEvent({ type: "error", error: closeMessage })
+          emitVoiceRealtimeEvent(session, { type: "error", error: closeMessage })
         }
       })
 
@@ -1214,7 +1497,7 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
         }
 
         if (voiceRealtimeSession === session) {
-          emitVoiceRealtimeEvent({ type: "error", error: errorMessage })
+          emitVoiceRealtimeEvent(session, { type: "error", error: errorMessage })
         }
       })
     })
@@ -1237,12 +1520,16 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
       }
     }
 
-    session.socket.send(
-      JSON.stringify({
-        type: "input_audio_buffer.append",
-        audio: audioBase64,
-      })
-    )
+    if (session.provider === "deepgram") {
+      session.socket.send(Buffer.from(audioBase64, "base64"))
+    } else {
+      session.socket.send(
+        JSON.stringify({
+          type: "input_audio_buffer.append",
+          audio: audioBase64,
+        })
+      )
+    }
 
     return { success: true as const }
   })
@@ -1279,6 +1566,21 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     }
 
     const directive = String(payload?.directive || "").trim()
+    if (session.provider === "deepgram") {
+      if (directive) {
+        const message = extractVoiceDirectiveAnswer(directive).slice(0, 5000)
+        session.socket.send(
+          JSON.stringify({
+            type: "InjectAgentMessage",
+            message,
+            behavior: "default",
+          })
+        )
+      }
+
+      return { success: true as const }
+    }
+
     if (directive) {
       session.socket.send(
         JSON.stringify({
@@ -1620,6 +1922,7 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
 
   ipcMain.handle("submit-text-follow-up", async (event, payload) => {
     const message = String(payload?.message || "").trim()
+    const rawMessage = String(payload?.rawMessage || "").trim()
     const currentContext = String(payload?.currentContext || "").trim()
     const requestId = String(payload?.requestId || "").trim()
     const mode: AssistantChatMode =
@@ -1714,6 +2017,7 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
       {
         requestId,
         message,
+        rawMessage,
         currentContext,
         chatHistory,
         mode,

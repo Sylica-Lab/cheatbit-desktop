@@ -178,6 +178,8 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
     agentState.status === "awaiting_workspace" ||
     agentState.status === "awaiting_approval" ||
     agentState.status === "running"
+  const showVoiceStatusPill =
+    activeMode === "voice" || activeMode === "live" || isVoiceActive
 
   const handleGuideCursorToggle = async () => {
     const nextEnabled = !isGuideCursorEnabled
@@ -275,12 +277,10 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
             When multiple are active we compact to icon-only chips so the dock
             doesn't blow out and push the right-side tools off-screen. */}
         {(() => {
-          const showVoicePill =
-            activeMode === "voice" || activeMode === "live" || isVoiceActive
           const activeCount =
             (isAgentActive ? 1 : 0) +
             (isComputerUseActive ? 1 : 0) +
-            (showVoicePill ? 1 : 0)
+            (showVoiceStatusPill ? 1 : 0)
           const compact = activeCount >= 2
           const pillBase =
             "sylica-active-pill flex shrink-0 items-center justify-center rounded-full border transition focus:outline-none"
@@ -318,7 +318,7 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
                 </button>
               )}
 
-              {showVoicePill && (
+              {showVoiceStatusPill && (
                 <button
                   type="button"
                   className={`${pillBase} ${pillSize} ${
@@ -395,6 +395,19 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
             />
           </div>
 
+          {!showVoiceStatusPill && (
+            <button
+              type="button"
+              className="sylica-dock-btn"
+              onClick={() => onOpenVoiceMode?.()}
+              aria-label="Voice"
+              title="Voice"
+              style={{ ...noDragStyle, animationDelay: "225ms" }}
+            >
+              <Mic2 className="h-4 w-4" />
+            </button>
+          )}
+
           <button
             type="button"
             className={`sylica-dock-btn ${isAgentActive || activeMode === "agent" ? "sylica-dock-btn-active" : ""}`}
@@ -434,4 +447,3 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
 }
 
 export default QueueCommands
-

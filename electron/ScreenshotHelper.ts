@@ -2,7 +2,7 @@
 
 import path from "node:path";
 import fs from "node:fs";
-import { app, nativeImage, screen } from "electron";
+import { app, desktopCapturer, nativeImage, screen } from "electron";
 import { v4 as uuidv4 } from "uuid";
 import { execFile } from "child_process";
 import { promisify } from "util";
@@ -191,9 +191,57 @@ export class ScreenshotHelper {
     });
   }
 
+  private getScreenCapturePermissionHint(): string {
+    if (process.platform === "darwin") {
+      return "Screen Recording access is required. Turn it on in System Settings > Privacy & Security > Screen Recording, then restart Sylica.";
+    }
+
+    return "Screen capture permission is required.";
+  }
+
+  private async captureElectronDesktopScreenshot(
+    displayIndex?: number
+  ): Promise<Buffer> {
+    const displays = screen.getAllDisplays();
+    const fallbackDisplay = screen.getPrimaryDisplay();
+    const cursorDisplay = screen.getDisplayNearestPoint(
+      screen.getCursorScreenPoint()
+    );
+    const targetDisplay =
+      typeof displayIndex === "number"
+        ? displays[displayIndex] || fallbackDisplay
+        : cursorDisplay || fallbackDisplay;
+    const scaleFactor = targetDisplay.scaleFactor || 1;
+    const thumbnailSize = {
+      width: Math.max(640, Math.round(targetDisplay.bounds.width * scaleFactor)),
+      height: Math.max(360, Math.round(targetDisplay.bounds.height * scaleFactor)),
+    };
+
+    const sources = await desktopCapturer.getSources({
+      types: ["screen"],
+      thumbnailSize,
+    });
+    const source =
+      sources.find((candidate) => candidate.display_id === String(targetDisplay.id)) ||
+      (typeof displayIndex === "number" ? sources[displayIndex] : undefined) ||
+      sources[0];
+
+    if (!source || source.thumbnail.isEmpty()) {
+      throw new Error(this.getScreenCapturePermissionHint());
+    }
+
+    return source.thumbnail.toPNG();
+  }
+
   private async captureDisplayScreenshot(displayIndex: number): Promise<Buffer> {
     if (process.platform === "win32") {
       return this.captureScreenshot();
+    }
+
+    try {
+      return await this.captureElectronDesktopScreenshot(displayIndex);
+    } catch (error) {
+      console.warn("Electron display capture failed, using fallback:", error);
     }
 
     const displays = this.getOrderedCaptureDisplays(
@@ -367,17 +415,30 @@ export class ScreenshotHelper {
         return await this.captureWindowsScreenshot(onCaptureStarted);
       }
 
-      // For macOS and Linux, use buffer directly
-      console.log("Taking screenshot on non-Windows platform");
       onCaptureStarted?.();
-      const buffer = await screenshot({ format: "png" });
+      let buffer: Buffer;
+      try {
+        console.log("Taking screenshot with Electron desktopCapturer");
+        buffer = await this.captureElectronDesktopScreenshot();
+      } catch (electronCaptureError) {
+        console.warn(
+          "Electron screenshot capture failed, using screenshot-desktop fallback:",
+          electronCaptureError
+        );
+        console.log("Taking screenshot with screenshot-desktop fallback");
+        buffer = await screenshot({ format: "png" });
+      }
       console.log(
         `Screenshot captured successfully, size: ${buffer.length} bytes`
       );
       return buffer;
     } catch (error) {
       console.error("Error capturing screenshot:", error);
-      throw new Error(`Failed to capture screenshot: ${error.message}`);
+      const message =
+        error instanceof Error && error.message.trim()
+          ? error.message
+          : "Unknown screen capture error.";
+      throw new Error(`Failed to capture screenshot: ${message}`);
     }
   }
 

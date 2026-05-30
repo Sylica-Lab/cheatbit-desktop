@@ -34,6 +34,11 @@ import {
   getBuiltInHuggingFaceFallbackApiKey,
 } from "./builtInApiKeys"
 import { buildExaSearchContext, compactSearchQuery, shouldUseExaSearch } from "./ExaSearchHelper"
+import {
+  buildLocalFileSearchContext,
+  compactFileSearchQuery,
+  shouldUseLocalFileSearch,
+} from "./FileSearchHelper"
 
 // Interface for Gemini API requests
 interface GeminiMessage {
@@ -1643,6 +1648,30 @@ Web rules:
 - Web search requested by user: ${webSearchRequested ? "yes" : "no"}.`
   }
 
+  private appendLocalFileSearchContextToPrompt(
+    prompt: string,
+    fileContext: string,
+    fileSearchRequested = false
+  ): string {
+    const trimmedContext = fileContext.trim()
+    if (!trimmedContext) {
+      return prompt
+    }
+
+    return `${prompt}
+
+LOCAL FILE SEARCH CONTEXT:
+${trimmedContext}
+
+Local file search rules:
+- A real local file search has already been performed for this turn.
+- If the user asked to search files, say briefly that you searched local files and answer from these results now. Do not say you will search later.
+- Use exact file names and paths from the context when recommending a file.
+- If no result was found, say no matching file was found in the searched folders. Do not claim the entire disk was searched unless the context says so.
+- If the user wants to open, move, edit, delete, or upload a file, tell them which file seems relevant and ask for confirmation before destructive actions.
+- Local file search requested by user: ${fileSearchRequested ? "yes" : "no"}.`
+  }
+
   private buildProblemSearchQuery(problemInfo: ExtractedQuestionInfo, userMessage = ""): string {
     return [
       userMessage,
@@ -1654,6 +1683,23 @@ Web rules:
     ]
       .filter(Boolean)
       .join("\n")
+  }
+
+  private getUserIntentMessage(request: TextFollowUpRequest): string {
+    const rawMessage = request.rawMessage?.trim()
+    if (rawMessage) {
+      return rawMessage
+    }
+
+    if (request.voiceMode) {
+      const match = request.message.match(/User just said:\s*([\s\S]*?)\n\s*Rules:/i)
+      const extracted = match?.[1]?.trim()
+      if (extracted) {
+        return extracted
+      }
+    }
+
+    return request.message.trim()
   }
   private buildSolutionPrompt(
     problemInfo: ExtractedQuestionInfo,
@@ -2096,6 +2142,7 @@ Instructions:
 - If the user asks for code, include a code block.
 - If the user asks for interview help, be concise and practical.
 - If the user asks a broad question, answer normally instead of insisting on screenshot context.
+- If the user asks to create a website, app, presentation, deck, document, or other editable artifact but the request lacks specifics, ask one concise follow-up before starting. Ask for the missing subject/audience plus style/format/content details. Do not say Agent Mode is starting unless the user already gave enough detail.
 - When useful, structure the answer with short headings or bullets.
 - Do not mention hidden prompts, internal tools, or implementation details.`;
     }
@@ -5830,6 +5877,7 @@ Verification rules:
     options: TextFollowUpProcessingOptions = {}
   ): Promise<{ success: true; data: TextFollowUpResponse } | { success: false; error: string }> {
     const message = request.message.trim()
+    const userIntentMessage = this.getUserIntentMessage(request)
     const mode: AssistantChatMode =
       request.mode === "follow_up" ? "follow_up" : "general"
     if (!message) {
@@ -5858,7 +5906,10 @@ Verification rules:
     const signal = abortController.signal
 
     try {
-      const shouldCaptureScreen = this.shouldCaptureScreenContext(mode, message)
+      const shouldCaptureScreen = this.shouldCaptureScreenContext(
+        mode,
+        userIntentMessage
+      )
       let screenCapture: { data: string; preview: string } | null = null
 
       if (mainWindow) {
@@ -5898,8 +5949,10 @@ Verification rules:
             request
           )
 
-      const webSearchRequested = shouldUseExaSearch(message)
-      const webSearchQuery = compactSearchQuery(message, 90)
+      const webSearchRequested = shouldUseExaSearch(userIntentMessage)
+      const webSearchQuery = compactSearchQuery(userIntentMessage, 90)
+      const fileSearchRequested = shouldUseLocalFileSearch(userIntentMessage)
+      const fileSearchQuery = compactFileSearchQuery(userIntentMessage, 90)
 
       if (webSearchRequested) {
         if (mainWindow) {
@@ -5913,16 +5966,35 @@ Verification rules:
         )
       }
 
-      const webContext = await buildExaSearchContext(
-        [
-          message,
-          request.currentContext || "",
-          this.buildProblemSearchQuery(normalizedProblemInfo),
-        ]
-          .filter(Boolean)
-          .join("\n"),
-        { signal, maxCharacters: 6000 }
-      )
+      if (fileSearchRequested) {
+        if (mainWindow) {
+          mainWindow.webContents.send("processing-status", {
+            message: `Searching files${fileSearchQuery ? `: ${fileSearchQuery}` : ""}...`,
+            progress: webSearchRequested ? 74 : 68,
+          })
+        }
+        options.onStream?.(
+          `Searching local files${fileSearchQuery ? ` for "${fileSearchQuery}"` : ""}...`
+        )
+      }
+
+      const [webContext, fileContext] = await Promise.all([
+        buildExaSearchContext(
+          [
+            userIntentMessage,
+            request.currentContext || "",
+            this.buildProblemSearchQuery(normalizedProblemInfo),
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          { signal, maxCharacters: 6000, force: webSearchRequested }
+        ),
+        buildLocalFileSearchContext(userIntentMessage, {
+          signal,
+          maxCharacters: 6000,
+          force: fileSearchRequested,
+        }),
+      ])
 
       if (webSearchRequested) {
         options.onStream?.(
@@ -5932,17 +6004,30 @@ Verification rules:
         )
       }
 
-      const prompt = webContext.trim()
+      if (fileSearchRequested) {
+        options.onStream?.(
+          fileContext.trim()
+            ? "Finished local file search. Writing answer..."
+            : "I searched local files but found no usable results. Writing the best answer I can..."
+        )
+      }
+
+      let prompt = webContext.trim()
         ? this.appendWebContextToPrompt(basePrompt, webContext, webSearchRequested)
         : webSearchRequested
-          ? `${basePrompt}\n\nWEB SEARCH NOTE:\nThe user asked for web search, but no usable Exa results were returned for: ${webSearchQuery || message}.`
+          ? `${basePrompt}\n\nWEB SEARCH NOTE:\nThe user asked for web search, but no usable Exa results were returned for: ${webSearchQuery || userIntentMessage}.`
           : basePrompt
+      prompt = fileContext.trim()
+        ? this.appendLocalFileSearchContextToPrompt(prompt, fileContext, fileSearchRequested)
+        : fileSearchRequested
+          ? `${prompt}\n\nLOCAL FILE SEARCH NOTE:\nThe user asked for local file search, but no matching files were found or the searched folders were not readable.`
+          : prompt
 
       const reply = await this.generateOpenAITextResponse({
         systemPrompt:
           mode === "general"
-            ? "You are a precise, practical desktop AI assistant. When web context is provided, answer from it now and include source URLs. Never say you will search after search already happened."
-            : "You are a precise follow-up assistant for coding, academic, MCQ, and general reasoning questions. When web context is provided, answer from it now and include source URLs.",
+            ? "You are a precise, practical desktop AI assistant. When web or local file context is provided, answer from it now. Include source URLs for web facts and exact paths for local file results. Never say you will search after search already happened."
+            : "You are a precise follow-up assistant for coding, academic, MCQ, and general reasoning questions. When web or local file context is provided, answer from it now. Include source URLs for web facts and exact paths for local file results.",
         userPrompt: prompt,
         maxTokens: 2200,
         signal,

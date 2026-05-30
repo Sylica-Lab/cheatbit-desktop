@@ -83,6 +83,10 @@ export function getBuiltInGroqFallbackApiKey(): string {
   )
 }
 
+export function getBuiltInDeepgramApiKey(): string {
+  return getEnvApiKey("DEEPGRAM_API_KEY")
+}
+
 export function getBuiltInHuggingFaceApiKey(): string {
   return (
     getEnvApiKey("HUGGINGFACE_API_TOKEN") || getEnvApiKey("HF_TOKEN")

@@ -1101,6 +1101,10 @@ export class GuideCursorController {
     }
 
     function handleGuideVoiceEvent(event) {
+      if (event.owner && event.owner !== "cursor") {
+        return;
+      }
+
       if (!voiceState.active && event.type !== "error") {
         return;
       }
@@ -1194,7 +1198,8 @@ export class GuideCursorController {
         });
         const startResponse = await window.electronAPI.startVoiceRealtime({
           instructions: VOICE_INSTRUCTIONS,
-          voice: "marin"
+          voice: "marin",
+          owner: "cursor"
         });
 
         if (!startResponse.success) {

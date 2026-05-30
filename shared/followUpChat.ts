@@ -23,6 +23,7 @@ export interface FollowUpChatTurn {
 export interface TextFollowUpRequest {
   requestId?: string;
   message: string;
+  rawMessage?: string;
   currentContext: string;
   chatHistory?: FollowUpChatTurn[];
   mode?: AssistantChatMode;
@@ -42,16 +43,16 @@ export interface TextFollowUpStreamEvent {
 }
 
 export type VoiceRealtimeEvent =
-  | { type: "ready" }
-  | { type: "session_updated" }
-  | { type: "speech_started" }
-  | { type: "speech_stopped" }
-  | { type: "input_transcript_delta"; delta: string }
-  | { type: "input_transcript"; transcript: string }
-  | { type: "text_delta"; text: string }
-  | { type: "audio_delta"; audio: string }
-  | { type: "response_done" }
-  | { type: "error"; error: string };
+  | { type: "ready"; owner?: "widget" | "cursor" }
+  | { type: "session_updated"; owner?: "widget" | "cursor" }
+  | { type: "speech_started"; owner?: "widget" | "cursor" }
+  | { type: "speech_stopped"; owner?: "widget" | "cursor" }
+  | { type: "input_transcript_delta"; delta: string; owner?: "widget" | "cursor" }
+  | { type: "input_transcript"; transcript: string; owner?: "widget" | "cursor" }
+  | { type: "text_delta"; text: string; owner?: "widget" | "cursor" }
+  | { type: "audio_delta"; audio: string; owner?: "widget" | "cursor" }
+  | { type: "response_done"; owner?: "widget" | "cursor" }
+  | { type: "error"; error: string; owner?: "widget" | "cursor" };
 
 export interface FollowUpChatMessage extends FollowUpChatTurn {
   id: string;
@@ -117,6 +118,7 @@ export type BrowserAgentAction =
   | { type: "download_file"; targetId: string; suggestedPath?: string }
   | { type: "system_open"; target: string }
   | { type: "system_list_dir"; path: string; recursive?: boolean; pattern?: string }
+  | { type: "system_search_files"; query: string; maxResults?: number }
   | { type: "system_read_file"; path: string; encoding?: "utf8" | "base64" }
   | {
       type: "system_write_file"

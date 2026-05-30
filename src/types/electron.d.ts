@@ -139,6 +139,13 @@ export interface ElectronAPI {
     status: string
     error?: string
   }>
+  requestScreenCaptureAccess: (payload?: {
+    openSettingsOnFailure?: boolean
+  }) => Promise<{
+    granted: boolean
+    status: string
+    error?: string
+  }>
   listChatThreads: (payload?: {
     mode?: AssistantChatMode
   }) => Promise<
@@ -198,6 +205,8 @@ export interface ElectronAPI {
   startVoiceRealtime: (payload: {
     instructions: string
     voice?: string
+    owner?: "widget" | "cursor"
+    provider?: "openai" | "deepgram"
   }) => Promise<
     { success: true; data: { model: string } } | { success: false; error: string }
   >

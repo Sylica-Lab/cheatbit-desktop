@@ -19,7 +19,7 @@ export function GeneralChatPanel({
         mode="general"
         computerTaskRequest={computerTaskRequest}
         onComputerTaskRequestConsumed={onComputerTaskRequestConsumed}
-        placeholder="Message Sylica AI..."
+        placeholder="Ask Sylica, search web, or find files..."
         maxHeightClassName="max-h-[22rem]"
         className="w-full min-w-0"
       />
