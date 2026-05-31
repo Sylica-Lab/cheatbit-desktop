@@ -30,21 +30,21 @@ export const GENERAL_CHAT_QUERY_KEY = ["general_chat"] as const
 const LIVE_AUDIO_SAMPLE_RATE = 24000
 const LIVE_AUDIO_FLUSH_INTERVAL_MS = 1600
 const VOICE_AUDIO_SAMPLE_RATE = 24000
-const VOICE_CLEAR_SPEECH_THRESHOLD = 0.028
-const VOICE_REQUIRED_CLEAR_SPEECH_MS = 480
+const VOICE_CLEAR_SPEECH_THRESHOLD = 0.018
+const VOICE_REQUIRED_CLEAR_SPEECH_MS = 260
 const VOICE_PREROLL_MS = 260
 const VOICE_TRAILING_SILENCE_MS = 420
 const VOICE_SERVER_END_SILENCE_MS = 920
 const VOICE_SILENCE_MS = 850
-const VOICE_MIN_SPEECH_MS = 520
+const VOICE_MIN_SPEECH_MS = 300
 const VOICE_MAX_SEGMENT_MS = 12_000
-const VOICE_THINKING_TIMEOUT_MS = 8500
+const VOICE_THINKING_TIMEOUT_MS = 15_000
 const VOICE_NOISE_FLOOR_INITIAL = 0.014
 const VOICE_NOISE_FLOOR_MIN = 0.004
 const VOICE_NOISE_FLOOR_MAX = 0.06
-const VOICE_SPEECH_NOISE_RATIO = 1.7
-const VOICE_SPEECH_ABOVE_NOISE = 0.012
-const VOICE_MIN_INTENT_WORDS = 3
+const VOICE_SPEECH_NOISE_RATIO = 1.35
+const VOICE_SPEECH_ABOVE_NOISE = 0.006
+const VOICE_MIN_INTENT_WORDS = 2
 const VOICE_MEMORY_STORAGE_KEY = "sylica.voiceCompanionMemory.v1"
 const VOICE_TRANSCRIPT_STORAGE_KEY = "sylica.voiceTranscript.v1"
 const VOICE_TRANSCRIPT_EVENT = "sylica-voice-transcript-updated"
@@ -189,6 +189,12 @@ function persistVoiceRealtimeProvider(provider: VoiceRealtimeProvider) {
   } catch (_error) {
     // Ignore storage failures in hardened webviews.
   }
+}
+
+function isVoiceRealtimeRateLimitError(message: string): boolean {
+  return /rate\s*limit|limit\s*exceeded|too many requests|try again (?:in|after)|requests per|tokens per|\b429\b/i.test(
+    message
+  )
 }
 
 function renderMessageContent(content: string, compact: boolean = false) {
@@ -772,7 +778,7 @@ function normalizeAgentPrompt(transcript: string) {
 function normalizeVoiceComputerTask(transcript: string) {
   const normalized = normalizeCommandCandidate(transcript)
 
-  return `${normalized}. Treat this as a local Windows computer-control task. Prefer local apps, shell, files, OS APIs, keyboard/media keys, or UI automation. Do not use a browser or web search unless the user explicitly asks for a website, web search, or online content.`
+  return `${normalized}. Treat this as a desktop computer-control task on the current machine. Use the browser for websites, web apps, SaaS dashboards, portals, login pages, online accounts, or company/product names. Use local apps, files, folders, OS APIs, keyboard/media keys, or UI automation for clearly local desktop tasks.`
 }
 
 function isLikelyLocalComputerReference(text: string) {
@@ -1116,6 +1122,7 @@ export function AssistantChat({
   const voiceOutboundSendQueueRef = useRef<Promise<void>>(Promise.resolve())
   const voiceNoiseFloorRef = useRef(VOICE_NOISE_FLOOR_INITIAL)
   const voiceThinkingTimeoutRef = useRef<number | null>(null)
+  const voiceReconnectAttemptsRef = useRef(0)
   const voicePlaybackContextRef = useRef<AudioContext | null>(null)
   const voicePlaybackTimeRef = useRef(0)
   const voicePlaybackSourcesRef = useRef<AudioBufferSourceNode[]>([])
@@ -2379,7 +2386,17 @@ export function AssistantChat({
     }
 
     showToast("Voice Computer Use", `Starting: ${command.task}`, "neutral")
+    setVoiceStatus("Starting computer use")
     await startComputerUseTask(command.task, { fromVoice: true })
+    if (voiceRealtimeProvider === "openai" && globalVoiceSessionActive) {
+      void window.electronAPI
+        .requestVoiceRealtimeResponse({
+          directive: `[system] The user's computer-use command has been accepted and is starting now. Say one short acknowledgement only. Do not explain modes or tools. User command: ${transcript}`,
+        })
+        .catch(() => {
+          // If the spoken acknowledgement fails, the computer task still runs.
+        })
+    }
     return true
   }
 
@@ -2572,6 +2589,16 @@ ${trimmedReply.slice(0, 5000)}`
     return false
   }
 
+  const getVoiceChatHistory = useCallback((): FollowUpChatTurn[] => {
+    return messages
+      .filter((message) => !message.pending)
+      .map((message) => ({
+        role: message.role,
+        content: message.content,
+      }))
+      .slice(-12)
+  }, [messages])
+
   const submitMessage = async (
     rawMessage?: string,
     options: { voice?: boolean } = {}
@@ -2710,13 +2737,7 @@ ${trimmedReply.slice(0, 5000)}`
         setActiveThreadId(nextThread.id)
       }
 
-      const chatHistory: FollowUpChatTurn[] = messages
-        .filter((message) => !message.pending)
-        .map((message) => ({
-          role: message.role,
-          content: message.content,
-        }))
-        .slice(-12)
+      const chatHistory = getVoiceChatHistory()
 
       if (isPersistedMode && threadId) {
         const saveUserMessage = await window.electronAPI.appendChatMessage({
@@ -2967,6 +2988,7 @@ ${trimmedReply.slice(0, 5000)}`
     setIsVoiceCompanionHearing(false)
     if (!voiceAudioStoppingRef.current) {
       setVoiceStatus("Thinking")
+      scheduleVoiceThinkingTimeout()
     }
   }
 
@@ -3021,6 +3043,9 @@ ${trimmedReply.slice(0, 5000)}`
       voiceOutboundSegmentMsRef.current = voiceOutboundCandidateSpeechMsRef.current
       enqueueRealtimeVoiceAudio(voiceOutboundPreRollRef.current)
       voiceOutboundPreRollRef.current = []
+      beginVoiceUserTranscript()
+      setVoiceLastHeard("Listening...")
+      setVoiceStatus("Listening")
       setIsVoiceCompanionHearing(true)
       return true
     }
@@ -3344,12 +3369,17 @@ ${trimmedReply.slice(0, 5000)}`
   }, [])
 
   const finishVoiceUserTranscriptFromDraft = useCallback(
-    (fallbackText = "No clear voice instruction heard") => {
+    (fallbackText = "") => {
       const transcript =
-        voiceUserTranscriptDraftRef.current.trim() || fallbackText
+        voiceUserTranscriptDraftRef.current.trim() || fallbackText.trim()
+      if (!transcript) {
+        discardVoiceUserTranscript()
+        return
+      }
+
       finishVoiceUserTranscript(transcript)
     },
-    [finishVoiceUserTranscript]
+    [discardVoiceUserTranscript, finishVoiceUserTranscript]
   )
 
   const clearVoiceThinkingTimeout = useCallback(() => {
@@ -3378,9 +3408,7 @@ ${trimmedReply.slice(0, 5000)}`
       setIsVoiceSpeaking(false)
       setVoiceStatus("Listening")
       setVoiceLastHeard((previousTranscript) =>
-        previousTranscript === "Listening..."
-          ? "No clear voice instruction heard"
-          : previousTranscript
+        previousTranscript === "Listening..." ? "" : previousTranscript
       )
     }, VOICE_THINKING_TIMEOUT_MS)
   }, [
@@ -3542,7 +3570,11 @@ ${trimmedReply.slice(0, 5000)}`
     resetVoiceSegment()
   }
 
-  const startVoiceCompanion = async () => {
+  const startVoiceCompanion = async (
+    providerOverride?: VoiceRealtimeProvider
+  ) => {
+    const activeRealtimeProvider = providerOverride || voiceRealtimeProvider
+
     if (
       !isPersistedMode ||
       isLiveSessionActive ||
@@ -3559,6 +3591,8 @@ ${trimmedReply.slice(0, 5000)}`
       )
       return
     }
+
+    let openedStream: MediaStream | null = null
 
     try {
       globalVoiceManualStopAt = 0
@@ -3584,6 +3618,7 @@ ${trimmedReply.slice(0, 5000)}`
           autoGainControl: true,
         },
       })
+      openedStream = stream
 
       const AudioContextConstructor =
         window.AudioContext || (window as any).webkitAudioContext
@@ -3613,7 +3648,7 @@ ${trimmedReply.slice(0, 5000)}`
         ),
         voice: "marin",
         owner: "widget",
-        provider: voiceRealtimeProvider,
+        provider: activeRealtimeProvider,
       })
 
       if (!startResponse.success) {
@@ -3656,7 +3691,7 @@ ${trimmedReply.slice(0, 5000)}`
         const resampledSamples = resampleAudio(monoSamples, audioContext.sampleRate)
         const pcmChunk = float32ToInt16(resampledSamples)
 
-        if (voiceRealtimeProvider === "deepgram") {
+        if (activeRealtimeProvider === "deepgram") {
           enqueueRealtimeVoiceAudio([pcmChunk])
           const isSpeech = rms >= getRealtimeVoiceSpeechThreshold()
           if (isSpeech !== voiceIsSpeechActiveRef.current) {
@@ -3679,6 +3714,7 @@ ${trimmedReply.slice(0, 5000)}`
       await audioContext.resume()
 
       voiceAudioStreamRef.current = stream
+      openedStream = null
       voiceAudioContextRef.current = audioContext
       voiceAudioSourceNodeRef.current = sourceNode
       voiceAudioProcessorNodeRef.current = processorNode
@@ -3689,6 +3725,9 @@ ${trimmedReply.slice(0, 5000)}`
       setIsVoiceCompanionActive(true)
       setVoiceStatus(`Listening on ${startResponse.data.model}`)
     } catch (error) {
+      if (openedStream) {
+        openedStream.getTracks().forEach((track) => track.stop())
+      }
       stopVoiceCompanion()
       const message =
         error instanceof Error ? error.message : "Failed to start voice chat."
@@ -3704,6 +3743,25 @@ ${trimmedReply.slice(0, 5000)}`
           "Deepgram key was not found in .env. Add it, then start voice again.",
           "error"
         )
+      } else if (
+        activeRealtimeProvider === "openai" &&
+        isVoiceRealtimeRateLimitError(message)
+      ) {
+        setVoiceRealtimeProvider("deepgram")
+        persistVoiceRealtimeProvider("deepgram")
+        voiceReconnectAttemptsRef.current = 0
+        setVoiceStatus("OpenAI cooling down, switching to DG")
+        showToast(
+          "Voice Companion",
+          "OpenAI realtime is cooling down. Switching voice to Deepgram.",
+          "neutral"
+        )
+        window.setTimeout(() => {
+          if (globalVoiceManualStopAt > 0) {
+            return
+          }
+          void startVoiceCompanion("deepgram")
+        }, 700)
       } else {
         showToast("Voice Companion", message, "error")
       }
@@ -3765,6 +3823,7 @@ ${trimmedReply.slice(0, 5000)}`
       setIsVoiceCompanionActive(true)
 
       if (event.type === "ready") {
+        voiceReconnectAttemptsRef.current = 0
         setVoiceStatus("Realtime voice ready")
         return
       }
@@ -3868,10 +3927,8 @@ ${trimmedReply.slice(0, 5000)}`
             return
           }
 
-          const response = await window.electronAPI.requestVoiceRealtimeResponse()
-          if (!response.success) {
-            throw new Error(response.error)
-          }
+          // OpenAI server VAD now creates the response automatically at turn end.
+          // Deepgram does the same inside its voice-agent session.
         })().catch((error) => {
           if (voiceAudioStoppingRef.current) {
             return
@@ -3945,6 +4002,47 @@ ${trimmedReply.slice(0, 5000)}`
       if (event.type === "error") {
         clearVoiceThinkingTimeout()
         console.error("Realtime voice error:", event.error)
+        const isRateLimited = isVoiceRealtimeRateLimitError(event.error)
+        const shouldReconnect =
+          voiceReconnectAttemptsRef.current < 2 &&
+          !isRateLimited &&
+          !/api key|auth|unauthori[sz]ed|forbidden|quota|billing|permission/i.test(
+            event.error
+          )
+
+        if (shouldReconnect) {
+          voiceReconnectAttemptsRef.current += 1
+          setVoiceStatus("Reconnecting voice")
+          stopVoiceCompanion()
+          window.setTimeout(() => {
+            if (globalVoiceManualStopAt > 0) {
+              return
+            }
+            void startVoiceCompanion()
+          }, 700)
+          return
+        }
+
+        if (isRateLimited && voiceRealtimeProvider === "openai") {
+          voiceReconnectAttemptsRef.current = 0
+          setVoiceRealtimeProvider("deepgram")
+          persistVoiceRealtimeProvider("deepgram")
+          stopVoiceCompanion()
+          setVoiceStatus("OpenAI cooling down, switching to DG")
+          showToast(
+            "Voice Companion",
+            "OpenAI realtime hit a cooldown. Switching voice to Deepgram.",
+            "neutral"
+          )
+          window.setTimeout(() => {
+            if (globalVoiceManualStopAt > 0) {
+              return
+            }
+            void startVoiceCompanion("deepgram")
+          }, 700)
+          return
+        }
+
         stopVoiceCompanion()
         globalVoiceSessionActive = false
         emitVoiceActive(false)
@@ -3979,6 +4077,7 @@ ${trimmedReply.slice(0, 5000)}`
     playVoiceAudioDelta,
     scheduleVoiceThinkingTimeout,
     showToast,
+    voiceRealtimeProvider,
   ])
 
   useEffect(() => {

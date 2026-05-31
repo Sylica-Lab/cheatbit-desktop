@@ -221,9 +221,9 @@ export const MODEL_OPTIONS: Record<
         description: "Balanced vision model for problem extraction",
       },
       {
-        id: "gpt-4o-mini",
-        name: "gpt-4o-mini",
-        description: "Faster, more cost-effective option",
+        id: "gpt-4.1-mini",
+        name: "gpt-4.1-mini",
+        description: "Fast fallback that avoids the GPT-4o mini rate-limit bucket",
       },
     ],
     solutionModel: [
@@ -248,9 +248,9 @@ export const MODEL_OPTIONS: Record<
         description: "Strong overall performance for coding tasks",
       },
       {
-        id: "gpt-4o-mini",
-        name: "gpt-4o-mini",
-        description: "Faster, more cost-effective option",
+        id: "gpt-4.1-mini",
+        name: "gpt-4.1-mini",
+        description: "Fast fallback that avoids the GPT-4o mini rate-limit bucket",
       },
     ],
     debuggingModel: [
@@ -275,9 +275,9 @@ export const MODEL_OPTIONS: Record<
         description: "Best for analyzing code and error messages",
       },
       {
-        id: "gpt-4o-mini",
-        name: "gpt-4o-mini",
-        description: "Faster, more cost-effective option",
+        id: "gpt-4.1-mini",
+        name: "gpt-4.1-mini",
+        description: "Fast fallback that avoids the GPT-4o mini rate-limit bucket",
       },
     ],
   },

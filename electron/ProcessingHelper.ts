@@ -432,27 +432,38 @@ export class ProcessingHelper {
   }
 
   private getOpenAILiveModel(): string {
-    return (process.env.OPENAI_LIVE_MODEL || "").trim() || "gpt-4o-mini"
+    const configuredModel = (process.env.OPENAI_LIVE_MODEL || "").trim()
+    if (configuredModel && configuredModel !== "gpt-4o-mini") {
+      return configuredModel
+    }
+
+    return "gpt-4.1-mini"
   }
 
   private getOpenAILiveTranscriptionModel(): string {
     const configuredModel = (process.env.OPENAI_LIVE_TRANSCRIPTION_MODEL || "").trim()
     if (!configuredModel) {
-      return "gpt-4o-mini-transcribe"
+      return "whisper-1"
+    }
+
+    if (configuredModel === "whisper-1") {
+      return configuredModel
     }
 
     if (
       configuredModel === "gpt-4o-mini-transcribe" ||
-      configuredModel === "gpt-4o-transcribe" ||
-      configuredModel === "whisper-1"
+      configuredModel === "gpt-4o-transcribe"
     ) {
-      return configuredModel
+      console.warn(
+        `OPENAI_LIVE_TRANSCRIPTION_MODEL is set to ${configuredModel}. Using whisper-1 to avoid the GPT-4o transcription rate limit.`
+      )
+      return "whisper-1"
     }
 
     console.warn(
-      `Unsupported OpenAI live transcription model "${configuredModel}". Falling back to gpt-4o-mini-transcribe.`
+      `Unsupported OpenAI live transcription model "${configuredModel}". Falling back to whisper-1.`
     )
-    return "gpt-4o-mini-transcribe"
+    return "whisper-1"
   }
 
   private usesReasoningOpenAIChatShape(model: string): boolean {
@@ -649,12 +660,8 @@ export class ProcessingHelper {
     )
   }
 
-  private getLiveAudioTranscriptionClient(): OpenAI {
-    return this.getDirectOpenAIClient()
-  }
-
   public ensureLiveAudioTranscriptionReady(): void {
-    this.getLiveAudioTranscriptionClient()
+    this.getGroqClient()
   }
 
   private getAudioExtension(mimeType: string): string {
@@ -4443,13 +4450,29 @@ Verification rules:
       }
     )
 
+    const transcriptionPrompt =
+      "This is a technical interview conversation about coding, algorithms, system design, software engineering, and behavioral interview questions."
+
+    try {
+      const groqResponse = await this.createGroqTranscription({
+        file,
+        model: this.getGroqAudioTranscriptionModel(),
+        language: "en",
+        response_format: "json",
+        prompt: transcriptionPrompt,
+      })
+
+      return typeof groqResponse.text === "string" ? groqResponse.text.trim() : ""
+    } catch (error) {
+      console.warn("Groq voice transcription failed; falling back to OpenAI whisper.", error)
+    }
+
     const response = await this.createOpenAITranscription({
       file,
       model: this.getOpenAILiveTranscriptionModel(),
       language: "en",
       response_format: "json",
-      prompt:
-        "This is a technical interview conversation about coding, algorithms, system design, software engineering, and behavioral interview questions.",
+      prompt: transcriptionPrompt,
     })
 
     return typeof response.text === "string" ? response.text.trim() : ""
@@ -6073,6 +6096,44 @@ Verification rules:
       if (this.currentExtraProcessingAbortController === abortController) {
         this.currentExtraProcessingAbortController = null
       }
+    }
+  }
+
+  public async summarizeScreenForVoice(
+    request: TextFollowUpRequest
+  ): Promise<{ success: true; data: { summary: string } } | { success: false; error: string }> {
+    const message = request.message.trim()
+    if (!message) {
+      return { success: false, error: "Voice transcript is required." }
+    }
+
+    const abortController = new AbortController()
+    try {
+      const language = await this.getLanguage()
+      const screenCapture = await this.captureScreenContextForChat()
+      const summary = await this.analyzeScreenContextForGroqChat(
+        screenCapture.data,
+        language,
+        request,
+        abortController.signal
+      )
+
+      return {
+        success: true,
+        data: {
+          summary: summary.trim(),
+        },
+      }
+    } catch (error) {
+      return {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to summarize the screen.",
+      }
+    } finally {
+      abortController.abort()
     }
   }
 

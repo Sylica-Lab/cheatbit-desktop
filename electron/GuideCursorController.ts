@@ -16,7 +16,10 @@ const MIN_AUTO_SELECTION_LENGTH = 2
 const MAX_AUTO_SELECTION_LENGTH = 1800
 const GUIDE_SHORTCUT_LONG_PRESS_MS = 560
 const RESULT_VISIBLE_MS = 14000
-const GUIDE_MODEL = process.env.OPENAI_GUIDE_MODEL?.trim() || "gpt-4o-mini"
+const GUIDE_MODEL =
+  process.env.OPENAI_GUIDE_MODEL?.trim() ||
+  process.env.OPENAI_LIVE_MODEL?.trim() ||
+  "gpt-4.1-mini"
 const isDev = process.env.NODE_ENV === "development"
 const WINDOWS_SELECTION_SCRIPT = `
 $ErrorActionPreference = "SilentlyContinue"

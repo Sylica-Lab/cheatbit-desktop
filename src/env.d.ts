@@ -235,6 +235,13 @@ interface ElectronAPI {
   requestVoiceRealtimeResponse: (payload?: { directive?: string }) => Promise<
     { success: true } | { success: false; error: string }
   >
+  summarizeVoiceRealtimeScreen: (payload: {
+    message: string
+    currentContext?: string
+    chatHistory?: FollowUpChatTurn[]
+  }) => Promise<
+    { success: true; data: { summary: string } } | { success: false; error: string }
+  >
   onVoiceRealtimeEvent: (
     callback: (event: VoiceRealtimeEvent) => void
   ) => () => void

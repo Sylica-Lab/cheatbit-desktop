@@ -26,20 +26,41 @@ import type {
 } from "../shared/followUpChat"
 import type { LocalPhoneRelayState } from "../shared/localPhoneRelay"
 import type { AgentState } from "../shared/agent"
-import { getBuiltInDeepgramApiKey } from "./builtInApiKeys"
+import {
+  getBuiltInDeepgramApiKey,
+  getBuiltInGroqApiKey,
+  getBuiltInGroqFallbackApiKey,
+} from "./builtInApiKeys"
 
 const TEXT_FOLLOW_UP_STREAM_EVENT = "text-follow-up-stream"
 const LOCAL_PHONE_RELAY_STATE_EVENT = "local-phone-relay-state"
 const VOICE_REALTIME_EVENT = "voice-realtime-event"
 const AGENT_STATE_EVENT = "agent-state"
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime"
-const OPENAI_REALTIME_MODEL = process.env.OPENAI_REALTIME_MODEL?.trim() || "gpt-realtime-2"
+const OPENAI_REALTIME_MODEL = "gpt-realtime-2"
 const OPENAI_REALTIME_VOICE = process.env.OPENAI_REALTIME_VOICE?.trim() || "marin"
 const OPENAI_REALTIME_PCM_RATE = 24000
+const OPENAI_REALTIME_TRANSCRIPTION_MODEL =
+  (
+    process.env.OPENAI_REALTIME_TRANSCRIPTION_MODEL ||
+    process.env.OPENAI_LIVE_TRANSCRIPTION_MODEL ||
+    ""
+  ).trim() || "whisper-1"
 const DEEPGRAM_AGENT_URL = "wss://agent.deepgram.com/v1/agent/converse"
 const DEEPGRAM_AGENT_LISTEN_MODEL = "flux-general-en"
 const DEEPGRAM_AGENT_SPEAK_MODEL = "aura-2-asteria-en"
 const DEEPGRAM_AGENT_PCM_RATE = 24000
+const DEEPGRAM_GROQ_THINK_URL =
+  process.env.DEEPGRAM_GROQ_THINK_URL?.trim() ||
+  "https://api.groq.com/openai/v1/chat/completions"
+const DEEPGRAM_GROQ_THINK_MODEL =
+  (
+    process.env.DEEPGRAM_GROQ_THINK_MODEL ||
+    process.env.GROQ_CHAT_MODEL ||
+    ""
+  ).trim() || "llama-3.3-70b-versatile"
+const DEEPGRAM_MANAGED_THINK_FALLBACK_MODEL =
+  process.env.DEEPGRAM_MANAGED_THINK_FALLBACK_MODEL?.trim() || "gpt-4.1-mini"
 const VOICE_SCREEN_REFRESH_MIN_MS = 2500
 const WEBSOCKET_READY_OPEN = 1
 
@@ -56,7 +77,34 @@ interface VoiceRealtimeSession {
   screenRefreshInFlight: boolean
   instructions: string
   assistantTranscript: string
+  lastUserTranscript: string
   keepAliveInterval?: NodeJS.Timeout
+}
+
+type DeepgramThinkSettings = {
+  provider: {
+    type: string
+    model: string
+    temperature: number
+  }
+  endpoint?: {
+    url: string
+    headers?: Record<string, string>
+  }
+  prompt: string
+  functions: Array<Record<string, unknown>>
+}
+
+function getOpenAIRealtimeTranscriptionModel(): string {
+  const configuredModel = OPENAI_REALTIME_TRANSCRIPTION_MODEL.trim()
+  if (/^gpt-4o(?:-mini)?-transcribe$/i.test(configuredModel)) {
+    console.warn(
+      `OpenAI realtime transcription model "${configuredModel}" is rate-limited for this key. Using whisper-1 instead.`
+    )
+    return "whisper-1"
+  }
+
+  return configuredModel || "whisper-1"
 }
 
 function extractRealtimeText(value: unknown): string {
@@ -274,7 +322,7 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
       session.socket.send(
         JSON.stringify({
           type: "UpdatePrompt",
-          prompt: instructions,
+          prompt: buildDeepgramThinkPrompt(instructions),
         })
       )
       return
@@ -298,14 +346,14 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
                 type: "near_field",
               },
               transcription: {
-                model: "gpt-4o-mini-transcribe",
+                model: getOpenAIRealtimeTranscriptionModel(),
               },
               turn_detection: {
                 type: "server_vad",
-                threshold: 0.58,
-                prefix_padding_ms: 280,
-                silence_duration_ms: 680,
-                create_response: false,
+                threshold: 0.35,
+                prefix_padding_ms: 360,
+                silence_duration_ms: 620,
+                create_response: true,
                 interrupt_response: true,
               },
             },
@@ -320,6 +368,81 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
         },
       })
     )
+  }
+
+  const buildDeepgramScreenFunctions = (): Array<Record<string, unknown>> => [
+    {
+      name: "get_current_screen_context",
+      description:
+        "Get a concise text summary of what is currently visible on the user's screen. Use this before answering screen, window, visible UI, or 'what do you see' questions.",
+      parameters: {
+        type: "object",
+        properties: {
+          question: {
+            type: "string",
+            description:
+              "The user's screen-related question or the visible thing they are asking about.",
+          },
+        },
+        required: ["question"],
+      },
+    },
+  ]
+
+  const buildDeepgramThinkPrompt = (instructions: string): string => `${instructions}
+
+Screen tool:
+- If the user asks what is visible, asks about their screen/window/display, or uses references like "this", "that", "here", or "current screen", you MUST call get_current_screen_context before answering.
+- Do not say you cannot see the screen. Use the tool result silently, then answer naturally.
+- Never read raw tool output, JSON, markdown headings, or hidden context aloud.`
+
+  const getUniqueDeepgramGroqKeys = (): string[] => {
+    const keys = [
+      getBuiltInGroqApiKey(),
+      getBuiltInGroqFallbackApiKey(),
+    ]
+      .map((key) => key.trim())
+      .filter(Boolean)
+
+    return Array.from(new Set(keys))
+  }
+
+  const buildDeepgramThinkSettings = (
+    instructions: string
+  ): DeepgramThinkSettings | DeepgramThinkSettings[] => {
+    const prompt = buildDeepgramThinkPrompt(instructions)
+    const functions = buildDeepgramScreenFunctions()
+    const groqThinkSettings = getUniqueDeepgramGroqKeys().map(
+      (apiKey): DeepgramThinkSettings => ({
+        provider: {
+          type: "open_ai",
+          model: DEEPGRAM_GROQ_THINK_MODEL,
+          temperature: 0.35,
+        },
+        endpoint: {
+          url: DEEPGRAM_GROQ_THINK_URL,
+          headers: {
+            authorization: `Bearer ${apiKey}`,
+          },
+        },
+        prompt,
+        functions,
+      })
+    )
+
+    const fallbackSettings: DeepgramThinkSettings = {
+      provider: {
+        type: "open_ai",
+        model: DEEPGRAM_MANAGED_THINK_FALLBACK_MODEL,
+        temperature: 0.35,
+      },
+      prompt,
+      functions,
+    }
+
+    return groqThinkSettings.length > 0
+      ? [...groqThinkSettings, fallbackSettings]
+      : fallbackSettings
   }
 
   const sendDeepgramVoiceAgentSettings = (
@@ -352,14 +475,7 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
               eager_eot_threshold: 0.55,
             },
           },
-          think: {
-            provider: {
-              type: "open_ai",
-              model: "gpt-4o-mini",
-              temperature: 0.35,
-            },
-            prompt: instructions,
-          },
+          think: buildDeepgramThinkSettings(instructions),
           speak: {
             provider: {
               type: "deepgram",
@@ -374,6 +490,85 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
         mip_opt_out: false,
       })
     )
+  }
+
+  const handleDeepgramFunctionCallRequest = async (
+    session: VoiceRealtimeSession,
+    payload: Record<string, any>
+  ): Promise<void> => {
+    const functionCalls = Array.isArray(payload.functions)
+      ? payload.functions
+      : Array.isArray(payload.function_calls)
+        ? payload.function_calls
+        : []
+
+    for (const functionCall of functionCalls) {
+      if (!functionCall || typeof functionCall !== "object") {
+        continue
+      }
+
+      const record = functionCall as Record<string, any>
+      const name = String(record.name || "").trim()
+      if (!name) {
+        continue
+      }
+
+      let question = session.lastUserTranscript
+      try {
+        const args =
+          typeof record.arguments === "string"
+            ? JSON.parse(record.arguments)
+            : record.arguments
+        if (args && typeof args.question === "string" && args.question.trim()) {
+          question = args.question.trim()
+        }
+      } catch (_error) {
+        // Fall back to the latest user transcript.
+      }
+
+      let content = ""
+      if (name === "get_current_screen_context") {
+        const result = await deps.processingHelper?.summarizeScreenForVoice({
+          message: question || "What is visible on the current screen?",
+          rawMessage: question || session.lastUserTranscript,
+          currentContext: "",
+          chatHistory: [],
+          mode: "general",
+          includeScreenContext: true,
+          voiceMode: true,
+        })
+
+        if (!result) {
+          content =
+            "Could not access current screen context: screen summary is unavailable"
+        } else if (result.success === false) {
+          content = `Could not access current screen context: ${result.error}`
+        } else if (result.data.summary.trim()) {
+          content = `Current visible screen context:\n${result.data.summary.trim()}`
+        } else {
+          content =
+            "Could not access current screen context: screen summary is empty"
+        }
+      } else {
+        content = `Unsupported function: ${name}`
+      }
+
+      if (
+        voiceRealtimeSession !== session ||
+        session.socket.readyState !== WEBSOCKET_READY_OPEN
+      ) {
+        return
+      }
+
+      session.socket.send(
+        JSON.stringify({
+          type: "FunctionCallResponse",
+          id: String(record.id || ""),
+          name,
+          content,
+        })
+      )
+    }
   }
 
   const handleVoiceRealtimeMessage = (
@@ -430,6 +625,7 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
         }
 
         if (role === "user") {
+          session.lastUserTranscript = content
           emitVoiceRealtimeEvent(session, {
             type: "input_transcript",
             transcript: content,
@@ -448,6 +644,15 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
           }
           return
         }
+      }
+
+      if (messageType === "FunctionCallRequest") {
+        void handleDeepgramFunctionCallRequest(session, payload)
+        return
+      }
+
+      if (messageType === "FunctionCallResponse") {
+        return
       }
 
       if (messageType === "AgentAudioDone") {
@@ -511,6 +716,16 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
       if (transcript) {
         emitVoiceRealtimeEvent(session, { type: "input_transcript", transcript })
       }
+      return
+    }
+
+    if (messageType === "conversation.item.input_audio_transcription.failed") {
+      const errorMessage = String(
+        payload.error?.message ||
+          payload.message ||
+          "Realtime voice could not transcribe that audio."
+      ).trim()
+      console.warn("Realtime input transcription failed:", errorMessage)
       return
     }
 
@@ -1345,6 +1560,7 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
       screenRefreshInFlight: false,
       instructions,
       assistantTranscript: "",
+      lastUserTranscript: "",
     }
     voiceRealtimeSession = session
 
@@ -1396,10 +1612,6 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
             }, 5000)
           } else {
             sendVoiceRealtimeSessionUpdate(session, instructions, voice)
-            settle({
-              success: true as const,
-              data: { model: OPENAI_REALTIME_MODEL },
-            })
           }
         } catch (error) {
           closeVoiceRealtimeSession()
@@ -1432,13 +1644,43 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
             lastServerError = String(
               parsed.error?.message || parsed.message || "Realtime voice failed."
             ).trim()
+            if (!settled) {
+              closeVoiceRealtimeSession()
+              settle({
+                success: false as const,
+                error: lastServerError,
+              })
+              return
+            }
           } else if (String(parsed.type || "") === "Error") {
             lastServerError = String(
               parsed.description || parsed.message || "Deepgram voice failed."
             ).trim()
+            if (!settled) {
+              closeVoiceRealtimeSession()
+              settle({
+                success: false as const,
+                error: lastServerError,
+              })
+              return
+            }
           }
         } catch (_error) {
           // Parsed again in the main handler; ignore pre-parse failures here.
+        }
+
+        if (provider === "openai" && !settled) {
+          try {
+            const parsed = JSON.parse(rawData) as Record<string, any>
+            if (String(parsed.type || "") === "session.updated") {
+              settle({
+                success: true as const,
+                data: { model: OPENAI_REALTIME_MODEL },
+              })
+            }
+          } catch (_error) {
+            // Main handler logs parse errors when relevant.
+          }
         }
 
         if (provider === "deepgram" && !settled) {
@@ -1609,6 +1851,64 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     )
 
     return { success: true as const }
+  })
+
+  ipcMain.handle("voice-realtime:summarize-screen", async (_event, payload) => {
+    const message = String(payload?.message || "").trim()
+    const currentContext = String(payload?.currentContext || "").trim()
+    const chatHistory = Array.isArray(payload?.chatHistory)
+      ? payload.chatHistory
+          .filter(
+            (entry: unknown): entry is FollowUpChatTurn => {
+              if (!entry || typeof entry !== "object") {
+                return false
+              }
+
+              const candidate = entry as {
+                role?: unknown
+                content?: unknown
+              }
+
+              return (
+                (candidate.role === "user" ||
+                  candidate.role === "assistant") &&
+                typeof candidate.content === "string"
+              )
+            }
+          )
+          .map((entry) => ({
+            role: entry.role,
+            content: entry.content.trim(),
+          }))
+          .filter((entry) => entry.content.length > 0)
+          .slice(-10)
+      : []
+
+    if (!message) {
+      return {
+        success: false as const,
+        error: "Voice transcript is required.",
+      }
+    }
+
+    const result = await deps.processingHelper?.summarizeScreenForVoice({
+      message,
+      rawMessage: message,
+      currentContext,
+      chatHistory,
+      mode: "general",
+      includeScreenContext: true,
+      voiceMode: true,
+    })
+
+    if (!result) {
+      return {
+        success: false as const,
+        error: "Screen summary is not available right now.",
+      }
+    }
+
+    return result
   })
 
   ipcMain.handle("voice-realtime:stop", async () => {

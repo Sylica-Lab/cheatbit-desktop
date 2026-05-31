@@ -17,6 +17,7 @@ import type {
   LiveInterviewState,
   LiveInterviewTranscriptData,
   PersistedChatMessage,
+  FollowUpChatTurn,
   TextFollowUpRequest,
   TextFollowUpStreamEvent,
   TextFollowUpResponse,
@@ -273,6 +274,14 @@ const electronAPI = {
   requestVoiceRealtimeResponse: (payload?: { directive?: string }) =>
     ipcRenderer.invoke("voice-realtime:request-response", payload || {}) as Promise<
       { success: true } | { success: false; error: string }
+    >,
+  summarizeVoiceRealtimeScreen: (payload: {
+    message: string
+    currentContext?: string
+    chatHistory?: FollowUpChatTurn[]
+  }) =>
+    ipcRenderer.invoke("voice-realtime:summarize-screen", payload) as Promise<
+      { success: true; data: { summary: string } } | { success: false; error: string }
     >,
   onVoiceRealtimeEvent: (callback: (event: VoiceRealtimeEvent) => void) => {
     const subscription = (_: unknown, event: VoiceRealtimeEvent) => callback(event)

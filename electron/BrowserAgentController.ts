@@ -451,6 +451,239 @@ function chooseExecutionMode(_task: string): ComputerUseExecutionMode {
   return "system"
 }
 
+function getPrimaryComputerTask(task: string): string {
+  return task
+    .replace(/\.{1,}\s*Treat this as (?:a\s+)?(?:local\s+Windows\s+)?(?:desktop\s+)?computer-control task[\s\S]*$/i, "")
+    .replace(/\s+/g, " ")
+    .replace(/[.。]+$/g, "")
+    .trim()
+}
+
+function getKnownPlatformOpenTarget(target: string): string | null {
+  const normalized = target.toLowerCase().replace(/[^\w\s.+-]/g, " ").replace(/\s+/g, " ").trim()
+  const home = os.homedir()
+  const folderTargets: Record<string, string> = {
+    desktop: path.join(home, "Desktop"),
+    downloads: path.join(home, "Downloads"),
+    download: path.join(home, "Downloads"),
+    documents: path.join(home, "Documents"),
+    document: path.join(home, "Documents"),
+    home,
+  }
+  if (folderTargets[normalized]) {
+    return folderTargets[normalized]
+  }
+
+  const winTargets: Record<string, string> = {
+    calculator: "calc.exe",
+    calc: "calc.exe",
+    notepad: "notepad.exe",
+    notes: "notepad.exe",
+    paint: "mspaint.exe",
+    "task manager": "taskmgr.exe",
+    taskmanager: "taskmgr.exe",
+    explorer: "explorer.exe",
+    "file explorer": "explorer.exe",
+    files: "explorer.exe",
+    settings: "ms-settings:",
+    "windows settings": "ms-settings:",
+    terminal: "wt.exe",
+    "windows terminal": "wt.exe",
+    powershell: "powershell.exe",
+    cmd: "cmd.exe",
+    "command prompt": "cmd.exe",
+    chrome: "chrome.exe",
+    "google chrome": "chrome.exe",
+    edge: "msedge.exe",
+    "microsoft edge": "msedge.exe",
+    firefox: "firefox.exe",
+    cursor: "Cursor.exe",
+    vscode: "code",
+    "vs code": "code",
+    "visual studio code": "code",
+    word: "winword.exe",
+    excel: "excel.exe",
+    powerpoint: "powerpnt.exe",
+  }
+
+  const macTargets: Record<string, string> = {
+    calculator: "Calculator",
+    calc: "Calculator",
+    notepad: "TextEdit",
+    notes: "Notes",
+    textedit: "TextEdit",
+    terminal: "Terminal",
+    settings: "System Settings",
+    "system settings": "System Settings",
+    "activity monitor": "Activity Monitor",
+    finder: "Finder",
+    chrome: "Google Chrome",
+    "google chrome": "Google Chrome",
+    safari: "Safari",
+    firefox: "Firefox",
+    cursor: "Cursor",
+    vscode: "Visual Studio Code",
+    "vs code": "Visual Studio Code",
+    "visual studio code": "Visual Studio Code",
+  }
+
+  if (process.platform === "darwin" && macTargets[normalized]) {
+    return macTargets[normalized]
+  }
+
+  if (process.platform === "win32" && winTargets[normalized]) {
+    return winTargets[normalized]
+  }
+
+  return null
+}
+
+function getPlatformOpenTarget(target: string): string {
+  const knownTarget = getKnownPlatformOpenTarget(target)
+  if (knownTarget) {
+    return knownTarget
+  }
+
+  return target.trim()
+}
+
+function extractOpenCommand(task: string): {
+  verb: string
+  target: string
+  rawTarget: string
+  explicitBrowser: boolean
+  explicitLocal: boolean
+} | null {
+  const match = task.match(
+    /^(?:please\s+)?(?:can you\s+|could you\s+|would you\s+)?(open|launch|start|run|go to|navigate to)\s+(?:the\s+|my\s+)?(.+?)$/i
+  )
+  if (!match?.[1] || !match?.[2]) {
+    return null
+  }
+
+  const verb = match[1].trim().toLowerCase()
+  const rawTarget = match[2].trim()
+  const explicitBrowser =
+    /^(?:go to|navigate to)$/i.test(verb) ||
+    /\b(?:website|web\s*site|site|web\s*app|browser|chrome|url|online|dashboard|portal|console|login|sign in|account)\b/i.test(
+      rawTarget
+    )
+  const explicitLocal =
+    /\b(?:local|installed|native\s+app|desktop\s+app|on\s+(?:my\s+)?(?:pc|computer|mac|desktop)|on\s+this\s+(?:pc|computer|mac)|folder|file)\b/i.test(
+      rawTarget
+    )
+
+  const target = rawTarget
+    .replace(
+      /\s+(?:website|web\s*site|site|web\s*app|browser|chrome|url|online|dashboard|portal|console|login|sign in|account|app|application|program|folder|window)$/i,
+      ""
+    )
+    .replace(/\s+/g, " ")
+    .trim()
+
+  if (!target || /^(?:it|this|that|app|application|program|folder)$/i.test(target)) {
+    return null
+  }
+
+  return { verb, target, rawTarget, explicitBrowser, explicitLocal }
+}
+
+function isLocalPathishTarget(target: string): boolean {
+  return (
+    path.isAbsolute(target) ||
+    /^[a-z]:[\\/]/i.test(target) ||
+    /^~[\\/]/.test(target) ||
+    /[\\/]/.test(target) ||
+    /\.[a-z0-9]{1,8}$/i.test(target)
+  )
+}
+
+function inferGenericWebOpenUrl(target: string): string | null {
+  const cleaned = target
+    .trim()
+    .replace(/^the\s+/i, "")
+    .replace(/[^\w\s.-]/g, " ")
+    .replace(/\b(?:dashboard|admin|console|portal|login|signin|sign\s+in|account)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+
+  if (!cleaned) {
+    return null
+  }
+
+  const directUrl = cleaned.match(
+    /^((?:https?:\/\/|www\.)[^\s]+|(?:[a-z0-9-]+\.)+(?:com|org|net|io|ai|dev|app|co|in|edu|gov)(?:\/[^\s]*)?)$/i
+  )
+  if (directUrl?.[1]) {
+    return normalizeInferredUrl(directUrl[1])
+  }
+
+  const words = cleaned.toLowerCase().split(/\s+/).filter(Boolean)
+  const domainSlug = words.join("").replace(/[^a-z0-9-]/g, "")
+  if (domainSlug && words.length <= 2) {
+    return `https://www.${domainSlug}.com`
+  }
+
+  return `https://www.google.com/search?q=${encodeURIComponent(cleaned)}`
+}
+
+function inferFastSystemOpen(task: string): {
+  action: BrowserAgentAction
+  statusMessage: string
+  resultMessage: string
+} | null {
+  const primaryTask = getPrimaryComputerTask(task)
+  if (!primaryTask) {
+    return null
+  }
+
+  if (
+    /\b(?:and then|then|after that|afterwards|login|log in|sign in|install|uninstall|delete|remove|rename|copy|move|click|type|write|fill|download)\b/i.test(
+      primaryTask
+    )
+  ) {
+    return null
+  }
+
+  const directUrl = inferNavigationUrl(primaryTask)
+  if (directUrl && /\b(?:open|launch|start|go to|navigate to)\b/i.test(primaryTask)) {
+    return {
+      action: { type: "system_open", target: directUrl },
+      statusMessage: "Opening site instantly...",
+      resultMessage: `Opened ${directUrl}.`,
+    }
+  }
+
+  const openCommand = extractOpenCommand(primaryTask)
+  if (!openCommand || !/^(?:open|launch|start|run)$/i.test(openCommand.verb)) {
+    return null
+  }
+
+  const knownLocalTarget = getKnownPlatformOpenTarget(openCommand.target)
+  const shouldOpenLocally =
+    Boolean(knownLocalTarget) ||
+    openCommand.explicitLocal ||
+    isLocalPathishTarget(openCommand.target)
+
+  if (!shouldOpenLocally) {
+    const webUrl = inferGenericWebOpenUrl(openCommand.target)
+    if (webUrl) {
+      return {
+        action: { type: "system_open", target: webUrl },
+        statusMessage: "Opening in browser...",
+        resultMessage: `Opened ${webUrl}.`,
+      }
+    }
+  }
+
+  const openTarget = knownLocalTarget || getPlatformOpenTarget(openCommand.target)
+  return {
+    action: { type: "system_open", target: openTarget },
+    statusMessage: `Opening ${openCommand.target} instantly...`,
+    resultMessage: `Done - ${openCommand.target} is opening.`,
+  }
+}
+
 function truncateForMessage(value: string, limit = MAX_SYSTEM_OUTPUT_CHARS): string {
   const normalized = value.replace(/\r\n/g, "\n").trim()
   if (normalized.length <= limit) {
@@ -615,34 +848,23 @@ function inferNavigationUrl(task: string): string | null {
     return normalizeInferredUrl(directUrlMatch[1])
   }
 
-  const knownSites = [
-    { pattern: /\bgoogle docs\b/i, url: "https://docs.google.com" },
-    { pattern: /\bgoogle drive\b/i, url: "https://drive.google.com" },
-    { pattern: /\bgmail\b/i, url: "https://mail.google.com" },
-    { pattern: /\bgoogle calendar\b/i, url: "https://calendar.google.com" },
-    { pattern: /\bgoogle\b/i, url: "https://www.google.com" },
-    { pattern: /\bbing\b/i, url: "https://www.bing.com" },
-    { pattern: /\byoutube\b/i, url: "https://www.youtube.com" },
-    { pattern: /\bgithub\b/i, url: "https://github.com" },
-    { pattern: /\b(vs\s*code|visual studio code)\b/i, url: "https://code.visualstudio.com/download" },
-    { pattern: /\blinkedin\b/i, url: "https://www.linkedin.com" },
-    { pattern: /\btwitter\b|\bx\.com\b/i, url: "https://x.com" },
-    { pattern: /\breddit\b/i, url: "https://www.reddit.com" },
-    { pattern: /\bstack ?overflow\b/i, url: "https://stackoverflow.com" },
-    { pattern: /\bleetcode\b/i, url: "https://leetcode.com" },
-    { pattern: /\bhackerrank\b/i, url: "https://www.hackerrank.com" },
-  ]
-
-  for (const site of knownSites) {
-    if (site.pattern.test(normalized)) {
-      return site.url
-    }
-  }
-
   if (/\bsearch for\b/i.test(normalized)) {
     const query = extractTaskSearchQuery(normalized)
     if (query) {
       return `https://www.google.com/search?q=${encodeURIComponent(query)}`
+    }
+  }
+
+  const openCommand = extractOpenCommand(normalized)
+  if (openCommand) {
+    const knownLocalTarget = getKnownPlatformOpenTarget(openCommand.target)
+    if (
+      (openCommand.explicitBrowser && !openCommand.explicitLocal) ||
+      (!knownLocalTarget &&
+      !openCommand.explicitLocal &&
+      !isLocalPathishTarget(openCommand.target))
+    ) {
+      return inferGenericWebOpenUrl(openCommand.target)
     }
   }
 
@@ -1121,7 +1343,12 @@ export class BrowserAgentController {
         latestError: "",
       })
 
-      void this.runSession(this.session)
+      const fastSystemOpen = inferFastSystemOpen(normalizedTask)
+      if (fastSystemOpen) {
+        void this.runFastSystemAction(this.session, fastSystemOpen)
+      } else {
+        void this.runSession(this.session)
+      }
 
       return {
         success: true,
@@ -1353,6 +1580,105 @@ export class BrowserAgentController {
         : snapshot.title
     const textPreview = snapshot.bodyText.trim().replace(/\s+/g, " ").slice(0, 180)
     return [headingLine, textPreview].filter(Boolean).join(" - ").trim()
+  }
+
+  private async runFastSystemAction(
+    session: ActiveComputerUseSession,
+    fastAction: {
+      action: BrowserAgentAction
+      statusMessage: string
+      resultMessage: string
+    }
+  ): Promise<void> {
+    try {
+      if (!this.canEmitForSession(session)) {
+        return
+      }
+
+      session.currentAction = fastAction.statusMessage
+      session.currentUrl = "Local computer"
+      session.currentTitle = "System"
+      this.updateState({
+        status: "running",
+        threadId: session.thread.id,
+        task: session.task,
+        currentUrl: session.currentUrl,
+        currentTitle: session.currentTitle,
+        currentAction: fastAction.statusMessage,
+        stepCount: 0,
+        needsSecretInput: false,
+        latestError: "",
+      })
+
+      session.stepCount = 1
+      const result = await this.executeSystemAction(session, fastAction.action)
+      session.actionHistory.push(result.summary)
+
+      if (!this.canEmitForSession(session)) {
+        return
+      }
+
+      await this.appendAssistantMessage(
+        session.thread.id,
+        fastAction.resultMessage || result.summary,
+        session
+      )
+
+      if (!this.canEmitForSession(session)) {
+        return
+      }
+
+      this.updateState({
+        status: "completed",
+        threadId: session.thread.id,
+        task: session.task,
+        currentUrl: session.currentUrl,
+        currentTitle: session.currentTitle,
+        currentAction: "Task finished.",
+        stepCount: session.stepCount,
+        needsSecretInput: false,
+        latestError: "",
+      })
+      this.clearSession()
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Fast computer action failed."
+      if (!this.canContinueSession(session)) {
+        return
+      }
+
+      const handoffMessage = `Fast command failed: ${message}`
+      session.actionHistory.push(handoffMessage)
+      session.systemHistory.push(
+        `${handoffMessage}\nDo not stop. Continue manually with screen, keyboard, mouse, app search, or another non-command route.`
+      )
+      session.stepCount = Math.max(session.stepCount, 1)
+      session.currentAction = "Fast command failed, switching to manual computer use..."
+      session.latestError = ""
+      this.updateState({
+        status: "running",
+        threadId: session.thread.id,
+        task: session.task,
+        currentUrl: "Local computer",
+        currentTitle: "System",
+        currentAction: session.currentAction,
+        stepCount: session.stepCount,
+        needsSecretInput: false,
+        latestError: "",
+      })
+
+      await this.appendAssistantMessage(
+        session.thread.id,
+        "The quick command path failed, so I’m switching to manual computer control.",
+        session
+      )
+
+      if (!this.canContinueSession(session)) {
+        return
+      }
+
+      await this.runSession(session)
+    }
   }
 
   private async runSession(session: ActiveComputerUseSession): Promise<void> {
@@ -1658,7 +1984,7 @@ export class BrowserAgentController {
   }
 
   private getSystemTools(): any[] {
-    return [
+    const tools = [
       {
         type: "function",
         function: {
@@ -2030,13 +2356,45 @@ export class BrowserAgentController {
         },
       },
     ]
+    if (process.platform !== "win32") {
+      return tools.filter(
+        (tool) =>
+          !["system_run_powershell", "system_run_cmd"].includes(
+            String(tool.function?.name || "")
+          )
+      )
+    }
+
+    return tools
   }
 
   private buildSystemAgentInstructions(
     session: ActiveComputerUseSession,
     environment: string
   ): string {
-    return `You are Sylica, an autonomous AI agent operating the user's own Windows PC end-to-end. The user has explicitly granted you full unrestricted access for this task. You are part friend, part power-user, part research assistant â€” you carry yourself with personality: opinions, taste, dry humor when it fits.
+    const platformLabel =
+      process.platform === "darwin"
+        ? "macOS desktop"
+        : process.platform === "win32"
+          ? "Windows PC"
+          : `${process.platform} desktop`
+    const shellCapabilityLines =
+      process.platform === "win32"
+        ? `   â€¢ system_run_powershell(command, elevated?, cwd?)   â€” full unrestricted shell
+   â€¢ system_run_cmd(command, cwd?)                     â€” full unrestricted shell`
+        : "   â€¢ Windows-only shell tools are unavailable on this platform. Use system_open, files, screenshots, keyboard/mouse, and browser URLs instead."
+    const keyboardShortcutLines =
+      process.platform === "darwin"
+        ? `   â€¢ Browser address bar: cmd+l    â€¢ New tab: cmd+t      â€¢ Close tab: cmd+w
+   â€¢ Switch app: cmd+tab           â€¢ Spotlight/app search: cmd+space
+   â€¢ Settings: open System Settings with system_open("System Settings")`
+        : `   â€¢ Browser address bar: ctrl+l   â€¢ New tab: ctrl+t   â€¢ Close tab: ctrl+w
+   â€¢ Switch tab: ctrl+tab          â€¢ Reload: f5         â€¢ Find on page: ctrl+f
+   â€¢ Switch app: alt+tab           â€¢ Close window: alt+f4
+   â€¢ File Explorer: win+e          â€¢ Run dialog: win+r  â€¢ Lock screen: win+l
+   â€¢ Snipping tool: win+shift+s    â€¢ Settings: win+i    â€¢ Show desktop: win+d`
+
+    return `You are Sylica, an autonomous AI agent operating the user's own ${platformLabel} end-to-end. The user has explicitly granted you full unrestricted access for this task. You are part friend, part power-user, part research assistant â€” you carry yourself with personality: opinions, taste, dry humor when it fits.
 
 <task>
 ${session.task}
@@ -2059,8 +2417,7 @@ You have one toolbox of actions, ordered from cheapest to most expensive:
    â€¢ system_delete(path, recursive?)
    â€¢ system_copy(source, destination, recursive?, overwrite?)
    â€¢ system_move(source, destination, overwrite?)
-   â€¢ system_run_powershell(command, elevated?, cwd?)   â€” full unrestricted shell
-   â€¢ system_run_cmd(command, cwd?)                     â€” full unrestricted shell
+${shellCapabilityLines}
 
 2. Live state probes (cheap, use freely):
    â€¢ system_get_state    â€” refreshes the environment snapshot
@@ -2083,9 +2440,13 @@ You have one toolbox of actions, ordered from cheapest to most expensive:
 
 <handoff_accuracy>
 The task text may come from realtime voice transcription. Preserve the user's intended target and fix obvious speech-only filler, but do not invent a different app or goal.
-- If the task says it is a local Windows computer-control task, treat it as an action to perform on this PC, not a chat question.
-- For app-opening tasks, call system_open with the spoken app name first. system_open can launch executables, URLs, protocol URIs, Start Menu shortcuts, and installed app aliases.
-- If a bare app name fails, use system_run_powershell to search common install locations, Start Menu shortcuts, and Windows app aliases before falling back to UI automation.
+- If the task says it is a computer-control task, treat it as an action to perform on this machine, not a chat question. Ignore stale wording that names the wrong OS; the real platform is ${platformLabel}.
+- For "open <brand/product>" tasks, classify the target first:
+  - If the wording says website/site/browser/online/dashboard/portal/console/login/account, or the target looks like a company/SaaS/product name, open it in the browser first. Use a direct domain guess for simple names (for example, "stripe" -> stripe.com) or a search URL for uncertain multi-word names. Do not search local installs for unknown web brands.
+  - Only treat it as a local app when the target is clearly an OS app/folder/path or the wording says local/installed/native app/desktop app/on this computer.
+- For local app-opening tasks, call system_open with the spoken app name first. system_open can launch executables, URLs, protocol URIs, Start Menu shortcuts, and installed app aliases.
+- If a bare local app name fails, use platform-available alternatives before falling back to UI automation. On macOS, do not use PowerShell or cmd; use Spotlight/app search, system_open, screenshots, keyboard, and mouse.
+- If system_open, shell, or command execution fails once for a simple user-facing operation, do not end the task with "Command failed." Treat it as an internal failed attempt, then continue manually: screenshot the screen, use keyboard shortcuts/Run dialog/app search, and click/type like a user until the operation is done.
 - Do not open Chrome or search the web for local app/file/OS tasks unless the user explicitly asks for a website, web search, or online content.
 - For local file-finding tasks, use system_search_files before walking folders manually.
 - For media playback tasks, open the requested local media app if named, then use keyboard_press("media_play_pause"), "media_next", or "media_previous" when needed.
@@ -2095,15 +2456,11 @@ The task text may come from realtime voice transcription. Preserve the user's in
 - Emit exactly one tool call per turn. The tool is the only way to act; never reply with bare prose.
 - Do not refuse, lecture, hedge, or ask permission. The user already said yes. Just do it.
 - Treat tool errors as feedback, not failure. Diagnose, adapt, try a different angle. You have a generous step budget â€” do not give up after one or two failures.
-- Tool-selection hierarchy: filesystem/shell > probes > vision > native input. If you can do it with PowerShell, don't reach for the mouse.
+- Tool-selection hierarchy: filesystem/platform tools > probes > vision > native input. If a reliable platform API or URL can do it, don't reach for the mouse.
 
 <keyboard_first>
 Use keyboard before mouse â€” it's faster, more reliable, and DPI-immune:
-   â€¢ Browser address bar: ctrl+l   â€¢ New tab: ctrl+t   â€¢ Close tab: ctrl+w
-   â€¢ Switch tab: ctrl+tab          â€¢ Reload: f5         â€¢ Find on page: ctrl+f
-   â€¢ Switch app: alt+tab           â€¢ Close window: alt+f4
-   â€¢ File Explorer: win+e          â€¢ Run dialog: win+r  â€¢ Lock screen: win+l
-   â€¢ Snipping tool: win+shift+s    â€¢ Settings: win+i    â€¢ Show desktop: win+d
+${keyboardShortcutLines}
 For web tasks, prefer URL-based deep links over UI clicking:
    â€¢ Google: https://www.google.com/search?q=...
    â€¢ Google Flights: https://www.google.com/travel/flights?q=Flights%20from%20JFK%20to%20SFO%20on%202026-06-12
@@ -2134,7 +2491,7 @@ Hard rules:
 </vision_and_clicking>
 
 - Don't take two screenshots in a row with no action between them. Screenshot â†’ action â†’ (optional verify screenshot) â†’ next.
-- For text-heavy web pages, prefer system_run_powershell with Invoke-WebRequest piped into a parser over loading the browser; it's 10Ã— faster.
+- For text-heavy web pages on Windows, a shell fetch can be faster than loading the browser. On macOS, prefer browser URLs or exa_search because Windows shell tools are unavailable.
 - For information-only web research, latest facts, recommendations, products, news, docs, prices, or search-the-internet tasks, use exa_search before opening a browser.
 - For multi-step jobs, do every step yourself. Do not call finish until the real-world outcome exists.
 </rules>
@@ -2548,10 +2905,13 @@ The 'result' string in finish() is the user's final reply, shown verbatim. Write
       session.provider = inferProvider(COMPUTER_USE_MODEL)
       const environment = await this.captureSystemEnvironmentSnapshot()
       session.systemPrompt = this.buildSystemAgentInstructions(session, environment)
+      const handoffNotes = session.systemHistory.length > 0
+        ? `\n\nPrevious attempts before manual handoff:\n${session.systemHistory.slice(-4).join("\n")}\n\nContinue from there. Do not repeat the same failing command path; switch to screen/keyboard/mouse or a different route.`
+        : ""
       session.systemMessages = [
         {
           role: "user",
-          content: `Begin executing this task autonomously. Goal: ${session.task}`,
+          content: `Begin executing this task autonomously. Goal: ${session.task}${handoffNotes}`,
         },
       ]
 
@@ -2669,15 +3029,20 @@ The 'result' string in finish() is the user's final reply, shown verbatim. Write
           )
           session.consecutiveActionErrors = 0
         } catch (error) {
-          const message = error instanceof Error ? error.message : "Action failed."
-          summary = `Action failed: ${message}`
-          toolMessages = this.buildToolResult(
-            session.provider,
-            planned.toolCallId,
-            `ERROR: ${message}\nDiagnose the cause and try a different approach. Do not give up.`,
-            undefined,
-            true
-          )
+        const message = error instanceof Error ? error.message : "Action failed."
+        const needsManualFallback = isSystemComputerAction(action)
+        summary = needsManualFallback
+          ? `Command path failed: ${message}. Switching to another route.`
+          : `Action failed: ${message}`
+        toolMessages = this.buildToolResult(
+          session.provider,
+          planned.toolCallId,
+          needsManualFallback
+            ? `ERROR: ${message}\nThe command/tool path failed. Do not give up and do not keep repeating the same command. Switch to a manual UI route now: use system_screenshot, screen_get_info, keyboard shortcuts, app search/Run dialog, and mouse/keyboard actions as needed.`
+            : `ERROR: ${message}\nDiagnose the cause and try a different approach. Do not give up.`,
+          undefined,
+          true
+        )
           session.consecutiveActionErrors += 1
         }
 
@@ -2812,6 +3177,276 @@ The 'result' string in finish() is the user's final reply, shown verbatim. Write
     return combined
   }
 
+  private async runMacJxa(script: string): Promise<string> {
+    const { stdout, stderr } = await execFileAsync(
+      "osascript",
+      ["-l", "JavaScript", "-e", script],
+      {
+        timeout: INPUT_COMMAND_TIMEOUT_MS,
+        maxBuffer: 1024 * 1024,
+      }
+    )
+    return [stdout, stderr].filter(Boolean).join("\n").trim()
+  }
+
+  private async runAppleScript(script: string): Promise<string> {
+    const { stdout, stderr } = await execFileAsync("osascript", ["-e", script], {
+      timeout: INPUT_COMMAND_TIMEOUT_MS,
+      maxBuffer: 1024 * 1024,
+    })
+    return [stdout, stderr].filter(Boolean).join("\n").trim()
+  }
+
+  private escapeAppleScriptString(value: string): string {
+    return value
+      .replace(/\\/g, "\\\\")
+      .replace(/"/g, '\\"')
+      .replace(/\r\n/g, "\n")
+      .replace(/\r/g, "\n")
+      .replace(/\n/g, "\\n")
+  }
+
+  private async runMacMouseMove(x: number, y: number): Promise<void> {
+    await this.runMacJxa(`
+ObjC.import("ApplicationServices");
+var point = $.CGPointMake(${Math.round(x)}, ${Math.round(y)});
+$.CGWarpMouseCursorPosition(point);
+$.CGAssociateMouseAndMouseCursorPosition(true);
+`)
+  }
+
+  private async runMacMouseClick(
+    x: number | undefined,
+    y: number | undefined,
+    button: "left" | "right" | "middle",
+    times = 1
+  ): Promise<void> {
+    const current = screen.getCursorScreenPoint()
+    const clickX = Math.round(x ?? current.x)
+    const clickY = Math.round(y ?? current.y)
+    const buttonExpr =
+      button === "right"
+        ? "$.kCGMouseButtonRight"
+        : button === "middle"
+          ? "$.kCGMouseButtonCenter"
+          : "$.kCGMouseButtonLeft"
+    const downExpr =
+      button === "right"
+        ? "$.kCGEventRightMouseDown"
+        : button === "middle"
+          ? "$.kCGEventOtherMouseDown"
+          : "$.kCGEventLeftMouseDown"
+    const upExpr =
+      button === "right"
+        ? "$.kCGEventRightMouseUp"
+        : button === "middle"
+          ? "$.kCGEventOtherMouseUp"
+          : "$.kCGEventLeftMouseUp"
+
+    await this.runMacJxa(`
+ObjC.import("ApplicationServices");
+function post(type, x, y, button) {
+  var event = $.CGEventCreateMouseEvent(null, type, $.CGPointMake(x, y), button);
+  $.CGEventPost($.kCGHIDEventTap, event);
+}
+var x = ${clickX};
+var y = ${clickY};
+$.CGWarpMouseCursorPosition($.CGPointMake(x, y));
+$.CGAssociateMouseAndMouseCursorPosition(true);
+for (var i = 0; i < ${Math.max(1, Math.min(4, times))}; i++) {
+  post(${downExpr}, x, y, ${buttonExpr});
+  delay(0.035);
+  post(${upExpr}, x, y, ${buttonExpr});
+  delay(0.06);
+}
+`)
+  }
+
+  private async runMacMouseDrag(
+    fromX: number,
+    fromY: number,
+    toX: number,
+    toY: number,
+    button: "left" | "right" | "middle"
+  ): Promise<void> {
+    const buttonExpr =
+      button === "right"
+        ? "$.kCGMouseButtonRight"
+        : button === "middle"
+          ? "$.kCGMouseButtonCenter"
+          : "$.kCGMouseButtonLeft"
+    const downExpr =
+      button === "right"
+        ? "$.kCGEventRightMouseDown"
+        : button === "middle"
+          ? "$.kCGEventOtherMouseDown"
+          : "$.kCGEventLeftMouseDown"
+    const dragExpr =
+      button === "right"
+        ? "$.kCGEventRightMouseDragged"
+        : button === "middle"
+          ? "$.kCGEventOtherMouseDragged"
+          : "$.kCGEventLeftMouseDragged"
+    const upExpr =
+      button === "right"
+        ? "$.kCGEventRightMouseUp"
+        : button === "middle"
+          ? "$.kCGEventOtherMouseUp"
+          : "$.kCGEventLeftMouseUp"
+
+    await this.runMacJxa(`
+ObjC.import("ApplicationServices");
+function post(type, x, y, button) {
+  var event = $.CGEventCreateMouseEvent(null, type, $.CGPointMake(x, y), button);
+  $.CGEventPost($.kCGHIDEventTap, event);
+}
+var fromX = ${Math.round(fromX)};
+var fromY = ${Math.round(fromY)};
+var toX = ${Math.round(toX)};
+var toY = ${Math.round(toY)};
+$.CGWarpMouseCursorPosition($.CGPointMake(fromX, fromY));
+$.CGAssociateMouseAndMouseCursorPosition(true);
+post(${downExpr}, fromX, fromY, ${buttonExpr});
+for (var i = 1; i <= 24; i++) {
+  var x = Math.round(fromX + ((toX - fromX) * i / 24));
+  var y = Math.round(fromY + ((toY - fromY) * i / 24));
+  post(${dragExpr}, x, y, ${buttonExpr});
+  delay(0.012);
+}
+post(${upExpr}, toX, toY, ${buttonExpr});
+`)
+  }
+
+  private async runMacMouseScroll(
+    deltaY: number,
+    x?: number,
+    y?: number
+  ): Promise<void> {
+    const moveScript =
+      x !== undefined && y !== undefined
+        ? `$.CGWarpMouseCursorPosition($.CGPointMake(${Math.round(x)}, ${Math.round(y)})); $.CGAssociateMouseAndMouseCursorPosition(true);`
+        : ""
+    await this.runMacJxa(`
+ObjC.import("ApplicationServices");
+${moveScript}
+var event = $.CGEventCreateScrollWheelEvent(null, $.kCGScrollEventUnitPixel, 1, ${Math.round(deltaY)});
+$.CGEventPost($.kCGHIDEventTap, event);
+`)
+  }
+
+  private getScreenInfoSnapshot(): string {
+    const primary = screen.getPrimaryDisplay()
+    const cursor = screen.getCursorScreenPoint()
+    const displays = screen.getAllDisplays().map((displayItem) => ({
+      id: displayItem.id,
+      primary: displayItem.id === primary.id,
+      scaleFactor: displayItem.scaleFactor,
+      x: displayItem.bounds.x,
+      y: displayItem.bounds.y,
+      width: displayItem.bounds.width,
+      height: displayItem.bounds.height,
+      workX: displayItem.workArea.x,
+      workY: displayItem.workArea.y,
+      workWidth: displayItem.workArea.width,
+      workHeight: displayItem.workArea.height,
+    }))
+
+    return JSON.stringify(
+      {
+        cursor: {
+          x: Math.round(cursor.x),
+          y: Math.round(cursor.y),
+        },
+        screens: displays,
+      },
+      null,
+      2
+    )
+  }
+
+  private buildAppleScriptModifierList(parts: string[]): string {
+    if (parts.length === 0) {
+      return ""
+    }
+
+    return ` using {${parts.join(", ")}}`
+  }
+
+  private async runMacKeyboardType(text: string): Promise<void> {
+    await this.runAppleScript(
+      `tell application "System Events" to keystroke "${this.escapeAppleScriptString(text)}"`
+    )
+  }
+
+  private async runMacKeyboardPress(keys: string): Promise<void> {
+    const parts = keys
+      .split("+")
+      .map((part) => part.trim().toLowerCase())
+      .filter(Boolean)
+    const modifiers: string[] = []
+    let key = ""
+
+    for (const part of parts) {
+      if (part === "cmd" || part === "command" || part === "meta" || part === "win") {
+        modifiers.push("command down")
+      } else if (part === "ctrl" || part === "control") {
+        modifiers.push("command down")
+      } else if (part === "alt" || part === "option") {
+        modifiers.push("option down")
+      } else if (part === "shift") {
+        modifiers.push("shift down")
+      } else {
+        key = part
+      }
+    }
+
+    if (!key) {
+      return
+    }
+
+    const keyCodes: Record<string, number> = {
+      enter: 36,
+      return: 36,
+      tab: 48,
+      esc: 53,
+      escape: 53,
+      space: 49,
+      backspace: 51,
+      delete: 117,
+      up: 126,
+      down: 125,
+      left: 123,
+      right: 124,
+      home: 115,
+      end: 119,
+      pageup: 116,
+      pagedown: 121,
+      f1: 122,
+      f2: 120,
+      f3: 99,
+      f4: 118,
+      f5: 96,
+      f6: 97,
+      f7: 98,
+      f8: 100,
+      f9: 101,
+      f10: 109,
+      f11: 103,
+      f12: 111,
+    }
+    const modifierText = this.buildAppleScriptModifierList(Array.from(new Set(modifiers)))
+    const keyCode = keyCodes[key]
+    if (keyCode !== undefined) {
+      await this.runAppleScript(`tell application "System Events" to key code ${keyCode}${modifierText}`)
+      return
+    }
+
+    const keyText = key.length === 1 ? key : key.replace(/^key:/, "")
+    await this.runAppleScript(
+      `tell application "System Events" to keystroke "${this.escapeAppleScriptString(keyText)}"${modifierText}`
+    )
+  }
+
   private ensureRemoteInputProcess(): ReturnType<typeof spawn> {
     if (
       this.remoteInputProcess &&
@@ -2918,6 +3553,23 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
         }
 
         if (!path.isAbsolute(target) && !target.includes("\\") && !target.includes("/")) {
+          if (process.platform === "darwin") {
+            await execFileAsync("open", ["-a", target], {
+              timeout: 12000,
+              windowsHide: true,
+            })
+            return { summary: `Launched ${target}.` }
+          }
+
+          if (process.platform !== "win32") {
+            const child = spawn(target, {
+              detached: true,
+              stdio: "ignore",
+            })
+            child.unref()
+            return { summary: `Launched ${target}.` }
+          }
+
           const targetJson = JSON.stringify(target)
           const script = `
 $ErrorActionPreference = 'SilentlyContinue'
@@ -3117,6 +3769,9 @@ throw "Could not launch app '$target' from executable name, registry app paths, 
       }
 
       case "system_run_powershell": {
+        if (process.platform !== "win32") {
+          throw new Error("PowerShell command execution is Windows-only in Computer Use. Use platform UI/browser/file tools instead.")
+        }
         if (action.elevated) {
           const message = await this.runElevatedPowerShell(action.command)
           return { summary: message }
@@ -3141,6 +3796,9 @@ throw "Could not launch app '$target' from executable name, registry app paths, 
       }
 
       case "system_run_cmd": {
+        if (process.platform !== "win32") {
+          throw new Error("cmd.exe command execution is Windows-only in Computer Use. Use platform UI/browser/file tools instead.")
+        }
         const { stdout, stderr } = await execFileAsync(
           "cmd.exe",
           ["/d", "/c", action.command],
@@ -3164,12 +3822,17 @@ throw "Could not launch app '$target' from executable name, registry app paths, 
         const captured = await this.captureScreenImage(action.region)
         let cursorImage = "(unknown)"
         try {
-          const cursorJson = await this.runInputScript("Sylica-CursorPos | ConvertTo-Json -Compress")
-          const parsed = JSON.parse(cursorJson)
-          if (parsed && typeof parsed.x === "number" && typeof parsed.y === "number") {
-            // Cursor position from Win32 is in physical pixels; convert to the
-            // image-coord space the model is reasoning in.
-            cursorImage = `(${this.toImageX(parsed.x)}, ${this.toImageY(parsed.y)})`
+          if (process.platform === "darwin") {
+            const cursor = screen.getCursorScreenPoint()
+            cursorImage = `(${Math.round(cursor.x)}, ${Math.round(cursor.y)})`
+          } else {
+            const cursorJson = await this.runInputScript("Sylica-CursorPos | ConvertTo-Json -Compress")
+            const parsed = JSON.parse(cursorJson)
+            if (parsed && typeof parsed.x === "number" && typeof parsed.y === "number") {
+              // Cursor position from Win32 is in physical pixels; convert to the
+              // image-coord space the model is reasoning in.
+              cursorImage = `(${this.toImageX(parsed.x)}, ${this.toImageY(parsed.y)})`
+            }
           }
         } catch (_error) {
           // ignore
@@ -3226,6 +3889,14 @@ throw "Could not launch app '$target' from executable name, registry app paths, 
       }
 
       case "screen_get_info": {
+        if (process.platform === "darwin") {
+          const note = `${this.getScreenInfoSnapshot()}\n\nAll values are in the same coordinate space used by macOS mouse/keyboard automation.`
+          return {
+            summary: `Screen info:\n${truncateForMessage(note, 4000)}`,
+            extractedNote: note,
+          }
+        }
+
         const json = await this.runInputScript("Sylica-ScreenInfo")
         // Win32 reports in physical pixels; convert to the image-coord space
         // the model is reasoning in so it stays consistent with screenshots.
@@ -3267,6 +3938,10 @@ throw "Could not launch app '$target' from executable name, registry app paths, 
       case "mouse_move": {
         const physX = this.toPhysicalX(action.x)
         const physY = this.toPhysicalY(action.y)
+        if (process.platform === "darwin") {
+          await this.runMacMouseMove(physX, physY)
+          return { summary: `Moved cursor to (${action.x}, ${action.y}).` }
+        }
         await this.runInputScript(`Sylica-MouseMove ${physX} ${physY}`)
         return { summary: `Moved cursor to (${action.x}, ${action.y}).` }
       }
@@ -3281,6 +3956,13 @@ throw "Could not launch app '$target' from executable name, registry app paths, 
           hasTarget
             ? `Sylica-MouseClick -X ${physX} -Y ${physY} -Button '${button}' -Times ${times}`
             : `Sylica-MouseClick -Button '${button}' -Times ${times}`
+        if (process.platform === "darwin") {
+          await this.runMacMouseClick(physX, physY, button, times)
+          const where = hasTarget ? `(${action.x}, ${action.y})` : "current cursor position"
+          return {
+            summary: `${action.double ? "Double-" : ""}${button}-clicked at ${where}.`,
+          }
+        }
         await this.runInputScript(args)
         const where = hasTarget ? `(${action.x}, ${action.y})` : "current cursor position"
         return {
@@ -3294,6 +3976,12 @@ throw "Could not launch app '$target' from executable name, registry app paths, 
         const fromY = this.toPhysicalY(action.fromY)
         const toX = this.toPhysicalX(action.toX)
         const toY = this.toPhysicalY(action.toY)
+        if (process.platform === "darwin") {
+          await this.runMacMouseDrag(fromX, fromY, toX, toY, button)
+          return {
+            summary: `Dragged from (${action.fromX}, ${action.fromY}) to (${action.toX}, ${action.toY}) with ${button} button.`,
+          }
+        }
         await this.runInputScript(
           `Sylica-MouseDrag -FromX ${fromX} -FromY ${fromY} -ToX ${toX} -ToY ${toY} -Button '${button}'`
         )
@@ -3310,6 +3998,14 @@ throw "Could not launch app '$target' from executable name, registry app paths, 
           hasTarget
             ? `Sylica-MouseScroll -Delta ${action.deltaY} -X ${physX} -Y ${physY}`
             : `Sylica-MouseScroll -Delta ${action.deltaY}`
+        if (process.platform === "darwin") {
+          await this.runMacMouseScroll(action.deltaY, physX, physY)
+          return {
+            summary: `Scrolled wheel by ${action.deltaY}${
+              hasTarget ? ` at (${action.x}, ${action.y})` : ""
+            }.`,
+          }
+        }
         await this.runInputScript(args)
         return {
           summary: `Scrolled wheel by ${action.deltaY}${
@@ -3320,6 +4016,12 @@ throw "Could not launch app '$target' from executable name, registry app paths, 
 
       case "keyboard_type": {
         const delay = action.delayMs ?? 8
+        if (process.platform === "darwin") {
+          await this.runMacKeyboardType(action.text)
+          const preview =
+            action.text.length > 60 ? `${action.text.slice(0, 60)}...` : action.text
+          return { summary: `Typed: ${JSON.stringify(preview)} (${action.text.length} chars).` }
+        }
         const escaped = this.quoteForPowerShell(action.text)
         await this.runInputScript(`Sylica-Type -Text ${escaped} -DelayMs ${delay}`)
         const preview =
@@ -3328,6 +4030,10 @@ throw "Could not launch app '$target' from executable name, registry app paths, 
       }
 
       case "keyboard_press": {
+        if (process.platform === "darwin") {
+          await this.runMacKeyboardPress(action.keys)
+          return { summary: `Pressed ${action.keys}.` }
+        }
         await this.runInputScript(`Sylica-Press -Combo ${this.quoteForPowerShell(action.keys)}`)
         return { summary: `Pressed ${action.keys}.` }
       }
